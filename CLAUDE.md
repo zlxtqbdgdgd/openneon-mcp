@@ -1,3 +1,46 @@
+# ⚠️ neon-autopilot 项目改造说明（启动前必读）
+
+> 本仓库是 **neon-autopilot 项目的 `mcp` 模块**（MCP Server 实施层 · fork from `neondatabase/mcp-server-neon`）—— 本仓代码已 / 即将做 **21+ 项改造**（详 [openneon-design §5.5.2](https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/overview.html)）
+
+## 启动前必读 · 设计 + AI 协作 source of truth
+
+**开 Claude Code 时第一步**：读以下 3 份文档（防漂移）：
+
+1. [openneon-design/CLAUDE.md](https://github.com/zlxtqbdgdgd/openneon-design/blob/main/CLAUDE.md) —— 12 习惯 + 6 P 规则 + 触发警惕清单（**所有 AI 协作 + 项目设计原则**）
+2. [openneon-design/features/overview.html](https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/overview.html) —— Phase B 概要设计 source of truth（**重点 §5.5 mcp 全景矩阵 · §5.5.4 run_sql 收编 · §8 安全策略矩阵 · §9 L 配置 · §10 LLM 编码规约**）
+3. [openneon-design/features/feature-registry.yaml](https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feature-registry.yaml) —— 本仓涉及的 21+ 项改造 feature 清单（grep `module: mcp`）
+
+**重要**：本仓代码改造严格按 [§10 LLM 编码可定位性 5 条规约](https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/overview.html)（已有依赖必须复用 / 4 模块边界 / 命名约定 / PR description 改动锚点 / 独立 fixture）。
+
+## 本仓在 neon-autopilot 项目中的角色
+
+`mcp` 模块——按 [§3.5.1 数量分布](https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/overview.html) 承载 **27 项改造**：
+
+- **Tool 层** 11 项（T1-T8/T10-T12 day-one + L4 T9 升级）
+- **Server / 协议层** 10 项（F8a/F8b/F9 + F10/G1-G4 + G6/G10）
+- **Server-side Enrichment** 6 项（按 §3.3.0 数据流原则 · feat-016/017/018/022/038 + feat-037 备路径）
+
+## 本仓特定（neon-autopilot 改造层 · 跨仓不复用）
+
+### Commit 规范
+
+- commit message 用中文 + `feat(mcp-<submodule>):` / `fix(mcp-<submodule>):` 前缀
+- submodule 取自 [§2.3 子模块清单](https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/overview.html)：`tool` / `server` / `server-enrich` / `protocol`
+- 每个 PR 带 `feat-NNN reference` + 改动锚点（详 design [§10.2.4 规约 4](https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/overview.html)）
+
+### 跟上游 mcp-server-neon rebase 策略
+
+- 长期分支：`feat/neon-autopilot`（本项目所有 mcp 改造）
+- 上游 `main` 定期 fetch 但不强制 rebase（详 [§3.1.3 时间线根因 + §5.5.3 fork 决策](https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/overview.html)）
+
+### 本仓特定 caveat（TODO 待填）
+
+- [Vercel deploy 流程 / OAuth 配置 / MCP Server 启动顺序等]
+
+---
+
+# 以下是 fork 自上游 `neondatabase/mcp-server-neon` 的 CLAUDE.md（上游 codebase 操作指南，保留供 build / test 参考）
+
 # CLAUDE.md
 
 This file provides guidance to AI agents when working with code in this repository.
