@@ -495,3 +495,19 @@ This repository uses an enhanced Claude Code Review workflow that provides inlin
 - **Automatic**: Opens when PR is created
 - **Manual**: Run workflow via GitHub Actions with PR number
 - **Security**: Only OWNER/MEMBER/COLLABORATOR PRs (blocks external)
+
+## Agent skills
+
+> 由 `/setup-matt-pocock-skills` 生成（2026-05-19）。供 mattpocock/skills 套件下的工程类 skill（`to-issues` / `triage` / `to-prd` / `qa` / `improve-codebase-architecture` / `diagnose` / `tdd` 等）查询 per-repo 配置。
+
+### Issue tracker
+
+GitHub Issues · 仓 `zlxtqbdgdgd/openneon-mcp` · 用 `gh` CLI。详 [`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md)。
+
+### Triage labels
+
+5 个 canonical role 全用默认 label 名（`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`）。详 [`docs/agents/triage-labels.md`](docs/agents/triage-labels.md)。
+
+### Domain docs
+
+**single-context** · 本仓属 openneon 项目（5 仓 multirepo · 本仓非主词典宿主）· 跨仓共享词汇查 [openneon-design](https://github.com/zlxtqbdgdgd/openneon-design)。详 [`docs/agents/domain.md`](docs/agents/domain.md)。
