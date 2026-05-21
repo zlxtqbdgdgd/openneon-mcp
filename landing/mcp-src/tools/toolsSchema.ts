@@ -982,3 +982,40 @@ export const getNeondbSchemasInputSchema = z.object({
     .describe('PostgreSQL schema name. Defaults to "public".'),
   format: outputFormatField,
 });
+
+// feat-001 T1 find_neondb_instances input schema · sales 剧本入口工具
+// detail design: features/feat-001-L1-mcp-tool-t1-find-instances.html
+export const findNeondbInstancesInputSchema = z.object({
+  filter: z
+    .object({
+      status: z
+        .enum(['running', 'suspended', 'creating', 'failed'])
+        .optional()
+        .describe(
+          'Filter projects by status (derived from primary read_write endpoint state). running=active · suspended=idle · creating=init endpoint state.',
+        ),
+      region: z
+        .string()
+        .optional()
+        .describe(
+          'Filter projects by Neon region ID (e.g. "aws-us-east-1", "aws-eu-west-1"). Matched exactly against project.region_id.',
+        ),
+      org: z
+        .string()
+        .optional()
+        .describe(
+          'Filter to a specific Neon organization ID. Day-one assumes API key has access to the org.',
+        ),
+    })
+    .optional()
+    .describe('Optional filter to narrow returned projects.'),
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      'Max number of projects to return. Default 100 · hard ceiling 500 (token budget per detail design §5). Larger requests clamped silently.',
+    ),
+  format: outputFormatField,
+});
