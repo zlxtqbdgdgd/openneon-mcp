@@ -35,6 +35,10 @@ import { handleDescribeBranch } from './handlers/describe-branch';
 // feat-003/004 day-one ship · narrative #3 主卖点 防 LLM 自负幻觉一对组合
 import { handleGetQueryStatement } from './handlers/query-statement';
 import { handleGetSchemas } from './handlers/schemas';
+// feat-001 day-one ship · sales 剧本入口工具 · narrative §3 demo spine 第 1 步
+import { handleFindNeondbInstances } from './handlers/find-instances';
+// feat-002 day-one ship · sales 剧本应用归因 · pg_stat_activity 聚合
+import { handleGetCallingServices } from './handlers/calling-services';
 // feat-006 #2 day-one ship · token economy地基 · CSV default output
 import { formatToolResponse } from '../server/response-formatter';
 
@@ -1786,6 +1790,55 @@ You MUST follow these steps:
         {
           type: 'text',
           text: formatToolResponse(result.rows, { format: params.format }),
+        },
+      ],
+    };
+  },
+
+  // feat-001 T1 find_neondb_instances · sales 剧本入口工具 · narrative §3 demo spine 第 1 步
+  // 1 次调用拿到 project + branch + endpoint 全部必要信息 · 不用 2-3 次串调 Neon API
+  //
+  // feat-006 #2 (token economy): tabular array · format via formatToolResponse · default 'csv'
+  find_neondb_instances: async ({ params }, neonClient, extra) => {
+    const result = await handleFindNeondbInstances(
+      {
+        filter: params.filter,
+        limit: params.limit,
+      },
+      neonClient,
+      extra,
+    );
+    return {
+      content: [
+        {
+          type: 'text',
+          text: formatToolResponse(result, { format: params.format }),
+        },
+      ],
+    };
+  },
+
+  // feat-002 T2 get_neondb_calling_services · sales 剧本应用归因 · pg_stat_activity 聚合
+  // 让 agent 拿到 application_name 维度归因 · 不必自己写 SQL 防 feat-003 SQL 幻觉
+  //
+  // feat-006 #2 (token economy): tabular array · format via formatToolResponse · default 'csv'
+  get_neondb_calling_services: async ({ params }, neonClient, extra) => {
+    const result = await handleGetCallingServices(
+      {
+        projectId: params.projectId,
+        branchId: params.branchId,
+        databaseName: params.databaseName,
+        computeId: params.computeId,
+        threshold: params.threshold,
+      },
+      neonClient,
+      extra,
+    );
+    return {
+      content: [
+        {
+          type: 'text',
+          text: formatToolResponse(result, { format: params.format }),
         },
       ],
     };

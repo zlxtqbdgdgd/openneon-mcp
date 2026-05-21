@@ -983,6 +983,41 @@ export const getNeondbSchemasInputSchema = z.object({
   format: outputFormatField,
 });
 
+// feat-002 T2 get_neondb_calling_services input schema · sales 剧本应用归因工具
+// detail design: features/feat-002-L1-mcp-tool-t2-calling-services.html
+export const getNeondbCallingServicesInputSchema = z.object({
+  projectId: z
+    .string()
+    .describe('The ID of the Neon project to query.'),
+  branchId: z
+    .string()
+    .optional()
+    .describe(
+      'An optional ID of the branch. If not provided the default branch is used.',
+    ),
+  databaseName: z.string().optional().describe(DATABASE_NAME_DESCRIPTION),
+  computeId: z
+    .string()
+    .optional()
+    .describe(
+      'The ID of the compute/endpoint. If not provided, the read-write compute associated with the branch will be used.',
+    ),
+  threshold: z
+    .object({
+      min_connections: z
+        .number()
+        .int()
+        .nonnegative()
+        .optional()
+        .describe(
+          'Minimum connections required to include an application (HAVING count(*) >= N). Default 1 · skips idle apps with 0 conn.',
+        ),
+    })
+    .optional()
+    .describe('Optional threshold filter on aggregated metrics.'),
+  format: outputFormatField,
+});
+
 // feat-001 T1 find_neondb_instances input schema · sales 剧本入口工具
 // detail design: features/feat-001-L1-mcp-tool-t1-find-instances.html
 export const findNeondbInstancesInputSchema = z.object({
