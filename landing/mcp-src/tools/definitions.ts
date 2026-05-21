@@ -34,6 +34,8 @@ import {
   fetchInputSchema,
   listDocsResourcesInputSchema,
   getDocResourceInputSchema,
+  getNeondbQueryStatementInputSchema,
+  getNeondbSchemasInputSchema,
 } from './toolsSchema';
 
 type NeonToolDefinition = {
@@ -1221,6 +1223,71 @@ export const NEON_TOOLS = [
       destructiveHint: false,
       idempotentHint: true,
       openWorldHint: true,
+    } satisfies ToolAnnotations,
+  },
+  // ============================================================
+  // openneon day-one ship · ohsql 11+1 specialized tool extensions
+  // ============================================================
+  //
+  // feat-003 T6 get_neondb_query_statement · ⭐ narrative #3 主卖点
+  // 防 LLM 自负幻觉 SQL · pairs with feat-004 T8 as 防幻觉一对组合
+  // detail design: https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-003-L1-mcp-tool-t6-query-statement.html
+  {
+    name: 'get_neondb_query_statement' as const,
+    scope: 'querying',
+    description: `Fetch ground-truth parameterized SQL text for a given pg_stat_statements queryid.
+
+    <use_case>
+      Use this tool BEFORE making any decision based on a query's SQL text. When you have a query_signature
+      (e.g. from list_slow_queries), call this tool to get the actual SQL · do NOT guess based on signature name.
+      This is the openneon LLM-native MCP anti-hallucination tool · prevents agent from "creatively interpreting"
+      slow query signatures into wrong SQL (root cause of multiple public AI agent删库事件 · R10 §2.1).
+    </use_case>
+
+    <important_notes>
+      The returned 'query' field is ALWAYS parameterized ($1/$2 placeholders) · raw values never present
+      (OWASP LLM02 protection via PostgreSQL pg_stat_statements auto-parameterization).
+      If query_signature not found · the query may have been evicted (default pg_stat_statements.max = 5000).
+    </important_notes>`,
+    inputSchema: getNeondbQueryStatementInputSchema,
+    readOnlySafe: true,
+    annotations: {
+      title: 'Get Neon DB Query Statement (T6 · 防 LLM 自负幻觉 SQL)',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    } satisfies ToolAnnotations,
+  },
+  // feat-004 T8 get_neondb_schemas · ⭐ narrative #3 配对
+  // 防 LLM 凭表名脑补字段 · pairs with feat-003 T6 as 防幻觉一对组合
+  // detail design: https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-004-L1-mcp-tool-t8-schemas.html
+  {
+    name: 'get_neondb_schemas' as const,
+    scope: 'schema',
+    description: `Fetch ground-truth column metadata (column_name / data_type / is_indexed / is_nullable) for a table.
+
+    <use_case>
+      Use this tool BEFORE making any decision based on table column names or types. When you need to know
+      a table's schema, call this tool to get actual columns · do NOT guess based on table name conventions.
+      This is the openneon LLM-native MCP anti-hallucination tool · prevents agent from脑补 column names
+      (e.g. guessing "email_address" when actual column is "email", or "created_at" when actual is "sale_date").
+    </use_case>
+
+    <important_notes>
+      Day-one shallow schema returns 5 fields per column (table/column/type/indexed/nullable).
+      Wildcard filter (e.g. "sales*") and full depth (with pg_index INCLUDE / partial WHERE) coming in
+      feat-004 #2 + #4 sub-issues.
+      For comparison: Neon official 'describe_table_schema' returns full schema without progressive disclosure.
+    </important_notes>`,
+    inputSchema: getNeondbSchemasInputSchema,
+    readOnlySafe: true,
+    annotations: {
+      title: 'Get Neon DB Schemas (T8 · 防表名字段幻觉)',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
     } satisfies ToolAnnotations,
   },
 ] as const satisfies readonly NeonToolDefinition[];

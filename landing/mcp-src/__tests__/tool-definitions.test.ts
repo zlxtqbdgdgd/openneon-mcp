@@ -12,8 +12,8 @@ import { NEON_HANDLERS } from '../tools/tools';
 import { SCOPE_CATEGORIES } from '../utils/grant-context';
 
 describe('NEON_TOOLS definitions', () => {
-  it('has 31 tools', () => {
-    expect(NEON_TOOLS).toHaveLength(31);
+  it('has 33 tools (31 upstream + 2 day-one openneon T6/T8 · feat-003/004 narrative #3 主卖点)', () => {
+    expect(NEON_TOOLS).toHaveLength(33);
   });
 
   it('every tool has a name, scope (or null), and readOnlySafe flag', () => {

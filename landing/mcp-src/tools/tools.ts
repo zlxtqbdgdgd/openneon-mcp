@@ -32,6 +32,9 @@ import { handleListProjects } from './handlers/list-projects';
 import { handleDescribeProject } from './handlers/decribe-project';
 import { handleGetConnectionString } from './handlers/connection-string';
 import { handleDescribeBranch } from './handlers/describe-branch';
+// feat-003/004 day-one ship · narrative #3 主卖点 防 LLM 自负幻觉一对组合
+import { handleGetQueryStatement } from './handlers/query-statement';
+import { handleGetSchemas } from './handlers/schemas';
 
 /**
  * Generates a unique, identifiable branch name for migrations.
@@ -1721,6 +1724,59 @@ You MUST follow these steps:
         {
           type: 'text',
           text: content,
+        },
+      ],
+    };
+  },
+
+  // ============================================================
+  // openneon day-one ship · ohsql 11+1 specialized tool extensions
+  // ============================================================
+  //
+  // feat-003 T6 get_neondb_query_statement · ⭐ narrative #3 主卖点
+  // 防 LLM 自负幻觉 SQL · ground-truth pg_stat_statements lookup
+  get_neondb_query_statement: async ({ params }, neonClient, extra) => {
+    const result = await handleGetQueryStatement(
+      {
+        query_signature: params.query_signature,
+        projectId: params.projectId,
+        branchId: params.branchId,
+        databaseName: params.databaseName,
+        computeId: params.computeId,
+      },
+      neonClient,
+      extra,
+    );
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
+        },
+      ],
+    };
+  },
+
+  // feat-004 T8 get_neondb_schemas · ⭐ narrative #3 配对
+  // 防 LLM 凭表名脑补字段 · ground-truth pg_attribute + pg_index lookup
+  get_neondb_schemas: async ({ params }, neonClient, extra) => {
+    const result = await handleGetSchemas(
+      {
+        filter: params.filter,
+        projectId: params.projectId,
+        branchId: params.branchId,
+        databaseName: params.databaseName,
+        computeId: params.computeId,
+        schema: params.schema,
+      },
+      neonClient,
+      extra,
+    );
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(result, null, 2),
         },
       ],
     };

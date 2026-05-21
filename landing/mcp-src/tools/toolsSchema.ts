@@ -906,3 +906,60 @@ export const getDocResourceInputSchema = z.object({
       "The docs page slug (path) to fetch, e.g. 'docs/guides/prisma.md'. Slugs use .md file endings matching the URLs in the documentation index. Use the list_docs_resources tool first to discover available slugs.",
     ),
 });
+
+// feat-003 T6 get_neondb_query_statement input schema · narrative #3 主卖点 · 防 LLM 自负幻觉 SQL
+// detail design: features/feat-003-L1-mcp-tool-t6-query-statement.html
+export const getNeondbQueryStatementInputSchema = z.object({
+  query_signature: z
+    .string()
+    .describe(
+      'The pg_stat_statements.queryid (as string). Use list_slow_queries to discover signatures first. Required to fetch ground-truth parameterized SQL text · prevents agent from hallucinating SQL based on signature name.',
+    ),
+  projectId: z
+    .string()
+    .describe('The ID of the Neon project containing the query.'),
+  branchId: z
+    .string()
+    .optional()
+    .describe(
+      'An optional ID of the branch. If not provided the default branch is used.',
+    ),
+  databaseName: z.string().optional().describe(DATABASE_NAME_DESCRIPTION),
+  computeId: z
+    .string()
+    .optional()
+    .describe(
+      'The ID of the compute/endpoint. If not provided, the read-write compute associated with the branch will be used.',
+    ),
+});
+
+// feat-004 T8 get_neondb_schemas input schema · narrative #3 配对 · 防表名字段幻觉
+// detail design: features/feat-004-L1-mcp-tool-t8-schemas.html
+export const getNeondbSchemasInputSchema = z.object({
+  filter: z
+    .string()
+    .describe(
+      'Exact table name to look up (e.g. "sales", "users"). Wildcard support coming in feat-004 #2. Required · prevents agent from hallucinating column names based on table name (e.g. agent guessing "email_address" when actual column is "email").',
+    ),
+  projectId: z
+    .string()
+    .describe('The ID of the Neon project containing the table.'),
+  branchId: z
+    .string()
+    .optional()
+    .describe(
+      'An optional ID of the branch. If not provided the default branch is used.',
+    ),
+  databaseName: z.string().optional().describe(DATABASE_NAME_DESCRIPTION),
+  computeId: z
+    .string()
+    .optional()
+    .describe(
+      'The ID of the compute/endpoint. If not provided, the read-write compute associated with the branch will be used.',
+    ),
+  schema: z
+    .string()
+    .optional()
+    .default('public')
+    .describe('PostgreSQL schema name. Defaults to "public".'),
+});
