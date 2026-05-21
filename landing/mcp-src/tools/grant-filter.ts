@@ -23,6 +23,9 @@ const PROJECT_AGNOSTIC_TOOLS: ReadonlySet<string> = new Set([
   'list_shared_projects',
   'create_project',
   'delete_project',
+  // feat-001 T1: enriched project listing · semantically equivalent to list_projects ·
+  // hidden in project-scoped mode (agent restricted to single project · cross-project listing N/A).
+  'find_neondb_instances',
 ]);
 
 /**

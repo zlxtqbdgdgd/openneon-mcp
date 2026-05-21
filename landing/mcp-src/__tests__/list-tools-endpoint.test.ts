@@ -40,8 +40,9 @@ describe('/api/list-tools endpoint', () => {
   it('returns core listing by default (feat-005 #3 · ~26 slots reserved for ecosystem MCPs)', async () => {
     const body = await callListTools();
     expect(body.categoryInclude).toBe('core');
-    // Day-one core: T6 + T8 (T1/T2 待 feat-001/002 ship · CORE_TOOL_NAMES reserves them)
+    // Day-one core: T1 + T6 + T8 (T2 待 feat-002 ship · CORE_TOOL_NAMES reserves it)
     expect(body.tools.map((t) => t.name).sort()).toEqual([
+      'find_neondb_instances',
       'get_neondb_query_statement',
       'get_neondb_schemas',
     ]);
@@ -52,10 +53,10 @@ describe('/api/list-tools endpoint', () => {
     });
   });
 
-  it('returns 33 tools when include=all (full listing opt-in · backward-compat for clients wanting upstream tools)', async () => {
+  it('returns 34 tools when include=all (full listing opt-in · backward-compat for clients wanting upstream tools)', async () => {
     const body = await callListTools({ include: 'all' });
     expect(body.categoryInclude).toBe('all');
-    expect(body.tools).toHaveLength(33); // 31 upstream + 2 day-one (T6/T8 · feat-003/004 narrative #3 主卖点)
+    expect(body.tools).toHaveLength(34); // 31 upstream + 3 day-one (T1/T6/T8)
   });
 
   it('filters by scopes when category param is present (with include=all to isolate grant filter)', async () => {
@@ -88,7 +89,7 @@ describe('/api/list-tools endpoint', () => {
   it('filters to readOnlySafe tools with readonly=true (with include=all)', async () => {
     const body = await callListTools({ readonly: 'true', include: 'all' });
     expect(body.readOnly).toBe(true);
-    expect(body.tools).toHaveLength(21); // 19 upstream + 2 day-one (T6/T8 · both readOnlySafe: true)
+    expect(body.tools).toHaveLength(22); // 19 upstream + 3 day-one (T1/T6/T8 · all readOnlySafe: true)
     for (const tool of body.tools) {
       expect(tool.readOnlySafe).toBe(true);
     }
@@ -103,7 +104,7 @@ describe('/api/list-tools endpoint', () => {
     const res = await GET(req);
     const body = (await res.json()) as ListToolsResponse;
     expect(body.readOnly).toBe(true);
-    expect(body.tools).toHaveLength(21); // 19 upstream + 2 day-one (T6/T8 · readOnlySafe)
+    expect(body.tools).toHaveLength(22); // 19 upstream + 3 day-one (T1/T6/T8 · readOnlySafe)
   });
 
   it('readonly query param takes precedence over x-read-only header (with include=all)', async () => {
@@ -116,13 +117,14 @@ describe('/api/list-tools endpoint', () => {
     const res = await GET(req);
     const body = (await res.json()) as ListToolsResponse;
     expect(body.readOnly).toBe(false);
-    expect(body.tools).toHaveLength(33); // 31 upstream + 2 day-one (T6/T8)
+    expect(body.tools).toHaveLength(34); // 31 upstream + 3 day-one (T1/T6/T8)
   });
 
-  it('include=core explicit returns the same as default (4 day-one core tools · currently 2)', async () => {
+  it('include=core explicit returns the same as default (4 day-one core tools · currently 3 · T2 待 ship)', async () => {
     const body = await callListTools({ include: 'core' });
     expect(body.categoryInclude).toBe('core');
     expect(body.tools.map((t) => t.name).sort()).toEqual([
+      'find_neondb_instances',
       'get_neondb_query_statement',
       'get_neondb_schemas',
     ]);
@@ -131,7 +133,7 @@ describe('/api/list-tools endpoint', () => {
   it('include=invalid falls back to core default (strict whitelist)', async () => {
     const body = await callListTools({ include: 'optional' });
     expect(body.categoryInclude).toBe('core');
-    expect(body.tools).toHaveLength(2); // T6 + T8 (T1/T2 待 ship)
+    expect(body.tools).toHaveLength(3); // T1 + T6 + T8 (T2 待 ship)
   });
 
   it('OPTIONS returns expected CORS allow-headers', () => {

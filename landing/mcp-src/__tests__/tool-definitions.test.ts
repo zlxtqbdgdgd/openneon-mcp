@@ -16,8 +16,8 @@ import {
 } from '../config/categories';
 
 describe('NEON_TOOLS definitions', () => {
-  it('has 33 tools (31 upstream + 2 day-one openneon T6/T8 · feat-003/004 narrative #3 主卖点)', () => {
-    expect(NEON_TOOLS).toHaveLength(33);
+  it('has 34 tools (31 upstream + 3 day-one openneon T1/T6/T8 · feat-001/003/004 sales 剧本入口 + 防幻觉一对组合)', () => {
+    expect(NEON_TOOLS).toHaveLength(34);
   });
 
   it('every tool has a name, scope (or null), and readOnlySafe flag', () => {
@@ -126,14 +126,20 @@ describe('tool category field (feat-005 #2 · narrative #3 ecosystem-friendly)',
     }
   });
 
-  it('current day-one core count = 2 (T6/T8 only · T1/T2 land in feat-001/002 ship · CORE_TOOL_NAMES reserves them)', () => {
+  it('current day-one core count = 3 (T1/T6/T8 · T2 待 feat-002 ship · CORE_TOOL_NAMES reserves it)', () => {
     const coreTools = NEON_TOOLS.filter((t) => t.category === 'core');
-    expect(coreTools.length).toBe(2);
+    expect(coreTools.length).toBe(3);
   });
 
-  it('current optional count = 31 (33 total - 2 core · keeps 26+ listing budget for ecosystem MCPs)', () => {
+  it('current optional count = 31 (34 total - 3 core · keeps 26+ listing budget for ecosystem MCPs)', () => {
     const optional = NEON_TOOLS.filter((t) => t.category === 'optional');
     expect(optional.length).toBe(31);
+  });
+
+  it('T1 find_neondb_instances is core (sales 剧本入口 · narrative §3 demo spine 第 1 步)', () => {
+    const t1 = NEON_TOOLS.find((t) => t.name === 'find_neondb_instances');
+    expect(t1).toBeDefined();
+    expect(t1!.category).toBe('core');
   });
 });
 
