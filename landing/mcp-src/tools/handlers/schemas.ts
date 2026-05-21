@@ -19,10 +19,10 @@
  */
 
 import type { Api } from '@neondatabase/api-client';
-import { neon } from '@neondatabase/serverless';
 import { startSpan } from '@sentry/node';
 import { NotFoundError } from '../../server/errors';
 import { handleGetConnectionString } from './connection-string';
+import { createSqlClient } from './sql-driver';
 import type { ToolHandlerExtraParams } from '../types';
 
 export type GetSchemasInput = {
@@ -96,64 +96,66 @@ export async function handleGetSchemas(
         extra,
       );
 
-      // 2. Connect to the database
-      const sql = neon(connectionString.uri);
+      // 2. Connect to the database via SqlClient (routes between Neon HTTP and
+      //    plain Postgres TCP based on URI · see sql-driver.ts).
+      const sql = await createSqlClient(connectionString.uri);
+      try {
+        // 3. Query pg_attribute + pg_index + information_schema for column metadata
+        //
+        // Strategy:
+        // - pg_attribute · base column metadata (name + type + nullable)
+        // - pg_index · check if column appears in any index (any position · feat-004 #1 base)
+        // - feat-004 #4 (depth full) will expand to index_name / index_type / partial WHERE / INCLUDE
+        const schemasQuery = `
+          SELECT
+            c.relname AS table_name,
+            a.attname AS column_name,
+            format_type(a.atttypid, a.atttypmod) AS data_type,
+            NOT a.attnotnull AS is_nullable,
+            EXISTS (
+              SELECT 1 FROM pg_index i
+              WHERE i.indrelid = c.oid
+              AND a.attnum = ANY(i.indkey)
+            ) AS is_indexed
+          FROM pg_class c
+          JOIN pg_attribute a ON a.attrelid = c.oid
+          JOIN pg_namespace n ON c.relnamespace = n.oid
+          WHERE c.relkind = 'r'
+            AND n.nspname = $1
+            AND c.relname = $2
+            AND a.attnum > 0
+            AND NOT a.attisdropped
+          ORDER BY c.relname, a.attnum;
+        `;
 
-      // 3. Query pg_attribute + pg_index + information_schema for column metadata
-      //
-      // Strategy:
-      // - pg_attribute · base column metadata (name + type + nullable)
-      // - pg_index · check if column appears in any index (any position · feat-004 #1 base)
-      // - feat-004 #4 (depth full) will expand to index_name / index_type / partial WHERE / INCLUDE
-      const schemasQuery = `
-        SELECT
-          c.relname AS table_name,
-          a.attname AS column_name,
-          format_type(a.atttypid, a.atttypmod) AS data_type,
-          NOT a.attnotnull AS is_nullable,
-          EXISTS (
-            SELECT 1 FROM pg_index i
-            WHERE i.indrelid = c.oid
-            AND a.attnum = ANY(i.indkey)
-          ) AS is_indexed
-        FROM pg_class c
-        JOIN pg_attribute a ON a.attrelid = c.oid
-        JOIN pg_namespace n ON c.relnamespace = n.oid
-        WHERE c.relkind = 'r'
-          AND n.nspname = $1
-          AND c.relname = $2
-          AND a.attnum > 0
-          AND NOT a.attisdropped
-        ORDER BY c.relname, a.attnum;
-      `;
+        const rows = await sql.query(schemasQuery, [schema, args.filter]);
 
-      const rows = (await sql.query(schemasQuery, [schema, args.filter])) as Array<
-        Record<string, unknown>
-      >;
+        if (rows.length === 0) {
+          throw new NotFoundError(
+            `table '${args.filter}' not found in schema '${schema}'. ` +
+              `Check spelling or try schema='${schema}' explicitly.`,
+          );
+        }
 
-      if (rows.length === 0) {
-        throw new NotFoundError(
-          `table '${args.filter}' not found in schema '${schema}'. ` +
-            `Check spelling or try schema='${schema}' explicitly.`,
-        );
+        const formattedRows: SchemaRow[] = rows.map((r) => ({
+          table_name: String(r.table_name),
+          column_name: String(r.column_name),
+          data_type: String(r.data_type),
+          is_indexed: Boolean(r.is_indexed),
+          is_nullable: Boolean(r.is_nullable),
+        }));
+
+        return {
+          rows: formattedRows,
+          meta: {
+            filter: args.filter,
+            schema,
+            totalRows: formattedRows.length,
+          },
+        };
+      } finally {
+        await sql.release();
       }
-
-      const formattedRows: SchemaRow[] = rows.map((r) => ({
-        table_name: String(r.table_name),
-        column_name: String(r.column_name),
-        data_type: String(r.data_type),
-        is_indexed: Boolean(r.is_indexed),
-        is_nullable: Boolean(r.is_nullable),
-      }));
-
-      return {
-        rows: formattedRows,
-        meta: {
-          filter: args.filter,
-          schema,
-          totalRows: formattedRows.length,
-        },
-      };
     },
   );
 }

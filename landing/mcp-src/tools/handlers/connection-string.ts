@@ -33,6 +33,22 @@ export async function handleGetConnectionString(
       name: 'get_connection_string',
     },
     async () => {
+      // Self-hosted bypass · short-circuit when NEON_LOCAL_URL env is set.
+      // Used by day-one L1 testing on a self-hosted neon_local cluster (dev server `127.0.0.1:55432`).
+      // Skips the Neon Cloud Management API path entirely · NEVER set this env var in production
+      // deployments (the /api/local-call OAuth-free endpoint is also gated on the same var).
+      const localUrl = process.env.NEON_LOCAL_URL;
+      if (localUrl) {
+        return {
+          uri: localUrl,
+          projectId: projectId ?? 'local-neon',
+          branchId: branchId ?? 'local',
+          databaseName: databaseName ?? 'neondb',
+          roleName: roleName ?? 'cloud_admin',
+          computeId,
+        };
+      }
+
       // If projectId is not provided, get the first project but only if there is only one project
       if (!projectId) {
         const project = await getOnlyProject(neonClient, extra);
