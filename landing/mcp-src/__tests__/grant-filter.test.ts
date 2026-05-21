@@ -148,6 +148,57 @@ describe('injectProjectId', () => {
   });
 });
 
+describe('getAvailableTools categoryInclude filter (feat-005 #3)', () => {
+  it('categoryInclude="core" filters to day-one core tools only (T6 + T8 currently · T1/T2 待 ship)', () => {
+    const tools = getAvailableTools(grant(), false, 'core');
+    const names = tools.map((t) => t.name);
+    expect(names).toContain('get_neondb_query_statement'); // T6 core
+    expect(names).toContain('get_neondb_schemas'); // T8 core
+    expect(names).not.toContain('run_sql'); // upstream optional
+    expect(names).not.toContain('list_projects'); // upstream optional
+    expect(names).not.toContain('delete_branch'); // upstream optional
+  });
+
+  it('categoryInclude="all" returns full toolset (no category filter)', () => {
+    const tools = getAvailableTools(grant(), false, 'all');
+    expect(tools).toHaveLength(NEON_TOOLS.length);
+  });
+
+  it('categoryInclude omitted → defaults to "all" (backward-compat for non-HTTP callers · prod routes pass explicit)', () => {
+    const tools = getAvailableTools(grant(), false);
+    expect(tools).toHaveLength(NEON_TOOLS.length);
+  });
+
+  it('categoryInclude="core" + readOnly: only core tools that are readOnlySafe', () => {
+    const tools = getAvailableTools(grant(), true, 'core');
+    const names = tools.map((t) => t.name);
+    // T6 + T8 both readOnlySafe → both survive
+    expect(names).toContain('get_neondb_query_statement');
+    expect(names).toContain('get_neondb_schemas');
+    for (const tool of tools) {
+      expect(tool.readOnlySafe).toBe(true);
+    }
+  });
+
+  it('categoryInclude="core" + project-scoped grant: T6/T8 survive (both require projectId · already in core listing)', () => {
+    const tools = getAvailableTools(
+      grant({ projectId: 'proj-123' }),
+      false,
+      'core',
+    );
+    const names = tools.map((t) => t.name);
+    expect(names).toContain('get_neondb_query_statement');
+    expect(names).toContain('get_neondb_schemas');
+    // project-agnostic excluded already
+    expect(names).not.toContain('list_projects');
+  });
+
+  it('core listing budget invariant · ≤ 4 tools (feat-005 §5 · keeps ~26 ecosystem slots)', () => {
+    const tools = getAvailableTools(grant(), false, 'core');
+    expect(tools.length).toBeLessThanOrEqual(4);
+  });
+});
+
 describe('scope coverage sanity', () => {
   it('all declared scope categories produce a deterministic result', () => {
     const categories: ScopeCategory[] = [

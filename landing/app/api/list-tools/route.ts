@@ -5,6 +5,7 @@ import {
   getAvailableTools,
   getAccessControlWarnings,
 } from '../../../mcp-src/tools/grant-filter';
+import { parseCategoryInclude } from '../../../mcp-src/config/categories';
 import { logger } from '../../../mcp-src/utils/logger';
 
 const CORS_HEADERS = {
@@ -30,6 +31,7 @@ export function OPTIONS() {
  *   - category: scope categories (repeated or comma-separated)
  *   - projectId: scope to a single project
  *   - readonly: true | false
+ *   - include: 'core' | 'all' (feat-005 #3 listing filter · default 'core')
  *   - Also supports legacy x-read-only header
  */
 export function GET(req: Request) {
@@ -47,8 +49,11 @@ export function GET(req: Request) {
       headerValue: req.headers.get('x-read-only'),
     });
 
+    phase = 'resolve_category_include';
+    const categoryInclude = parseCategoryInclude(searchParams.get('include'));
+
     phase = 'get_available_tools';
-    const tools = getAvailableTools(grant, readOnly);
+    const tools = getAvailableTools(grant, readOnly, categoryInclude);
 
     phase = 'get_access_control_warnings';
     const warnings = getAccessControlWarnings(grant, readOnly);
@@ -57,6 +62,7 @@ export function GET(req: Request) {
     const body = {
       grant,
       readOnly,
+      categoryInclude,
       ...(warnings.length > 0 ? { warnings } : {}),
       tools: tools.map((tool) => ({
         name: tool.name,

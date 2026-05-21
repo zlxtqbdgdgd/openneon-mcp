@@ -47,6 +47,10 @@ import {
   getAccessControlWarnings,
   injectProjectId,
 } from '../../../mcp-src/tools/grant-filter';
+import {
+  parseCategoryInclude,
+  type CategoryInclude,
+} from '../../../mcp-src/config/categories';
 import { NEON_TOOLS } from '../../../mcp-src/tools/definitions';
 import { assert } from '../../../lib/assert';
 import { buildResourceMetadataUrlForResourceRequest } from '../../../lib/oauth/protected-resource-metadata';
@@ -170,6 +174,9 @@ type AuthenticatedExtra = {
 type StaticToolContext = {
   grant: GrantContext;
   readOnly: boolean;
+  // feat-005 #3 listing filter · 'core' (default · 4 day-one tools) or 'all' (33-tool listing).
+  // Parsed from `?include=` HTTP query param via parseCategoryInclude (null/invalid → 'core').
+  categoryInclude: CategoryInclude;
   // Identity fingerprint of the SSE connection owner, captured at handler
   // construction. Each tool call compares `extra.authInfo`'s identity against
   // this. Mismatches indicate a Redis envelope was routed into a stream it
@@ -358,6 +365,7 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
       const composedTools = getAvailableTools(
         staticToolContext.grant,
         staticToolContext.readOnly,
+        staticToolContext.categoryInclude,
       );
 
       // Register tools for this specific auth context.
@@ -1123,9 +1131,15 @@ function getStaticToolContext(req: Request): StaticToolContext {
         }
       : DEFAULT_GRANT;
 
+  // feat-005 #3 listing filter · `?include=core|all` (default 'core' per detail design §3 ·
+  // 4 day-one tools default to leave ~26 listing budget for ecosystem MCPs · 'all' opt-in).
+  const url = new URL(req.url);
+  const categoryInclude = parseCategoryInclude(url.searchParams.get('include'));
+
   return {
     grant,
     readOnly: authExtra?.readOnly === true,
+    categoryInclude,
     sseOwnerIdentity: deriveIdentity(authInfo),
   };
 }
