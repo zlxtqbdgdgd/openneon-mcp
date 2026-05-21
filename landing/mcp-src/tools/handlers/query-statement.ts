@@ -18,10 +18,10 @@
  */
 
 import type { Api } from '@neondatabase/api-client';
-import { neon } from '@neondatabase/serverless';
 import { startSpan } from '@sentry/node';
 import { NotFoundError } from '../../server/errors';
 import { handleGetConnectionString } from './connection-string';
+import { createSqlClient } from './sql-driver';
 import type { ToolHandlerExtraParams } from '../types';
 
 export type GetQueryStatementInput = {
@@ -75,61 +75,63 @@ export async function handleGetQueryStatement(
         extra,
       );
 
-      // 2. Connect to the database (same pattern as handleListSlowQueries)
-      const sql = neon(connectionString.uri);
+      // 2. Connect to the database via SqlClient (routes between Neon HTTP and
+      //    plain Postgres TCP based on URI · see sql-driver.ts).
+      const sql = await createSqlClient(connectionString.uri);
+      try {
+        // 3. Verify pg_stat_statements extension is installed
+        const checkExtensionQuery = `
+          SELECT EXISTS (
+            SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'
+          ) as extension_exists;
+        `;
+        const extensionCheck = (await sql.query(checkExtensionQuery)) as Array<{
+          extension_exists: boolean;
+        }>;
+        if (!extensionCheck[0]?.extension_exists) {
+          throw new NotFoundError(
+            `pg_stat_statements extension is not installed on the database. Please install it using the following command: CREATE EXTENSION pg_stat_statements;`,
+          );
+        }
 
-      // 3. Verify pg_stat_statements extension is installed
-      const checkExtensionQuery = `
-        SELECT EXISTS (
-          SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'
-        ) as extension_exists;
-      `;
-      const extensionCheck = (await sql.query(checkExtensionQuery)) as Array<{
-        extension_exists: boolean;
-      }>;
-      if (!extensionCheck[0]?.extension_exists) {
-        throw new NotFoundError(
-          `pg_stat_statements extension is not installed on the database. Please install it using the following command: CREATE EXTENSION pg_stat_statements;`,
-        );
+        // 4. Query pg_stat_statements by queryid (single row lookup)
+        //
+        // Note: pg_stat_statements.query is ALREADY parameterized by PostgreSQL
+        // ($1, $2 placeholders auto-generated · raw values never present).
+        // This is the OWASP LLM02 防护 mechanism · we just透传.
+        const querySql = `
+          SELECT
+            queryid::text AS query_signature,
+            query,
+            calls,
+            total_exec_time AS total_exec_time_ms,
+            mean_exec_time AS mean_exec_time_ms,
+            rows
+          FROM pg_stat_statements
+          WHERE queryid::text = $1
+          LIMIT 1;
+        `;
+        const rows = await sql.query(querySql, [args.query_signature]);
+
+        if (rows.length === 0) {
+          throw new NotFoundError(
+            `query_signature '${args.query_signature}' not found in pg_stat_statements view. ` +
+              `It may have been evicted (default pg_stat_statements.max = 5000 unique queries).`,
+          );
+        }
+
+        const row = rows[0];
+        return {
+          query_signature: String(row.query_signature),
+          query: String(row.query),
+          calls: Number(row.calls),
+          total_exec_time_ms: Number(row.total_exec_time_ms),
+          mean_exec_time_ms: Number(row.mean_exec_time_ms),
+          rows: Number(row.rows),
+        };
+      } finally {
+        await sql.release();
       }
-
-      // 4. Query pg_stat_statements by queryid (single row lookup)
-      //
-      // Note: pg_stat_statements.query is ALREADY parameterized by PostgreSQL
-      // ($1, $2 placeholders auto-generated · raw values never present).
-      // This is the OWASP LLM02 防护 mechanism · we just透传.
-      const querySql = `
-        SELECT
-          queryid::text AS query_signature,
-          query,
-          calls,
-          total_exec_time AS total_exec_time_ms,
-          mean_exec_time AS mean_exec_time_ms,
-          rows
-        FROM pg_stat_statements
-        WHERE queryid::text = $1
-        LIMIT 1;
-      `;
-      const rows = (await sql.query(querySql, [args.query_signature])) as Array<
-        Record<string, unknown>
-      >;
-
-      if (rows.length === 0) {
-        throw new NotFoundError(
-          `query_signature '${args.query_signature}' not found in pg_stat_statements view. ` +
-            `It may have been evicted (default pg_stat_statements.max = 5000 unique queries).`,
-        );
-      }
-
-      const row = rows[0];
-      return {
-        query_signature: String(row.query_signature),
-        query: String(row.query),
-        calls: Number(row.calls),
-        total_exec_time_ms: Number(row.total_exec_time_ms),
-        mean_exec_time_ms: Number(row.mean_exec_time_ms),
-        rows: Number(row.rows),
-      };
     },
   );
 }
