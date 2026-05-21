@@ -28,7 +28,7 @@ describe('filterToolsForGrant', () => {
       grant({ scopes: ['querying'] }),
     );
     const names = tools.map((t) => t.name);
-    expect(tools).toHaveLength(11); // 10 upstream + 1 day-one (T6 · scope='querying')
+    expect(tools).toHaveLength(12); // 10 upstream + 2 day-one (T6 · T2 · both scope='querying')
     expect(names).toContain('run_sql');
     expect(names).toContain('search');
     expect(names).toContain('fetch');
@@ -47,7 +47,7 @@ describe('filterToolsForGrant', () => {
       grant({ projectId: 'proj-123', scopes: null }),
     );
     const names = tools.map((t) => t.name);
-    expect(tools).toHaveLength(26); // 24 upstream + 2 day-one (T6/T8 · both require projectId)
+    expect(tools).toHaveLength(27); // 24 upstream + 3 day-one (T6/T8/T2 · all require projectId · T1 in PROJECT_AGNOSTIC_TOOLS so hidden)
     expect(names).not.toContain('list_projects');
     expect(names).not.toContain('create_project');
     expect(names).not.toContain('search');
@@ -62,7 +62,7 @@ describe('filterToolsForGrant', () => {
       NEON_TOOLS,
       grant({ projectId: 'proj-123', scopes: ['querying'] }),
     );
-    expect(tools).toHaveLength(9); // 8 upstream + 1 day-one (T6 · scope='querying' + requires projectId)
+    expect(tools).toHaveLength(10); // 8 upstream + 2 day-one (T6/T2 · scope='querying' + require projectId)
     const names = tools.map((t) => t.name);
     expect(names).toContain('run_sql');
     expect(names).toContain('get_neondb_query_statement'); // T6 day-one
@@ -74,7 +74,7 @@ describe('filterToolsForGrant', () => {
 describe('getAvailableTools', () => {
   it('applies read-only filter after grant filtering', () => {
     const tools = getAvailableTools(grant({ scopes: ['querying'] }), true);
-    expect(tools).toHaveLength(7); // 6 upstream + 1 day-one (T6 · scope='querying' + readOnlySafe)
+    expect(tools).toHaveLength(8); // 6 upstream + 2 day-one (T6/T2 · scope='querying' + readOnlySafe)
     for (const tool of tools) {
       expect(tool.readOnlySafe).toBe(true);
     }
@@ -149,9 +149,11 @@ describe('injectProjectId', () => {
 });
 
 describe('getAvailableTools categoryInclude filter (feat-005 #3)', () => {
-  it('categoryInclude="core" filters to day-one core tools only (T6 + T8 currently · T1/T2 待 ship)', () => {
+  it('categoryInclude="core" filters to day-one core tools only (T1/T2/T6/T8 · day-one core 满)', () => {
     const tools = getAvailableTools(grant(), false, 'core');
     const names = tools.map((t) => t.name);
+    expect(names).toContain('find_neondb_instances'); // T1 core
+    expect(names).toContain('get_neondb_calling_services'); // T2 core
     expect(names).toContain('get_neondb_query_statement'); // T6 core
     expect(names).toContain('get_neondb_schemas'); // T8 core
     expect(names).not.toContain('run_sql'); // upstream optional

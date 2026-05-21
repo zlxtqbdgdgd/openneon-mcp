@@ -37,6 +37,8 @@ import { handleGetQueryStatement } from './handlers/query-statement';
 import { handleGetSchemas } from './handlers/schemas';
 // feat-001 day-one ship · sales 剧本入口工具 · narrative §3 demo spine 第 1 步
 import { handleFindNeondbInstances } from './handlers/find-instances';
+// feat-002 day-one ship · sales 剧本应用归因 · pg_stat_activity 聚合
+import { handleGetCallingServices } from './handlers/calling-services';
 // feat-006 #2 day-one ship · token economy地基 · CSV default output
 import { formatToolResponse } from '../server/response-formatter';
 
@@ -1802,6 +1804,32 @@ You MUST follow these steps:
       {
         filter: params.filter,
         limit: params.limit,
+      },
+      neonClient,
+      extra,
+    );
+    return {
+      content: [
+        {
+          type: 'text',
+          text: formatToolResponse(result, { format: params.format }),
+        },
+      ],
+    };
+  },
+
+  // feat-002 T2 get_neondb_calling_services · sales 剧本应用归因 · pg_stat_activity 聚合
+  // 让 agent 拿到 application_name 维度归因 · 不必自己写 SQL 防 feat-003 SQL 幻觉
+  //
+  // feat-006 #2 (token economy): tabular array · format via formatToolResponse · default 'csv'
+  get_neondb_calling_services: async ({ params }, neonClient, extra) => {
+    const result = await handleGetCallingServices(
+      {
+        projectId: params.projectId,
+        branchId: params.branchId,
+        databaseName: params.databaseName,
+        computeId: params.computeId,
+        threshold: params.threshold,
       },
       neonClient,
       extra,

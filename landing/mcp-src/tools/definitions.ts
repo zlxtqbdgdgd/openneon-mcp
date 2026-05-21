@@ -38,6 +38,7 @@ import {
   getNeondbQueryStatementInputSchema,
   getNeondbSchemasInputSchema,
   findNeondbInstancesInputSchema,
+  getNeondbCallingServicesInputSchema,
 } from './toolsSchema';
 
 type NeonToolDefinition = {
@@ -1355,6 +1356,39 @@ export const NEON_TOOLS = [
     readOnlySafe: true,
     annotations: {
       title: 'Find Neon DB Instances (T1 · sales 剧本入口)',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    } satisfies ToolAnnotations,
+  },
+  // feat-002 T2 get_neondb_calling_services · sales 剧本应用归因工具
+  // 通过 pg_stat_activity 聚合 application_name · agent 不必写 SQL (防 feat-003 SQL 幻觉)
+  // detail design: https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-002-L1-mcp-tool-t2-calling-services.html
+  {
+    name: 'get_neondb_calling_services' as const,
+    scope: 'querying',
+    category: 'core',
+    description: `Identify which client applications are currently calling a Neon database.
+
+    <use_case>
+      Use this tool when the user asks "which applications are calling X database / sales table /
+      this project". Returns one row per application_name with aggregated connection_count + last
+      activity time. Replaces hand-written run_sql('SELECT application_name FROM pg_stat_activity ...')
+      which is prone to LLM hallucination (mistaking client_addr / usename / state for application_name).
+    </use_case>
+
+    <important_notes>
+      'application_name' source: PostgreSQL GUC set by client at connect time. NULL or empty are
+      reported as 'unknown' (COALESCE in SQL).
+      Day-one shape: 4 columns (application_name / connection_count / last_active_time / endpoint_id).
+      'endpoint_id' is reserved but ALWAYS empty in day-one · L2b USR ship 后 fills (forward-compat).
+      Default min_connections=1 skips idle 0-conn apps. Hard limit 50 rows (token budget per §5).
+    </important_notes>`,
+    inputSchema: getNeondbCallingServicesInputSchema,
+    readOnlySafe: true,
+    annotations: {
+      title: 'Get Neon DB Calling Services (T2 · 应用归因)',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
