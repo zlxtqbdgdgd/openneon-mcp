@@ -85,3 +85,32 @@ export function isValidToolCategory(value: unknown): value is ToolCategory {
     (SUPPORTED_TOOL_CATEGORIES as readonly string[]).includes(value)
   );
 }
+
+/**
+ * Listing filter for `tools/list` MCP response.
+ *
+ * - 'core'  · default · only core tools (T1/T2/T6/T8 day-one) · keeps ~26 listing budget for ecosystem MCPs
+ * - 'all'   · core + optional · 33-tool listing · opt-in via `?include=all` HTTP query param
+ *
+ * Per feat-005 §3 + §11 OQ1 decision · ship as HTTP query param (not MCP-level capability)
+ * to avoid forking MCP spec for day-one (MCP spec 2025-06-18 does not standardize tools/list
+ * filtering · we layer at the HTTP routing tier instead).
+ */
+export type CategoryInclude = 'core' | 'all';
+
+export const DEFAULT_CATEGORY_INCLUDE: CategoryInclude = 'core';
+
+/**
+ * Parse the `?include=` HTTP query param value into a CategoryInclude.
+ *
+ * Strict whitelist: only 'core' / 'all' accepted · anything else (null, '', 'optional', 'foo',
+ * etc.) falls back to DEFAULT_CATEGORY_INCLUDE ('core'). Defending against typos and stale
+ * client query strings · same posture as readonly query param parsing in the transport route.
+ *
+ * @param raw - the raw query param value from `url.searchParams.get('include')` (string | null)
+ * @returns CategoryInclude · 'core' (default) or 'all'
+ */
+export function parseCategoryInclude(raw: string | null): CategoryInclude {
+  if (raw === 'core' || raw === 'all') return raw;
+  return DEFAULT_CATEGORY_INCLUDE;
+}

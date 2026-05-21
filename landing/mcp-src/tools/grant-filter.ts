@@ -9,6 +9,7 @@
 import { z } from 'zod/v3';
 import type { GrantContext, ScopeCategory } from '../utils/grant-context';
 import { NEON_TOOLS } from './definitions';
+import { getToolCategory, type CategoryInclude } from '../config/categories';
 
 type NeonTool = (typeof NEON_TOOLS)[number];
 
@@ -140,24 +141,57 @@ function removeProjectIdFromSchema(tool: NeonTool): NeonTool | null {
 }
 
 /**
- * Get the final list of available tools after applying grant context and read-only filtering.
+ * Filter tools by listing-tier category · feat-005 #3 token economy防护 (LLM10).
+ *
+ * 'core' default · keeps tools/list at ~4 entries (T1/T2/T6/T8 day-one) so user's other MCPs
+ * (GitHub / Linear / Slack 等) don't get挤兑 by 27 upstream Neon tools.
+ * 'all' opt-in · returns core + optional union · client must add `?include=all` query param.
+ *
+ * Category is read from CORE_TOOL_NAMES single source of truth (config/categories.ts ·
+ * shipped PR #40) via getToolCategory(tool.name) · NOT from tool.category field (which lands
+ * in feat-005 #2 separately · the two PRs are decoupled to avoid merge-order coupling).
+ */
+function applyCategoryIncludeFilter(
+  tools: NeonTool[],
+  categoryInclude: CategoryInclude,
+): NeonTool[] {
+  if (categoryInclude === 'all') return tools;
+  return tools.filter((tool) => getToolCategory(tool.name) === 'core');
+}
+
+/**
+ * Get the final list of available tools after applying grant context, read-only filtering,
+ * and category-include filtering.
  *
  * This is the single source of truth for tool availability, used by:
  * - The MCP server (server/index.ts) at registration time
  * - The /api/list-tools REST endpoint for previewing tool visibility
  *
- * Combines two filtering stages:
+ * Combines three filtering stages:
  * 1. Grant-based filtering (scope categories + project scoping)
  * 2. Read-only filtering (strips non-readOnlySafe tools when read-only is active)
+ * 3. Category-include filtering (feat-005 #3 · 'core' default · 'all' opt-in via ?include=all)
+ *
+ * @param categoryInclude - 'core' (4 day-one tools) or 'all' (full toolset).
+ *                          Optional · function-level default 'all' for backward compatibility
+ *                          with non-HTTP callers (legacy `createMcpServer` test path · existing
+ *                          unit tests that pre-date feat-005 #3). **Production HTTP routes MUST
+ *                          pass categoryInclude explicitly · derived from `?include=` query
+ *                          param via `parseCategoryInclude()` · whose null/invalid fallback is
+ *                          'core' per feat-005 §3 user-facing default**. The two defaults are
+ *                          intentionally split (function='all' / user-facing='core') to keep
+ *                          tests stable while making the production default 'core'.
  */
 export function getAvailableTools(
   grant: GrantContext,
   readOnly: boolean,
+  categoryInclude: CategoryInclude = 'all',
 ): NeonTool[] {
   let tools = filterToolsForGrant(NEON_TOOLS, grant);
   if (readOnly) {
     tools = tools.filter((tool) => tool.readOnlySafe);
   }
+  tools = applyCategoryIncludeFilter(tools, categoryInclude);
   const descriptionNotices: string[] = [];
   if (readOnly) {
     descriptionNotices.push(

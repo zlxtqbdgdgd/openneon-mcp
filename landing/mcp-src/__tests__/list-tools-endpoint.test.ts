@@ -7,6 +7,7 @@ type ListToolsResponse = {
     scopes: string[] | null;
   };
   readOnly: boolean;
+  categoryInclude: 'core' | 'all';
   warnings?: string[];
   tools: Array<{
     name: string;
@@ -36,9 +37,14 @@ async function callListTools(
 }
 
 describe('/api/list-tools endpoint', () => {
-  it('returns all tools by default', async () => {
+  it('returns core listing by default (feat-005 #3 · ~26 slots reserved for ecosystem MCPs)', async () => {
     const body = await callListTools();
-    expect(body.tools).toHaveLength(33); // 31 upstream + 2 day-one (T6/T8 · feat-003/004 narrative #3 主卖点)
+    expect(body.categoryInclude).toBe('core');
+    // Day-one core: T6 + T8 (T1/T2 待 feat-001/002 ship · CORE_TOOL_NAMES reserves them)
+    expect(body.tools.map((t) => t.name).sort()).toEqual([
+      'get_neondb_query_statement',
+      'get_neondb_schemas',
+    ]);
     expect(body.readOnly).toBe(false);
     expect(body.grant).toEqual({
       projectId: null,
@@ -46,21 +52,30 @@ describe('/api/list-tools endpoint', () => {
     });
   });
 
-  it('filters by scopes when category param is present', async () => {
-    const body = await callListTools({ category: 'querying' });
+  it('returns 33 tools when include=all (full listing opt-in · backward-compat for clients wanting upstream tools)', async () => {
+    const body = await callListTools({ include: 'all' });
+    expect(body.categoryInclude).toBe('all');
+    expect(body.tools).toHaveLength(33); // 31 upstream + 2 day-one (T6/T8 · feat-003/004 narrative #3 主卖点)
+  });
+
+  it('filters by scopes when category param is present (with include=all to isolate grant filter)', async () => {
+    const body = await callListTools({ category: 'querying', include: 'all' });
     expect(body.grant.scopes).toEqual(['querying']);
     expect(body.tools).toHaveLength(11); // 10 upstream + 1 day-one (T6 · scope='querying')
   });
 
-  it('returns only always-available tools when scopes are all invalid', async () => {
-    const body = await callListTools({ category: 'foo,bar' });
+  it('returns only always-available tools when scopes are all invalid (with include=all)', async () => {
+    const body = await callListTools({ category: 'foo,bar', include: 'all' });
     expect(body.grant.scopes).toEqual([]);
     expect(body.tools.map((t) => t.name).sort()).toEqual(['fetch', 'search']);
     expect(body.warnings?.[0]).toContain('No valid scope categories');
   });
 
-  it('filters project-agnostic tools in project-scoped mode', async () => {
-    const body = await callListTools({ projectId: 'proj-123' });
+  it('filters project-agnostic tools in project-scoped mode (with include=all)', async () => {
+    const body = await callListTools({
+      projectId: 'proj-123',
+      include: 'all',
+    });
     expect(body.grant.projectId).toBe('proj-123');
     expect(body.tools).toHaveLength(26); // 24 upstream + 2 day-one (T6/T8 · both require projectId)
     const names = body.tools.map((t) => t.name);
@@ -70,8 +85,8 @@ describe('/api/list-tools endpoint', () => {
     expect(names).not.toContain('fetch');
   });
 
-  it('filters to readOnlySafe tools with readonly=true', async () => {
-    const body = await callListTools({ readonly: 'true' });
+  it('filters to readOnlySafe tools with readonly=true (with include=all)', async () => {
+    const body = await callListTools({ readonly: 'true', include: 'all' });
     expect(body.readOnly).toBe(true);
     expect(body.tools).toHaveLength(21); // 19 upstream + 2 day-one (T6/T8 · both readOnlySafe: true)
     for (const tool of body.tools) {
@@ -79,8 +94,9 @@ describe('/api/list-tools endpoint', () => {
     }
   });
 
-  it('supports legacy x-read-only header', async () => {
+  it('supports legacy x-read-only header (with include=all to test header path)', async () => {
     const url = new URL('http://localhost/api/list-tools');
+    url.searchParams.set('include', 'all');
     const req = new Request(url.toString(), {
       headers: { 'x-read-only': 'true' },
     });
@@ -90,9 +106,10 @@ describe('/api/list-tools endpoint', () => {
     expect(body.tools).toHaveLength(21); // 19 upstream + 2 day-one (T6/T8 · readOnlySafe)
   });
 
-  it('readonly query param takes precedence over x-read-only header', async () => {
+  it('readonly query param takes precedence over x-read-only header (with include=all)', async () => {
     const url = new URL('http://localhost/api/list-tools');
     url.searchParams.set('readonly', 'false');
+    url.searchParams.set('include', 'all');
     const req = new Request(url.toString(), {
       headers: { 'x-read-only': 'true' },
     });
@@ -100,6 +117,21 @@ describe('/api/list-tools endpoint', () => {
     const body = (await res.json()) as ListToolsResponse;
     expect(body.readOnly).toBe(false);
     expect(body.tools).toHaveLength(33); // 31 upstream + 2 day-one (T6/T8)
+  });
+
+  it('include=core explicit returns the same as default (4 day-one core tools · currently 2)', async () => {
+    const body = await callListTools({ include: 'core' });
+    expect(body.categoryInclude).toBe('core');
+    expect(body.tools.map((t) => t.name).sort()).toEqual([
+      'get_neondb_query_statement',
+      'get_neondb_schemas',
+    ]);
+  });
+
+  it('include=invalid falls back to core default (strict whitelist)', async () => {
+    const body = await callListTools({ include: 'optional' });
+    expect(body.categoryInclude).toBe('core');
+    expect(body.tools).toHaveLength(2); // T6 + T8 (T1/T2 待 ship)
   });
 
   it('OPTIONS returns expected CORS allow-headers', () => {

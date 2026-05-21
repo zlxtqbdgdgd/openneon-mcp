@@ -5,6 +5,8 @@ import {
   CORE_TOOL_NAMES,
   getToolCategory,
   isValidToolCategory,
+  parseCategoryInclude,
+  DEFAULT_CATEGORY_INCLUDE,
   type ToolCategory,
 } from '../config/categories';
 
@@ -93,5 +95,35 @@ describe('isValidToolCategory', () => {
 describe('day-one ship budget check (feat-005 §5 non-functional requirement)', () => {
   it('core tool count ≤ 4 (keeps 26 listing budget for ecosystem · ~30 tools client cap · 13%)', () => {
     expect(CORE_TOOL_NAMES.size).toBeLessThanOrEqual(4);
+  });
+});
+
+describe('parseCategoryInclude (feat-005 #3 · ?include= HTTP query param parser)', () => {
+  it('DEFAULT_CATEGORY_INCLUDE is "core" (4 day-one tools · keeps ~26 listing budget for ecosystem MCPs)', () => {
+    expect(DEFAULT_CATEGORY_INCLUDE).toBe('core');
+  });
+
+  it('accepts "core" as-is', () => {
+    expect(parseCategoryInclude('core')).toBe('core');
+  });
+
+  it('accepts "all" as-is (client opt-in to 33-tool listing)', () => {
+    expect(parseCategoryInclude('all')).toBe('all');
+  });
+
+  it('null (param missing) falls back to "core" default', () => {
+    expect(parseCategoryInclude(null)).toBe('core');
+  });
+
+  it('empty string falls back to "core" default', () => {
+    expect(parseCategoryInclude('')).toBe('core');
+  });
+
+  it('invalid values fall back to "core" default (strict whitelist · defense against typos/stale clients)', () => {
+    expect(parseCategoryInclude('optional')).toBe('core');
+    expect(parseCategoryInclude('Core')).toBe('core'); // case-sensitive
+    expect(parseCategoryInclude('ALL')).toBe('core');
+    expect(parseCategoryInclude('foo')).toBe('core');
+    expect(parseCategoryInclude('core,all')).toBe('core');
   });
 });
