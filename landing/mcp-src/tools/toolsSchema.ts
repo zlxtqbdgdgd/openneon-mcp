@@ -18,6 +18,23 @@ type ZodObjectParams<T> = z.ZodObject<{ [key in keyof T]: z.ZodType<T[key]> }>;
 
 const DATABASE_NAME_DESCRIPTION = `The name of the database. If not provided, the default ${NEON_DEFAULT_DATABASE_NAME} or first available database is used.`;
 
+/**
+ * Reusable optional `format` field for tool input schemas (feat-006 #2 token economy地基).
+ *
+ * Detail design: features/feat-006-L1-mcp-server-csv-default-output.html §4 Input schema.
+ * Keep enum in sync with `SUPPORTED_OUTPUT_FORMATS` in `server/response-formatter.ts`.
+ *
+ * Default at the formatter layer (DEFAULT_OUTPUT_FORMAT = 'csv') · not at schema parse time
+ * (zod `.default()` would override `undefined` to 'csv' at parse · we let the formatter handle
+ * the default so JSON fallback opt-in is the only explicit value clients send).
+ */
+const outputFormatField = z
+  .enum(['csv', 'json', 'tsv'])
+  .optional()
+  .describe(
+    "Output format for the response. Default 'csv' (~10× token reduction vs JSON · feat-006 token economy地基). 'json' opt-in for backwards-compat tooling.",
+  );
+
 export const listProjectsInputSchema = z.object({
   cursor: z
     .string()
@@ -931,6 +948,7 @@ export const getNeondbQueryStatementInputSchema = z.object({
     .describe(
       'The ID of the compute/endpoint. If not provided, the read-write compute associated with the branch will be used.',
     ),
+  format: outputFormatField,
 });
 
 // feat-004 T8 get_neondb_schemas input schema · narrative #3 配对 · 防表名字段幻觉
@@ -962,4 +980,5 @@ export const getNeondbSchemasInputSchema = z.object({
     .optional()
     .default('public')
     .describe('PostgreSQL schema name. Defaults to "public".'),
+  format: outputFormatField,
 });

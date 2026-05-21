@@ -35,6 +35,8 @@ import { handleDescribeBranch } from './handlers/describe-branch';
 // feat-003/004 day-one ship · narrative #3 主卖点 防 LLM 自负幻觉一对组合
 import { handleGetQueryStatement } from './handlers/query-statement';
 import { handleGetSchemas } from './handlers/schemas';
+// feat-006 #2 day-one ship · token economy地基 · CSV default output
+import { formatToolResponse } from '../server/response-formatter';
 
 /**
  * Generates a unique, identifiable branch name for migrations.
@@ -1735,6 +1737,9 @@ You MUST follow these steps:
   //
   // feat-003 T6 get_neondb_query_statement · ⭐ narrative #3 主卖点
   // 防 LLM 自负幻觉 SQL · ground-truth pg_stat_statements lookup
+  //
+  // feat-006 #2 (token economy): output via formatToolResponse · default 'csv' (~10× shorter
+  // than JSON). Single-row response · formatter auto-wraps obj → 1-row CSV.
   get_neondb_query_statement: async ({ params }, neonClient, extra) => {
     const result = await handleGetQueryStatement(
       {
@@ -1751,7 +1756,7 @@ You MUST follow these steps:
       content: [
         {
           type: 'text',
-          text: JSON.stringify(result, null, 2),
+          text: formatToolResponse(result, { format: params.format }),
         },
       ],
     };
@@ -1759,6 +1764,10 @@ You MUST follow these steps:
 
   // feat-004 T8 get_neondb_schemas · ⭐ narrative #3 配对
   // 防 LLM 凭表名脑补字段 · ground-truth pg_attribute + pg_index lookup
+  //
+  // feat-006 #2 (token economy): format result.rows (N-row tabular) via formatToolResponse ·
+  // default 'csv'. meta.totalRows/filter/schema are derivable from input + rows.length · dropped
+  // to keep CSV pure tabular (per feat-006 §4 Output schema · no header overhead).
   get_neondb_schemas: async ({ params }, neonClient, extra) => {
     const result = await handleGetSchemas(
       {
@@ -1776,7 +1785,7 @@ You MUST follow these steps:
       content: [
         {
           type: 'text',
-          text: JSON.stringify(result, null, 2),
+          text: formatToolResponse(result.rows, { format: params.format }),
         },
       ],
     };
