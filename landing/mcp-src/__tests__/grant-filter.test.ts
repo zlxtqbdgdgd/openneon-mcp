@@ -28,10 +28,11 @@ describe('filterToolsForGrant', () => {
       grant({ scopes: ['querying'] }),
     );
     const names = tools.map((t) => t.name);
-    expect(tools).toHaveLength(10);
+    expect(tools).toHaveLength(11); // 10 upstream + 1 day-one (T6 · scope='querying')
     expect(names).toContain('run_sql');
     expect(names).toContain('search');
     expect(names).toContain('fetch');
+    expect(names).toContain('get_neondb_query_statement'); // T6 day-one
     expect(names).not.toContain('create_project');
   });
 
@@ -46,12 +47,14 @@ describe('filterToolsForGrant', () => {
       grant({ projectId: 'proj-123', scopes: null }),
     );
     const names = tools.map((t) => t.name);
-    expect(tools).toHaveLength(24);
+    expect(tools).toHaveLength(26); // 24 upstream + 2 day-one (T6/T8 · both require projectId)
     expect(names).not.toContain('list_projects');
     expect(names).not.toContain('create_project');
     expect(names).not.toContain('search');
     expect(names).not.toContain('fetch');
     expect(names).toContain('describe_project');
+    expect(names).toContain('get_neondb_query_statement'); // T6 day-one
+    expect(names).toContain('get_neondb_schemas'); // T8 day-one
   });
 
   it('combines scope and project filtering', () => {
@@ -59,9 +62,10 @@ describe('filterToolsForGrant', () => {
       NEON_TOOLS,
       grant({ projectId: 'proj-123', scopes: ['querying'] }),
     );
-    expect(tools).toHaveLength(8);
+    expect(tools).toHaveLength(9); // 8 upstream + 1 day-one (T6 · scope='querying' + requires projectId)
     const names = tools.map((t) => t.name);
     expect(names).toContain('run_sql');
+    expect(names).toContain('get_neondb_query_statement'); // T6 day-one
     expect(names).not.toContain('search');
     expect(names).not.toContain('fetch');
   });
@@ -70,7 +74,7 @@ describe('filterToolsForGrant', () => {
 describe('getAvailableTools', () => {
   it('applies read-only filter after grant filtering', () => {
     const tools = getAvailableTools(grant({ scopes: ['querying'] }), true);
-    expect(tools).toHaveLength(6);
+    expect(tools).toHaveLength(7); // 6 upstream + 1 day-one (T6 · scope='querying' + readOnlySafe)
     for (const tool of tools) {
       expect(tool.readOnlySafe).toBe(true);
     }
