@@ -10,6 +10,10 @@ import { describe, it, expect } from 'vitest';
 import { NEON_TOOLS } from '../tools/definitions';
 import { NEON_HANDLERS } from '../tools/tools';
 import { SCOPE_CATEGORIES } from '../utils/grant-context';
+import {
+  getToolCategory,
+  SUPPORTED_TOOL_CATEGORIES,
+} from '../config/categories';
 
 describe('NEON_TOOLS definitions', () => {
   it('has 33 tools (31 upstream + 2 day-one openneon T6/T8 · feat-003/004 narrative #3 主卖点)', () => {
@@ -73,6 +77,63 @@ describe('NEON_TOOLS definitions', () => {
     const titles = NEON_TOOLS.map((t) => t.annotations.title);
     const unique = new Set(titles);
     expect(unique.size).toBe(titles.length);
+  });
+});
+
+describe('tool category field (feat-005 #2 · narrative #3 ecosystem-friendly)', () => {
+  it('every tool has a category field set to "core" or "optional"', () => {
+    for (const tool of NEON_TOOLS) {
+      expect(
+        SUPPORTED_TOOL_CATEGORIES.includes(tool.category),
+        `${tool.name} has invalid category: ${String(tool.category)}`,
+      ).toBe(true);
+    }
+  });
+
+  it('each tool category matches getToolCategory(name) · anti-drift (CORE_TOOL_NAMES is single source of truth)', () => {
+    for (const tool of NEON_TOOLS) {
+      expect(
+        tool.category,
+        `${tool.name} category drifted from CORE_TOOL_NAMES — registry says "${tool.category}" but getToolCategory returns "${getToolCategory(tool.name)}"`,
+      ).toBe(getToolCategory(tool.name));
+    }
+  });
+
+  it('T6 get_neondb_query_statement is core (narrative #3 主卖点 · 防 LLM 自负幻觉 SQL)', () => {
+    const t6 = NEON_TOOLS.find((t) => t.name === 'get_neondb_query_statement');
+    expect(t6).toBeDefined();
+    expect(t6!.category).toBe('core');
+  });
+
+  it('T8 get_neondb_schemas is core (narrative #3 配对 · 防表名字段幻觉)', () => {
+    const t8 = NEON_TOOLS.find((t) => t.name === 'get_neondb_schemas');
+    expect(t8).toBeDefined();
+    expect(t8!.category).toBe('core');
+  });
+
+  it('upstream Neon tools default to optional (spot-check 5: run_sql / list_projects / delete_branch / create_project / describe_table_schema)', () => {
+    const upstreamSpotCheck = [
+      'run_sql',
+      'list_projects',
+      'delete_branch',
+      'create_project',
+      'describe_table_schema',
+    ];
+    for (const name of upstreamSpotCheck) {
+      const tool = NEON_TOOLS.find((t) => t.name === name);
+      expect(tool, `upstream tool ${name} should exist in NEON_TOOLS`).toBeDefined();
+      expect(tool!.category).toBe('optional');
+    }
+  });
+
+  it('current day-one core count = 2 (T6/T8 only · T1/T2 land in feat-001/002 ship · CORE_TOOL_NAMES reserves them)', () => {
+    const coreTools = NEON_TOOLS.filter((t) => t.category === 'core');
+    expect(coreTools.length).toBe(2);
+  });
+
+  it('current optional count = 31 (33 total - 2 core · keeps 26+ listing budget for ecosystem MCPs)', () => {
+    const optional = NEON_TOOLS.filter((t) => t.category === 'optional');
+    expect(optional.length).toBe(31);
   });
 });
 
