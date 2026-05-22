@@ -26,9 +26,12 @@ on:
   # pull_request: {}
 
 # CI server port · isolated from the persistent dev-server MCP server on 3344.
+# NOTE: NEON_LOCAL_URL is intentionally NOT global · it short-circuits connection-string.ts
+# (feat-062) · and the mocked unit tests (connection-string.test.ts) assert the non-bypassed
+# Neon Cloud path. So NEON_LOCAL_URL is set ONLY on the "Start server" step (the server process
+# that actually needs the bypass) · keeping it out of the unit-test step's env.
 env:
   CI_PORT: '3355'
-  NEON_LOCAL_URL: 'postgres://cloud_admin:cloud_admin@127.0.0.1:55432/neondb'
   MCP_BASE_URL: 'http://127.0.0.1:3355'
 
 jobs:
@@ -59,9 +62,12 @@ jobs:
         run: npm run test:unit
 
       - name: Start server (CI port · NEON_LOCAL_URL active)
+        env:
+          # only the server process needs the local bypass · keeps it out of the unit-test env
+          NEON_LOCAL_URL: 'postgres://cloud_admin:cloud_admin@127.0.0.1:55432/neondb'
         run: |
           mkdir -p .run-logs
-          PORT="${CI_PORT}" nohup npm run start > .run-logs/ci-start.log 2>&1 &
+          PORT="${CI_PORT}" NEON_LOCAL_URL="${NEON_LOCAL_URL}" nohup npm run start > .run-logs/ci-start.log 2>&1 &
           echo $! > .run-logs/ci-start.pid
           # wait for health (up to ~30s)
           for i in $(seq 1 30); do
