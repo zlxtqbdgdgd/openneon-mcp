@@ -42,6 +42,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # self-hosted runner's ambient PATH has system Node (too old · npm 6 can't read lockfileVersion 3).
+      # Prepend the dev server's Node 20 install so npm ci / build use a modern npm.
+      - name: Use Node 20 (dev server install)
+        run: echo "${{ vars.NODE20_BIN_PATH || '/home/z1/liqiang/tools/node20/bin' }}" >> "$GITHUB_PATH"
+
       - name: Node version
         run: node -v && npm -v
 
