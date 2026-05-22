@@ -27,8 +27,12 @@ import type { ToolHandlerExtraParams } from '../types';
 
 export type GetSchemasInput = {
   /**
-   * Table name filter. Exact match for now (wildcard `*` support in feat-004 #2).
-   * Examples: 'sales' (exact) · 'users' · 'orders'
+   * Table name filter. Supports user-facing wildcard `*` (feat-004 #2):
+   * - 'sales' (exact match · no wildcard)
+   * - 'sales*' (prefix · matches sales / sales_archive / ...)
+   * - '*sales*' (contains)
+   * LIKE metacharacters (`%` `_` `\`) in the filter are escaped to match literally ·
+   * only `*` is treated as a wildcard.
    */
   filter: string;
   /** Neon project ID. */
@@ -64,10 +68,31 @@ export type GetSchemasResult = {
 };
 
 /**
+ * Convert a user-facing table filter into a SQL LIKE pattern (feat-004 #2).
+ *
+ * - Escapes LIKE metacharacters (`\` `%` `_`) so they match literally · prevents a table
+ *   name like `user_data` from matching `userXdata`, or `100%off` from matching anything.
+ * - Converts the user-facing wildcard `*` into the SQL LIKE wildcard `%`.
+ *
+ * Used with `LIKE $2 ESCAPE '\'` so the escape sequences resolve correctly. A filter with no
+ * `*` produces a pattern with no wildcards → LIKE behaves like exact match.
+ *
+ * SQL injection is not a concern here — the pattern is bound as a parameter ($2) · pg / Neon
+ * HTTP driver escapes at the protocol boundary. This function only governs LIKE *matching*.
+ */
+export function toLikePattern(filter: string): string {
+  const escaped = filter
+    .replace(/\\/g, '\\\\') // backslash first · so escapes we add below aren't double-escaped
+    .replace(/%/g, '\\%') // literal % → escaped (not a multi-char wildcard)
+    .replace(/_/g, '\\_'); // literal _ → escaped (not a single-char wildcard)
+  return escaped.replace(/\*/g, '%'); // user wildcard * → SQL LIKE %
+}
+
+/**
  * Fetch column-level schema metadata for tables matching the filter.
  *
- * Day-one base impl (feat-004 #1):
- * - exact match only (sub-issue #2 adds wildcard `*` → LIKE `%` escape)
+ * Day-one base impl (feat-004 #1 + #2):
+ * - exact match OR wildcard `*` (feat-004 #2 · `*` → SQL LIKE `%` · metachars escaped)
  * - shallow schema (5 cols: table/column/type/indexed/nullable) — full schema is sub-issue #4
  *
  * @throws NotFoundError if filter matches no tables in the schema
@@ -122,18 +147,21 @@ export async function handleGetSchemas(
           JOIN pg_namespace n ON c.relnamespace = n.oid
           WHERE c.relkind = 'r'
             AND n.nspname = $1
-            AND c.relname = $2
+            AND c.relname LIKE $2 ESCAPE '\\'
             AND a.attnum > 0
             AND NOT a.attisdropped
           ORDER BY c.relname, a.attnum;
         `;
 
-        const rows = await sql.query(schemasQuery, [schema, args.filter]);
+        const rows = await sql.query(schemasQuery, [
+          schema,
+          toLikePattern(args.filter),
+        ]);
 
         if (rows.length === 0) {
           throw new NotFoundError(
-            `table '${args.filter}' not found in schema '${schema}'. ` +
-              `Check spelling or try schema='${schema}' explicitly.`,
+            `no tables matching '${args.filter}' in schema '${schema}'. ` +
+              `Check spelling, or use '*' as a wildcard (e.g. 'sales*'), or try schema='${schema}' explicitly.`,
           );
         }
 

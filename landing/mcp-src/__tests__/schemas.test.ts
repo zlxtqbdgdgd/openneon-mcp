@@ -18,7 +18,7 @@ vi.mock('@sentry/node', () => ({
   startSpan: vi.fn((_opts, fn) => fn()),
 }));
 
-import { handleGetSchemas } from '../tools/handlers/schemas';
+import { handleGetSchemas, toLikePattern } from '../tools/handlers/schemas';
 import { NotFoundError } from '../server/errors';
 import type { ToolHandlerExtraParams } from '../tools/types';
 
@@ -271,6 +271,150 @@ describe('handleGetSchemas · type coercion', () => {
 
     expect(typeof result.rows[0].is_indexed).toBe('boolean');
     expect(typeof result.rows[0].is_nullable).toBe('boolean');
+  });
+});
+
+describe('toLikePattern · wildcard conversion + LIKE escape (feat-004 #2)', () => {
+  it('exact name (no wildcard) → identical pattern (LIKE behaves as exact match)', () => {
+    expect(toLikePattern('sales')).toBe('sales');
+    expect(toLikePattern('users')).toBe('users');
+  });
+
+  it('user wildcard * → SQL LIKE %', () => {
+    expect(toLikePattern('sales*')).toBe('sales%'); // prefix
+    expect(toLikePattern('*sales')).toBe('%sales'); // suffix
+    expect(toLikePattern('*sales*')).toBe('%sales%'); // contains
+  });
+
+  it('literal LIKE metachars escaped · _ matches literally (not single-char wildcard)', () => {
+    expect(toLikePattern('user_data')).toBe('user\\_data');
+  });
+
+  it('literal % escaped (not a multi-char wildcard)', () => {
+    expect(toLikePattern('100%off')).toBe('100\\%off');
+  });
+
+  it('literal backslash escaped first (no double-escape of added escapes)', () => {
+    expect(toLikePattern('a\\b')).toBe('a\\\\b');
+  });
+
+  it('combined · escapes metachars then converts wildcard', () => {
+    // user_* → escape _ → user\_ → convert * → user\_%  (literal underscore THEN prefix wildcard)
+    expect(toLikePattern('user_*')).toBe('user\\_%');
+  });
+});
+
+describe('handleGetSchemas · wildcard filter end-to-end (feat-004 #2)', () => {
+  it('prefix wildcard sales* matches multiple tables (sales + sales_archive)', async () => {
+    mockSqlQuery.mockResolvedValueOnce([
+      {
+        table_name: 'sales',
+        column_name: 'id',
+        data_type: 'integer',
+        is_indexed: true,
+        is_nullable: false,
+      },
+      {
+        table_name: 'sales_archive',
+        column_name: 'id',
+        data_type: 'integer',
+        is_indexed: true,
+        is_nullable: false,
+      },
+    ]);
+
+    const result = await handleGetSchemas(
+      { filter: 'sales*', projectId: 'p' },
+      mockNeonClient,
+      mockExtra,
+    );
+
+    const tableNames = [...new Set(result.rows.map((r) => r.table_name))];
+    expect(tableNames).toEqual(['sales', 'sales_archive']);
+    // SQL uses LIKE + the converted pattern (sales% with ESCAPE)
+    const sqlString = mockSqlQuery.mock.calls[0][0] as string;
+    expect(sqlString).toContain("LIKE $2 ESCAPE '\\'");
+    expect(mockSqlQuery.mock.calls[0][1]).toEqual(['public', 'sales%']);
+  });
+
+  it('exact filter (no wildcard) still passes a literal LIKE pattern (= exact match)', async () => {
+    mockSqlQuery.mockResolvedValueOnce([
+      {
+        table_name: 'sales',
+        column_name: 'id',
+        data_type: 'integer',
+        is_indexed: true,
+        is_nullable: false,
+      },
+    ]);
+
+    await handleGetSchemas(
+      { filter: 'sales', projectId: 'p' },
+      mockNeonClient,
+      mockExtra,
+    );
+
+    expect(mockSqlQuery.mock.calls[0][1]).toEqual(['public', 'sales']);
+  });
+
+  it('SQL injection攻击 in filter is bound as parameter · not inlined (LLM01防护)', async () => {
+    mockSqlQuery.mockResolvedValueOnce([]);
+
+    try {
+      await handleGetSchemas(
+        { filter: "sales'; DROP TABLE users; --", projectId: 'p' },
+        mockNeonClient,
+        mockExtra,
+      );
+    } catch {
+      // empty result → NotFoundError · expected · we only assert the SQL/params shape
+    }
+
+    const sqlString = mockSqlQuery.mock.calls[0][0] as string;
+    // Raw SQL must NOT contain the injection payload (it's bound to $2)
+    expect(sqlString).not.toContain('DROP TABLE');
+    // The payload is passed as the bound parameter (pg/Neon escapes at protocol boundary)
+    expect(mockSqlQuery.mock.calls[0][1][1]).toBe("sales'; DROP TABLE users; --");
+  });
+
+  it('literal underscore filter escaped · matches only literal table (not single-char wildcard)', async () => {
+    mockSqlQuery.mockResolvedValueOnce([
+      {
+        table_name: 'user_data',
+        column_name: 'id',
+        data_type: 'integer',
+        is_indexed: true,
+        is_nullable: false,
+      },
+    ]);
+
+    await handleGetSchemas(
+      { filter: 'user_data', projectId: 'p' },
+      mockNeonClient,
+      mockExtra,
+    );
+
+    // _ escaped → user\_data → only matches literal underscore, not userXdata
+    expect(mockSqlQuery.mock.calls[0][1]).toEqual(['public', 'user\\_data']);
+  });
+
+  it('no-match wildcard → NotFoundError with wildcard-aware hint', async () => {
+    mockSqlQuery.mockResolvedValueOnce([]);
+
+    let caught: Error | undefined;
+    try {
+      await handleGetSchemas(
+        { filter: 'nonexistent*', projectId: 'p' },
+        mockNeonClient,
+        mockExtra,
+      );
+    } catch (err) {
+      caught = err as Error;
+    }
+
+    expect(caught).toBeInstanceOf(NotFoundError);
+    expect(caught?.message).toMatch(/nonexistent\*/);
+    expect(caught?.message).toMatch(/wildcard/);
   });
 });
 
