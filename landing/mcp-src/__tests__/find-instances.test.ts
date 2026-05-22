@@ -25,12 +25,17 @@ vi.mock('@sentry/node', () => ({
 import {
   handleFindNeondbInstances,
   pool,
+  __clearFindInstancesCache,
 } from '../tools/handlers/find-instances';
 import { handleListProjects } from '../tools/handlers/list-projects';
 import type { ToolHandlerExtraParams } from '../tools/types';
 
 const mockHandleListProjects = vi.mocked(handleListProjects);
+// account: undefined → caching skipped (existing tests recompute every call · cache untested here)
 const mockExtra = { account: undefined } as unknown as ToolHandlerExtraParams;
+// Per-user extra · enables the 30s cache (cache key includes account.id)
+const extraForUser = (id: string) =>
+  ({ account: { id } }) as unknown as ToolHandlerExtraParams;
 
 type MockEndpoint = {
   id: string;
@@ -377,5 +382,129 @@ describe('handleFindNeondbInstances · sales 剧本入口', () => {
     expect(result[0].status).toBeNull();
     expect(result[0].primary_endpoint_id).toBeNull();
     expect(result[0].active_endpoint_count).toBe(0);
+  });
+});
+
+describe('handleFindNeondbInstances · 30s TTL cache (feat-001 #3)', () => {
+  beforeEach(() => {
+    __clearFindInstancesCache();
+    vi.useRealTimers();
+  });
+
+  it('cache hit · second call within 30s reuses result (handleListProjects called once)', async () => {
+    mockHandleListProjects.mockResolvedValue(
+      asProjects([mockProject({ id: 'proj-1' })]),
+    );
+    const neonClient = mockNeonClient({
+      branchesByProject: { 'proj-1': [{ id: 'br-1', default: true }] },
+      endpointsByProject: {
+        'proj-1': [{ id: 'ep-1', type: 'read_write', current_state: 'active' }],
+      },
+    });
+
+    const first = await handleFindNeondbInstances(
+      {},
+      neonClient as never,
+      extraForUser('user-1'),
+    );
+    const second = await handleFindNeondbInstances(
+      {},
+      neonClient as never,
+      extraForUser('user-1'),
+    );
+
+    expect(mockHandleListProjects).toHaveBeenCalledTimes(1);
+    expect(second).toEqual(first);
+  });
+
+  it('cache miss after 30s TTL · recomputes (handleListProjects called twice)', async () => {
+    vi.useFakeTimers();
+    mockHandleListProjects.mockResolvedValue(
+      asProjects([mockProject({ id: 'proj-1' })]),
+    );
+    const neonClient = mockNeonClient({
+      branchesByProject: { 'proj-1': [{ id: 'br-1', default: true }] },
+      endpointsByProject: {
+        'proj-1': [{ id: 'ep-1', type: 'read_write', current_state: 'active' }],
+      },
+    });
+
+    await handleFindNeondbInstances({}, neonClient as never, extraForUser('user-1'));
+    // Advance past the 30s TTL
+    vi.advanceTimersByTime(30_001);
+    await handleFindNeondbInstances({}, neonClient as never, extraForUser('user-1'));
+
+    expect(mockHandleListProjects).toHaveBeenCalledTimes(2);
+  });
+
+  it('cross-tenant isolation · user-2 does NOT get user-1 cached data (account.id in key)', async () => {
+    mockHandleListProjects.mockResolvedValueOnce(
+      asProjects([mockProject({ id: 'proj-user1', name: 'user1-project' })]),
+    );
+    mockHandleListProjects.mockResolvedValueOnce(
+      asProjects([mockProject({ id: 'proj-user2', name: 'user2-project' })]),
+    );
+    const neonClient = mockNeonClient({});
+
+    const user1 = await handleFindNeondbInstances(
+      {},
+      neonClient as never,
+      extraForUser('user-1'),
+    );
+    const user2 = await handleFindNeondbInstances(
+      {},
+      neonClient as never,
+      extraForUser('user-2'),
+    );
+
+    // Both compute independently · no cross-tenant leak
+    expect(mockHandleListProjects).toHaveBeenCalledTimes(2);
+    expect(user1[0].project_id).toBe('proj-user1');
+    expect(user2[0].project_id).toBe('proj-user2');
+  });
+
+  it('different filter → different cache entry (handleListProjects called per distinct filter)', async () => {
+    mockHandleListProjects.mockResolvedValue(
+      asProjects([
+        mockProject({ id: 'proj-1', region_id: 'us-east-1' }),
+        mockProject({ id: 'proj-2', region_id: 'eu-west-1' }),
+      ]),
+    );
+    const neonClient = mockNeonClient({});
+
+    await handleFindNeondbInstances(
+      { filter: { region: 'us-east-1' } },
+      neonClient as never,
+      extraForUser('user-1'),
+    );
+    await handleFindNeondbInstances(
+      { filter: { region: 'eu-west-1' } },
+      neonClient as never,
+      extraForUser('user-1'),
+    );
+
+    // Distinct filters → 2 distinct cache keys → 2 computes
+    expect(mockHandleListProjects).toHaveBeenCalledTimes(2);
+
+    // Same filter again → cache hit (still 2 total)
+    await handleFindNeondbInstances(
+      { filter: { region: 'us-east-1' } },
+      neonClient as never,
+      extraForUser('user-1'),
+    );
+    expect(mockHandleListProjects).toHaveBeenCalledTimes(2);
+  });
+
+  it('no account.id → caching skipped (every call recomputes · safety)', async () => {
+    mockHandleListProjects.mockResolvedValue(
+      asProjects([mockProject({ id: 'proj-1' })]),
+    );
+    const neonClient = mockNeonClient({});
+
+    await handleFindNeondbInstances({}, neonClient as never, mockExtra);
+    await handleFindNeondbInstances({}, neonClient as never, mockExtra);
+
+    // No stable identity → no cache → 2 computes
+    expect(mockHandleListProjects).toHaveBeenCalledTimes(2);
   });
 });
