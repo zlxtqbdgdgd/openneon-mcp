@@ -14,6 +14,8 @@ type ListToolsResponse = {
     title: string;
     scope: string | null;
     readOnlySafe: boolean;
+    supportsDepth: boolean;
+    defaultDepth: 'shallow' | 'full' | null;
     description: string;
   }>;
 };
@@ -136,6 +138,24 @@ describe('/api/list-tools endpoint', () => {
     const body = await callListTools({ include: 'optional' });
     expect(body.categoryInclude).toBe('core');
     expect(body.tools).toHaveLength(4); // T1 + T2 + T6 + T8 (day-one core 满)
+  });
+
+  it('advertises supportsDepth + defaultDepth (feat-007 #4 · T6/T8 support depth · T1/T2 do not)', async () => {
+    const body = await callListTools({ include: 'all' });
+    const byName = Object.fromEntries(body.tools.map((t) => [t.name, t]));
+
+    // T6 + T8 support progressive disclosure depth
+    expect(byName['get_neondb_query_statement'].supportsDepth).toBe(true);
+    expect(byName['get_neondb_query_statement'].defaultDepth).toBe('shallow');
+    expect(byName['get_neondb_schemas'].supportsDepth).toBe(true);
+    expect(byName['get_neondb_schemas'].defaultDepth).toBe('shallow');
+
+    // T1/T2 + upstream tools do NOT support depth → defaultDepth null
+    expect(byName['find_neondb_instances'].supportsDepth).toBe(false);
+    expect(byName['find_neondb_instances'].defaultDepth).toBeNull();
+    expect(byName['get_neondb_calling_services'].supportsDepth).toBe(false);
+    expect(byName['run_sql'].supportsDepth).toBe(false);
+    expect(byName['run_sql'].defaultDepth).toBeNull();
   });
 
   it('OPTIONS returns expected CORS allow-headers', () => {

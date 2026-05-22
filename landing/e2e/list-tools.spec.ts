@@ -85,6 +85,23 @@ test.describe('/api/list-tools endpoint · all-listing opt-in', () => {
     expect(body.warnings).toBeUndefined();
   });
 
+  test('advertises supportsDepth + defaultDepth (feat-007 #4 · T6/T8 depth-capable)', async ({
+    request,
+  }) => {
+    const response = await request.get('/api/list-tools?include=all');
+    expect(response.ok()).toBeTruthy();
+
+    const body = await response.json();
+    const byName = Object.fromEntries(
+      body.tools.map((t: { name: string }) => [t.name, t]),
+    );
+    expect(byName['get_neondb_query_statement'].supportsDepth).toBe(true);
+    expect(byName['get_neondb_query_statement'].defaultDepth).toBe('shallow');
+    expect(byName['get_neondb_schemas'].supportsDepth).toBe(true);
+    expect(byName['find_neondb_instances'].supportsDepth).toBe(false);
+    expect(byName['find_neondb_instances'].defaultDepth).toBeNull();
+  });
+
   test('?include=all returns 12 tools for category=querying (10 upstream + 2 day-one T6/T2)', async ({
     request,
   }) => {
