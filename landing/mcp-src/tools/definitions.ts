@@ -1402,6 +1402,9 @@ export const NEON_TOOLS = [
       Day-one shape: 4 columns (application_name / connection_count / last_active_time / endpoint_id).
       'endpoint_id' is reserved but ALWAYS empty in day-one · L2b USR ship 后 fills (forward-compat).
       Default min_connections=1 skips idle 0-conn apps. Hard limit 50 rows (token budget per §5).
+      An EMPTY result is valid (not an error): either no application meets min_connections, OR the
+      databaseName doesn't match a real database. If you expected results but got none, verify the
+      databaseName (defaults to 'neondb') before concluding "no callers".
     </important_notes>`,
     inputSchema: getNeondbCallingServicesInputSchema,
     readOnlySafe: true,

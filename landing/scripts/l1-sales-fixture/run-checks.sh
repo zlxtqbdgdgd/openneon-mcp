@@ -64,6 +64,14 @@ echo "[Stage B · T2] get_neondb_calling_services"
 T2=$(post get_neondb_calling_services '{"projectId":"local","format":"json"}' | inner_py)
 [ "$(echo "$T2" | pyck "isinstance(d,list) and all('application_name' in r and r.get('endpoint_id')=='' for r in d)")" = "OK" ] \
   && pass "T2 application_name aggregation + endpoint_id empty (day-one)" || fail "T2 unexpected: $T2"
+# feat-002 #5 · threshold filter: min_connections way above any real count → empty (HAVING)
+T2H=$(post get_neondb_calling_services '{"projectId":"local","threshold":{"min_connections":9999},"format":"json"}' | inner_py)
+[ "$(echo "$T2H" | pyck "isinstance(d,list) and len(d)==0")" = "OK" ] \
+  && pass "T2 threshold min_connections=9999 → empty (HAVING filter)" || fail "T2 threshold unexpected: $T2H"
+# feat-002 #5 · database 不存在 → empty (datname filter matches nothing · graceful · no throw)
+T2DB=$(post get_neondb_calling_services '{"projectId":"local","databaseName":"nonexistent_db_xyz","format":"json"}' | inner_py)
+[ "$(echo "$T2DB" | pyck "isinstance(d,list) and len(d)==0")" = "OK" ] \
+  && pass "T2 database 不存在 → empty (graceful · agent recovers via db-name hint)" || fail "T2 db-not-exist unexpected: $T2DB"
 
 # ---- Stage C · T8 ----
 echo "[Stage C · T8] get_neondb_schemas (exact + wildcard + depth=full)"
