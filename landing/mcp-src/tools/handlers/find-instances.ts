@@ -77,6 +77,48 @@ const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 500;
 const POOL_CONCURRENCY = 10;
 
+// feat-001 #3 · 30s TTL in-memory response cache (per detail design §3 point 3).
+// Neon API rate limit ~30 req/s · repeated `list` calls within 30s reuse cached result ·
+// 不打挂 API。Day-one in-memory per-process · L2a 考虑 Redis 跨 session (per issue #30 notes).
+const CACHE_TTL_MS = 30_000;
+// Bound cache size · evict expired entries when this many keys accumulate (defense against
+// unbounded growth from many distinct filter combinations).
+const CACHE_MAX_ENTRIES = 500;
+
+type CacheEntry = {
+  data: FindInstancesResult[];
+  expiresAt: number;
+};
+
+const responseCache = new Map<string, CacheEntry>();
+
+/**
+ * Build the cache key. **MUST include the account identity** so one user's cached project
+ * list never leaks to another (cross-tenant isolation · the api_key ~ account scope per §6).
+ * Filter + limit are part of the key so different queries cache independently.
+ */
+function buildCacheKey(accountId: string, args: FindInstancesInput): string {
+  return `${accountId}::${JSON.stringify({
+    filter: args.filter ?? null,
+    limit: args.limit ?? null,
+  })}`;
+}
+
+/** Drop expired entries · called before insert when the cache grows past the cap. */
+function evictExpired(now: number): void {
+  for (const [key, entry] of responseCache) {
+    if (entry.expiresAt <= now) responseCache.delete(key);
+  }
+}
+
+/**
+ * Clear the entire response cache. Exported for tests so each case starts clean
+ * (the cache is module-level state shared across calls).
+ */
+export function __clearFindInstancesCache(): void {
+  responseCache.clear();
+}
+
 /**
  * Run `fn` over `items` with at most `limit` concurrent in-flight promises.
  *
@@ -207,6 +249,17 @@ export async function handleFindNeondbInstances(
       name: 'find_neondb_instances',
     },
     async () => {
+      // Cache lookup · only when we have a stable account identity (no account → no cache ·
+      // safety: never serve cross-tenant data from an unscoped key).
+      const accountId = extra.account?.id;
+      const cacheKey = accountId ? buildCacheKey(accountId, args) : null;
+      if (cacheKey) {
+        const cached = responseCache.get(cacheKey);
+        if (cached && cached.expiresAt > Date.now()) {
+          return cached.data;
+        }
+      }
+
       const limit = Math.min(args.limit ?? DEFAULT_LIMIT, MAX_LIMIT);
 
       const projects = (await handleListProjects(
@@ -228,12 +281,22 @@ export async function handleFindNeondbInstances(
         (project) => enrichProject(project, neonClient as unknown as NeonClientLike),
       );
 
-      if (args.filter?.status) {
-        const status = args.filter.status;
-        return enriched.filter((r) => r.status === status);
+      const result =
+        args.filter?.status !== undefined
+          ? enriched.filter((r) => r.status === args.filter!.status)
+          : enriched;
+
+      // Cache store · 30s TTL · evict expired entries first if the cache is full.
+      if (cacheKey) {
+        const now = Date.now();
+        if (responseCache.size >= CACHE_MAX_ENTRIES) evictExpired(now);
+        responseCache.set(cacheKey, {
+          data: result,
+          expiresAt: now + CACHE_TTL_MS,
+        });
       }
 
-      return enriched;
+      return result;
     },
   );
 }
