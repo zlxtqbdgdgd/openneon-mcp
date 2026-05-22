@@ -33,6 +33,7 @@ vi.mock('@sentry/node', () => ({
 }));
 
 import { handleGetCallingServices } from '../tools/handlers/calling-services';
+import { getNeondbCallingServicesInputSchema } from '../tools/toolsSchema';
 import type { ToolHandlerExtraParams } from '../tools/types';
 
 const mockNeonClient = {} as unknown as Parameters<
@@ -213,5 +214,19 @@ describe('handleGetCallingServices · SQL injection防护 (LLM01)', () => {
     // Params must contain the raw string · pg client / Neon HTTP API escape at protocol boundary
     expect(actualParams[0]).toBe("'; DROP TABLE users; --");
     expect(actualParams[1]).toBe(999);
+  });
+});
+
+describe('getNeondbCallingServicesInputSchema · projectId required (feat-002 #5 case 4)', () => {
+  it('rejects missing projectId (validation error on MCP path)', () => {
+    const result = getNeondbCallingServicesInputSchema.safeParse({});
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts projectId-only (branch/threshold optional · defaults applied)', () => {
+    const result = getNeondbCallingServicesInputSchema.safeParse({
+      projectId: 'proj-abc',
+    });
+    expect(result.success).toBe(true);
   });
 });
