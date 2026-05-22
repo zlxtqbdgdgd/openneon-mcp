@@ -32,9 +32,9 @@ bash scripts/l1-sales-fixture/teardown.sh   # optional
 
 `.github/workflows/l1-e2e-matrix.yml` · single job on `runs-on: [self-hosted, openneon-dev]`.
 
-⚠️ **The workflow currently triggers on `workflow_dispatch` (manual) ONLY** — a self-hosted runner
-labeled `openneon-dev` must be registered first. Until then, push/PR triggers would queue jobs
-forever (no runner to pick them up).
+**Triggers**: every `main` push + `pull_request` (+ manual `workflow_dispatch`). The `openneon-dev`
+self-hosted runner is registered + verified (run 26280281756 green · 2026-05-22). If the runner
+goes offline, runs queue until it's back (see runner ops below).
 
 ### Register the self-hosted runner (one-time · maintainer · on dev server)
 
