@@ -6,6 +6,10 @@ import {
   getAccessControlWarnings,
 } from '../../../mcp-src/tools/grant-filter';
 import { parseCategoryInclude } from '../../../mcp-src/config/categories';
+import {
+  isToolSupportingDepth,
+  DEFAULT_DEPTH,
+} from '../../../mcp-src/config/depth';
 import { logger } from '../../../mcp-src/utils/logger';
 
 const CORS_HEADERS = {
@@ -64,13 +68,20 @@ export function GET(req: Request) {
       readOnly,
       categoryInclude,
       ...(warnings.length > 0 ? { warnings } : {}),
-      tools: tools.map((tool) => ({
-        name: tool.name,
-        title: tool.annotations?.title ?? tool.name,
-        scope: tool.scope,
-        readOnlySafe: tool.readOnlySafe,
-        description: tool.description,
-      })),
+      tools: tools.map((tool) => {
+        // feat-007 #4 · advertise progressive disclosure capability so clients know which
+        // tools accept ?depth=full opt-in (T6/T8 day-one · per DEPTH_SUPPORTING_TOOLS).
+        const supportsDepth = isToolSupportingDepth(tool.name);
+        return {
+          name: tool.name,
+          title: tool.annotations?.title ?? tool.name,
+          scope: tool.scope,
+          readOnlySafe: tool.readOnlySafe,
+          supportsDepth,
+          defaultDepth: supportsDepth ? DEFAULT_DEPTH : null,
+          description: tool.description,
+        };
+      }),
     };
 
     return NextResponse.json(body, { headers: CORS_HEADERS });
