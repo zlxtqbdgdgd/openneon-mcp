@@ -10,6 +10,8 @@ permissions:
 
 jobs:
   lint-and-build:
+    # fork guard: upstream-only (neondatabase runner group + secrets not in forks · skip instead of fail)
+    if: github.repository == 'neondatabase/mcp-server-neon'
     permissions:
       contents: read
       id-token: write

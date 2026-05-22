@@ -6,10 +6,11 @@ on:
 
 jobs:
   deploy:
-    # Deploy when: (1) the deploy-preview label is added, OR (2) a new commit is pushed to a PR that already has the label
+    # fork guard: upstream-only · Deploy when: (1) the deploy-preview label is added, OR (2) a new commit is pushed to a PR that already has the label
     if: |
-      (github.event.action == 'labeled' && github.event.label.name == 'deploy-preview') ||
-      (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'deploy-preview'))
+      github.repository == 'neondatabase/mcp-server-neon' &&
+      ((github.event.action == 'labeled' && github.event.label.name == 'deploy-preview') ||
+       (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'deploy-preview')))
     runs-on:
       group: neondatabase-protected-runner-group
       labels: linux-ubuntu-latest
@@ -106,7 +107,7 @@ jobs:
 
   # Automatically remove the deploy-preview label when a PR is merged or closed
   cleanup:
-    if: github.event.action == 'closed' && contains(github.event.pull_request.labels.*.name, 'deploy-preview')
+    if: github.repository == 'neondatabase/mcp-server-neon' && github.event.action == 'closed' && contains(github.event.pull_request.labels.*.name, 'deploy-preview')
     runs-on:
       group: neondatabase-protected-runner-group
       labels: linux-ubuntu-latest

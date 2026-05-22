@@ -16,12 +16,14 @@ concurrency:
 
 jobs:
   claude-review:
+    # fork guard: upstream-only (neondatabase runner group + ANTHROPIC secret not in forks · skip instead of fail)
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' &&
-       !github.event.pull_request.draft &&
-       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'),
-                github.event.pull_request.author_association))
+      github.repository == 'neondatabase/mcp-server-neon' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request' &&
+        !github.event.pull_request.draft &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'),
+                 github.event.pull_request.author_association)))
 
     runs-on:
       group: neondatabase-protected-runner-group
