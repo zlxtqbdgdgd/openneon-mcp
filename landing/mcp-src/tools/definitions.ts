@@ -1280,6 +1280,15 @@ export const NEON_TOOLS = [
       slow query signatures into wrong SQL (root cause of multiple public AI agent删库事件 · R10 §2.1).
     </use_case>
 
+    <workflow_rule>
+      HALLUCINATION GUARD (openneon core rule · feat-003): NEVER write, quote, edit, or reason about a
+      query's SQL text from memory or from the query_signature name alone. ALWAYS call this tool first to
+      obtain the ground-truth parameterized SQL. The symmetric rule for table columns: call
+      get_neondb_schemas (T8) BEFORE naming or assuming any column. These two tools are the 防幻觉一对组合 —
+      skipping either is the documented root cause of public AI-agent 删库 incidents (R10 §2.1). If this tool
+      returns NotFoundError, do NOT fabricate the SQL — tell the user the query_signature was not found.
+    </workflow_rule>
+
     <important_notes>
       The returned 'query' field is ALWAYS parameterized ($1/$2 placeholders) · raw values never present
       (OWASP LLM02 protection via PostgreSQL pg_stat_statements auto-parameterization).
@@ -1310,6 +1319,15 @@ export const NEON_TOOLS = [
       This is the openneon LLM-native MCP anti-hallucination tool · prevents agent from脑补 column names
       (e.g. guessing "email_address" when actual column is "email", or "created_at" when actual is "sale_date").
     </use_case>
+
+    <workflow_rule>
+      HALLUCINATION GUARD (openneon core rule · feat-004): NEVER name, filter by, or assume a table's columns
+      from memory or table-name conventions. ALWAYS call this tool first to get ground-truth columns. The
+      symmetric rule for SQL text: call get_neondb_query_statement (T6) BEFORE quoting any query's SQL. These
+      two tools are the 防幻觉一对组合 — skipping either is the documented root cause of public AI-agent 删库
+      incidents (R10 §2.1). If this tool returns NotFoundError, do NOT fabricate columns — tell the user the
+      table was not found and suggest a wildcard (e.g. 'sales*').
+    </workflow_rule>
 
     <important_notes>
       Day-one shallow schema returns 5 fields per column (table/column/type/indexed/nullable).
