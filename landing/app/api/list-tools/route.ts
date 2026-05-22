@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { z } from 'zod/v3';
 import { resolveGrantFromSearchParams } from '../../../mcp-src/utils/grant-context';
 import { isReadOnly } from '../../../mcp-src/utils/read-only';
 import {
@@ -10,6 +11,21 @@ import {
   isToolSupportingDepth,
   DEFAULT_DEPTH,
 } from '../../../mcp-src/config/depth';
+import { SUPPORTED_OUTPUT_FORMATS } from '../../../mcp-src/server/response-formatter';
+
+/**
+ * Detect whether a tool accepts the `format` output param (feat-006 #3 advertise).
+ *
+ * Introspects the tool's zod inputSchema for a `format` field · zero-maintenance (auto-syncs
+ * with whatever tools add `outputFormatField` to their schema · currently T1/T2/T6/T8 day-one
+ * openneon tools that route through formatToolResponse).
+ */
+function toolSupportsFormat(inputSchema: unknown): boolean {
+  return (
+    inputSchema instanceof z.ZodObject &&
+    'format' in (inputSchema.shape as Record<string, unknown>)
+  );
+}
 import { logger } from '../../../mcp-src/utils/logger';
 
 const CORS_HEADERS = {
@@ -72,6 +88,9 @@ export function GET(req: Request) {
         // feat-007 #4 · advertise progressive disclosure capability so clients know which
         // tools accept ?depth=full opt-in (T6/T8 day-one · per DEPTH_SUPPORTING_TOOLS).
         const supportsDepth = isToolSupportingDepth(tool.name);
+        // feat-006 #3 · advertise supported output formats so clients know which tools
+        // accept ?format= (T1/T2/T6/T8 day-one · detected via inputSchema introspection).
+        const supportsFormat = toolSupportsFormat(tool.inputSchema);
         return {
           name: tool.name,
           title: tool.annotations?.title ?? tool.name,
@@ -79,6 +98,7 @@ export function GET(req: Request) {
           readOnlySafe: tool.readOnlySafe,
           supportsDepth,
           defaultDepth: supportsDepth ? DEFAULT_DEPTH : null,
+          outputFormat: supportsFormat ? [...SUPPORTED_OUTPUT_FORMATS] : null,
           description: tool.description,
         };
       }),

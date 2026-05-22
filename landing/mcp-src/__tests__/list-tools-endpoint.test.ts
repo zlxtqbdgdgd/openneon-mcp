@@ -16,6 +16,7 @@ type ListToolsResponse = {
     readOnlySafe: boolean;
     supportsDepth: boolean;
     defaultDepth: 'shallow' | 'full' | null;
+    outputFormat: string[] | null;
     description: string;
   }>;
 };
@@ -156,6 +157,24 @@ describe('/api/list-tools endpoint', () => {
     expect(byName['get_neondb_calling_services'].supportsDepth).toBe(false);
     expect(byName['run_sql'].supportsDepth).toBe(false);
     expect(byName['run_sql'].defaultDepth).toBeNull();
+  });
+
+  it('advertises outputFormat (feat-006 #3 · T1/T2/T6/T8 accept ?format= · upstream null)', async () => {
+    const body = await callListTools({ include: 'all' });
+    const byName = Object.fromEntries(body.tools.map((t) => [t.name, t]));
+
+    // day-one openneon tools route through formatToolResponse → accept ?format=
+    for (const name of [
+      'find_neondb_instances',
+      'get_neondb_calling_services',
+      'get_neondb_query_statement',
+      'get_neondb_schemas',
+    ]) {
+      expect(byName[name].outputFormat).toEqual(['csv', 'json', 'tsv']);
+    }
+    // upstream Neon tools don't have the format param
+    expect(byName['run_sql'].outputFormat).toBeNull();
+    expect(byName['list_projects'].outputFormat).toBeNull();
   });
 
   it('OPTIONS returns expected CORS allow-headers', () => {
