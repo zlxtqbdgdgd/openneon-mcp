@@ -451,6 +451,30 @@ describe('handleGetSchemas · progressive disclosure depth (feat-004 #4)', () =>
     expect(sqlString).not.toContain('pg_attrdef');
   });
 
+  it('invalid depth (e.g. via OAuth-free local-call · skips zod) → fallback shallow · meta.depth=shallow', async () => {
+    mockSqlQuery.mockResolvedValueOnce([
+      {
+        table_name: 'sales',
+        column_name: 'id',
+        data_type: 'integer',
+        is_indexed: true,
+        is_nullable: false,
+      },
+    ]);
+
+    const result = await handleGetSchemas(
+      // 'deep' is not a valid DepthLevel · isValidDepth normalizes to DEFAULT_DEPTH (shallow)
+      { filter: 'sales', projectId: 'p', depth: 'deep' as unknown as 'full' },
+      mockNeonClient,
+      mockExtra,
+    );
+
+    expect(result.meta.depth).toBe('shallow');
+    expect(result.rows[0]).not.toHaveProperty('index_name');
+    const sqlString = mockSqlQuery.mock.calls[0][0] as string;
+    expect(sqlString).not.toContain('pg_attrdef'); // shallow query, not full
+  });
+
   it('depth=full → 9-field rows (default_value + index detail) + meta.depth=full', async () => {
     mockSqlQuery.mockResolvedValueOnce([
       {

@@ -348,4 +348,20 @@ describe('handleGetQueryStatement · depth param (feat-003 #3)', () => {
     expect(result.query).toContain('truncated');
     expect(result.query).not.toContain('col_30');
   });
+
+  it('invalid depth (e.g. via OAuth-free local-call · skips zod) → fallback shallow (truncated)', async () => {
+    mockLongQueryRow();
+    const result = await handleGetQueryStatement(
+      // 'deep' is not a valid DepthLevel · isValidDepth normalizes to DEFAULT_DEPTH (shallow)
+      {
+        query_signature: '999',
+        projectId: 'p',
+        depth: 'deep' as unknown as 'full',
+      },
+      mockNeonClient,
+      mockExtra,
+    );
+    expect(result.query).toContain('truncated');
+    expect(result.query).not.toContain('col_30');
+  });
 });

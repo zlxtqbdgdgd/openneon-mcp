@@ -22,7 +22,11 @@ import { startSpan } from '@sentry/node';
 import { NotFoundError } from '../../server/errors';
 import { handleGetConnectionString } from './connection-string';
 import { createSqlClient } from './sql-driver';
-import { DEFAULT_DEPTH, type DepthLevel } from '../../config/depth';
+import {
+  DEFAULT_DEPTH,
+  isValidDepth,
+  type DepthLevel,
+} from '../../config/depth';
 import type { ToolHandlerExtraParams } from '../types';
 
 // feat-003 #3 · shallow depth truncation thresholds (per detail design §5 · shallow ≤ 1K token).
@@ -168,7 +172,10 @@ export async function handleGetQueryStatement(
         }
 
         const row = rows[0];
-        const depth = args.depth ?? DEFAULT_DEPTH;
+        // Normalize: undefined OR invalid (e.g. via OAuth-free local-call which skips zod) → shallow.
+        const depth: DepthLevel = isValidDepth(args.depth)
+          ? args.depth
+          : DEFAULT_DEPTH;
         return {
           query_signature: String(row.query_signature),
           // Truncate to first 30 lines for shallow depth (token economy · per §5) · full = complete.
