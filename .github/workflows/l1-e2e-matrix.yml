@@ -36,6 +36,12 @@ env:
 
 jobs:
   l1-e2e:
+    # SECURITY (public repo + self-hosted runner): never run untrusted fork-PR code on the dev
+    # server. Only same-repo refs reach the runner — push(main) + maintainer's own-branch PRs +
+    # manual dispatch. Fork PRs skip here; review + merge them, then push(main) runs the gate.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, openneon-dev]
     timeout-minutes: 15
     defaults:

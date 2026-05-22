@@ -36,6 +36,14 @@ bash scripts/l1-sales-fixture/teardown.sh   # optional
 self-hosted runner is registered + verified (run 26280281756 green · 2026-05-22). If the runner
 goes offline, runs queue until it's back (see runner ops below).
 
+**⚠️ Security (public repo + self-hosted runner)**: the job has a same-repo guard
+(`github.event.pull_request.head.repo.full_name == github.repository`) so **fork PRs never run on
+the dev server runner**. Untrusted fork code would otherwise execute on the maintainer's machine
+(GitHub explicitly warns against self-hosted runners on public repos). Workflow: only push(main),
+maintainer's own-branch PRs, and manual dispatch reach the runner. Review an external fork PR, then
+merge it — the post-merge push(main) runs the gate. Defense-in-depth: also keep GitHub Settings →
+Actions → "Require approval for all outside collaborators".
+
 ### Register the self-hosted runner (one-time · maintainer · on dev server)
 
 GitHub repo → Settings → Actions → Runners → New self-hosted runner (Linux x64). GitHub shows a
