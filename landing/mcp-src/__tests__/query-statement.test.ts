@@ -21,7 +21,10 @@ vi.mock('@sentry/node', () => ({
   startSpan: vi.fn((_opts, fn) => fn()),
 }));
 
-import { handleGetQueryStatement } from '../tools/handlers/query-statement';
+import {
+  handleGetQueryStatement,
+  truncateSqlForDepth,
+} from '../tools/handlers/query-statement';
 import { NotFoundError } from '../server/errors';
 import type { ToolHandlerExtraParams } from '../tools/types';
 
@@ -234,5 +237,115 @@ describe('handleGetQueryStatement · numeric type coercion', () => {
     expect(typeof result.rows).toBe('number');
     expect(result.calls).toBe(100);
     expect(result.mean_exec_time_ms).toBeCloseTo(0.505);
+  });
+});
+
+describe('truncateSqlForDepth · 30-line + char-cap truncation (feat-003 #3)', () => {
+  it('full depth → SQL unchanged (no marker)', () => {
+    const sql = Array.from({ length: 100 }, (_, i) => `line ${i}`).join('\n');
+    expect(truncateSqlForDepth(sql, 'full')).toBe(sql);
+  });
+
+  it('shallow · short SQL (≤ 30 lines) → unchanged (no marker)', () => {
+    const sql = 'SELECT AVG(amount) FROM sales WHERE sale_date BETWEEN $1 AND $2';
+    expect(truncateSqlForDepth(sql, 'shallow')).toBe(sql);
+  });
+
+  it('shallow · SQL > 30 lines → first 30 lines + tail marker', () => {
+    const sql = Array.from({ length: 50 }, (_, i) => `line_${i}`).join('\n');
+    const result = truncateSqlForDepth(sql, 'shallow');
+    const lines = result.split('\n');
+    // 30 content lines + 1 marker line
+    expect(lines).toHaveLength(31);
+    expect(lines[29]).toBe('line_29');
+    expect(lines[30]).toContain('truncated');
+    expect(lines[30]).toContain('depth=full');
+    // line_30+ omitted
+    expect(result).not.toContain('line_30');
+  });
+
+  it('shallow · cuts at line boundary (never mid-line · WHERE clause not split mid-token)', () => {
+    const lines = Array.from({ length: 40 }, (_, i) =>
+      i === 25 ? 'WHERE sale_date BETWEEN $1 AND $2' : `col_${i},`,
+    );
+    const result = truncateSqlForDepth(lines.join('\n'), 'shallow');
+    // The WHERE line (index 25 < 30) is fully present · not split
+    expect(result).toContain('WHERE sale_date BETWEEN $1 AND $2');
+  });
+
+  it('shallow · pathological single long line → char-capped at whitespace + marker', () => {
+    const longLine = 'SELECT ' + 'col, '.repeat(1000) + 'FROM t'; // ~5000 chars · 1 line
+    const result = truncateSqlForDepth(longLine, 'shallow');
+    expect(result.length).toBeLessThan(longLine.length);
+    expect(result).toContain('truncated');
+    // Cut at whitespace · last char before marker is not mid-token
+    const beforeMarker = result.split('\n')[0];
+    expect(beforeMarker.endsWith(',') || beforeMarker.endsWith('col')).toBe(true);
+  });
+
+  it('shallow · $1/$2 placeholders preserved in truncated output (OWASP LLM02)', () => {
+    const lines = [
+      'SELECT * FROM big WHERE a = $1',
+      ...Array.from({ length: 40 }, (_, i) => `  AND col_${i} = $${i + 2}`),
+    ];
+    const result = truncateSqlForDepth(lines.join('\n'), 'shallow');
+    expect(result).toContain('$1');
+    expect(result).not.toMatch(/= '[^$]/); // no raw values leaked
+  });
+});
+
+describe('handleGetQueryStatement · depth param (feat-003 #3)', () => {
+  const longSql = Array.from(
+    { length: 50 },
+    (_, i) => `SELECT col_${i} FROM t${i}`,
+  ).join('\n');
+
+  function mockLongQueryRow() {
+    mockSqlQuery.mockResolvedValueOnce([{ extension_exists: true }]);
+    mockSqlQuery.mockResolvedValueOnce([
+      {
+        query_signature: '999',
+        query: longSql,
+        calls: 5,
+        total_exec_time_ms: 12.3,
+        mean_exec_time_ms: 2.5,
+        rows: 5,
+      },
+    ]);
+  }
+
+  it('default (no depth) → shallow · long SQL truncated to 30 lines + marker', async () => {
+    mockLongQueryRow();
+    const result = await handleGetQueryStatement(
+      { query_signature: '999', projectId: 'p' },
+      mockNeonClient,
+      mockExtra,
+    );
+    expect(result.query.split('\n')).toHaveLength(31); // 30 + marker
+    expect(result.query).toContain('truncated');
+    expect(result.query).not.toContain('col_30');
+  });
+
+  it('depth=full → complete SQL (no truncation · no marker)', async () => {
+    mockLongQueryRow();
+    const result = await handleGetQueryStatement(
+      { query_signature: '999', projectId: 'p', depth: 'full' },
+      mockNeonClient,
+      mockExtra,
+    );
+    expect(result.query).toBe(longSql);
+    expect(result.query).toContain('col_49');
+    expect(result.query).not.toContain('truncated');
+  });
+
+  it('depth=shallow explicit → same as default (truncated)', async () => {
+    mockLongQueryRow();
+    const result = await handleGetQueryStatement(
+      { query_signature: '999', projectId: 'p', depth: 'shallow' },
+      mockNeonClient,
+      mockExtra,
+    );
+    expect(result.query).toContain('truncated');
+    expect(result.query).not.toContain('col_30');
   });
 });
