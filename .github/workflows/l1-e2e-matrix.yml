@@ -7,9 +7,8 @@
 # isolated server instance (CI port · NOT the persistent dev server's 3344), provisions the sales
 # fixture, runs unit + e2e + real-Neon chain checks, then tears down.
 #
-# ⚠️ TRIGGER: currently `workflow_dispatch` (manual) ONLY · because a self-hosted runner labeled
-# `openneon-dev` must be registered first (see landing/scripts/l1-sales-fixture/README.md).
-# Once the runner is registered + verified, change `on:` to add `push` (main) + `pull_request`.
+# TRIGGER: auto on every main push + PR (+ manual workflow_dispatch). The `openneon-dev` self-hosted
+# runner is registered + verified (run 26280281756 green · 2026-05-22). See README for runner ops.
 #
 # Implementation note (resolves detail design §11 OQ1/OQ3): single job · sequential checks. A single
 # self-hosted runner serializes matrix jobs anyway, and a single job avoids fixture race entirely.
@@ -20,10 +19,11 @@ name: L1 e2e (real Neon · self-hosted)
 
 on:
   workflow_dispatch: {}
-  # TODO (after runner registered · see scripts/l1-sales-fixture/README.md):
-  # push:
-  #   branches: [main]
-  # pull_request: {}
+  # Auto-trigger enabled 2026-05-22 after self-hosted runner registered + verified green
+  # (run 26280281756). Every main push + PR runs the real-Neon L1 ship gate.
+  push:
+    branches: [main]
+  pull_request: {}
 
 # CI server port · isolated from the persistent dev-server MCP server on 3344.
 # NOTE: NEON_LOCAL_URL is intentionally NOT global · it short-circuits connection-string.ts
