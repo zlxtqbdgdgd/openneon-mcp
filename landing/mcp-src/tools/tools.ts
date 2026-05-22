@@ -1782,6 +1782,7 @@ You MUST follow these steps:
         databaseName: params.databaseName,
         computeId: params.computeId,
         schema: params.schema,
+        depth: params.depth,
       },
       neonClient,
       extra,
