@@ -1,0 +1,94 @@
+# feat-061 · L1 day-one ship 端到端 fixture 自动化 (GitHub Actions · self-hosted runner · real Neon).
+#
+# Detail design: https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-061-L1-cross-skill-e2e-fixture-ci-matrix.html
+#
+# Runs on a self-hosted runner on the maintainer dev server (per ADR-0004 Layer 2 · 0 secret in
+# GitHub · runner connects local 127.0.0.1:55432 neon_local). Builds the PR code, starts an
+# isolated server instance (CI port · NOT the persistent dev server's 3344), provisions the sales
+# fixture, runs unit + e2e + real-Neon chain checks, then tears down.
+#
+# ⚠️ TRIGGER: currently `workflow_dispatch` (manual) ONLY · because a self-hosted runner labeled
+# `openneon-dev` must be registered first (see landing/scripts/l1-sales-fixture/README.md).
+# Once the runner is registered + verified, change `on:` to add `push` (main) + `pull_request`.
+#
+# Implementation note (resolves detail design §11 OQ1/OQ3): single job · sequential checks. A single
+# self-hosted runner serializes matrix jobs anyway, and a single job avoids fixture race entirely.
+# Per-step PASS/FAIL is reported by run-checks.sh output. Refactor to GH matrix jobs (setup→matrix→
+# teardown with `needs:`) only when multiple runners exist.
+
+name: L1 e2e (real Neon · self-hosted)
+
+on:
+  workflow_dispatch: {}
+  # TODO (after runner registered · see scripts/l1-sales-fixture/README.md):
+  # push:
+  #   branches: [main]
+  # pull_request: {}
+
+# CI server port · isolated from the persistent dev-server MCP server on 3344.
+env:
+  CI_PORT: '3355'
+  NEON_LOCAL_URL: 'postgres://cloud_admin:cloud_admin@127.0.0.1:55432/neondb'
+  MCP_BASE_URL: 'http://127.0.0.1:3355'
+
+jobs:
+  l1-e2e:
+    runs-on: [self-hosted, openneon-dev]
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: landing
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Node version
+        run: node -v && npm -v
+
+      - name: Install + build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Unit tests (mocked · feat-061 steps 2/3/6 coverage)
+        run: npm run test:unit
+
+      - name: Start server (CI port · NEON_LOCAL_URL active)
+        run: |
+          mkdir -p .run-logs
+          PORT="${CI_PORT}" nohup npm run start > .run-logs/ci-start.log 2>&1 &
+          echo $! > .run-logs/ci-start.pid
+          # wait for health (up to ~30s)
+          for i in $(seq 1 30); do
+            if curl -sS --max-time 3 "${MCP_BASE_URL}/api/health" >/dev/null 2>&1; then
+              echo "server up after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "server did not become healthy" >&2
+          cat .run-logs/ci-start.log >&2 || true
+          exit 1
+
+      - name: Provision sales fixture (real Neon)
+        run: bash scripts/l1-sales-fixture/setup.sh
+        env:
+          PSQL: ${{ vars.NEON_PSQL_PATH || 'psql' }}
+
+      - name: E2e chain checks (real Neon · feat-061 steps 0/B/C/D + listing)
+        run: bash scripts/l1-sales-fixture/run-checks.sh
+
+      - name: Playwright e2e (feat-061 step 1 · listing wire-level)
+        run: |
+          npx playwright install --with-deps chromium || true
+          npm run test:e2e:web
+
+      - name: Teardown fixture + stop server (always)
+        if: always()
+        run: |
+          bash scripts/l1-sales-fixture/teardown.sh || true
+          PID=$(cat .run-logs/ci-start.pid 2>/dev/null || echo '')
+          [ -n "$PID" ] && kill "$PID" 2>/dev/null || true
+          # also kill any next-server bound to CI_PORT (pkill may not match · best effort)
+          pkill -f "PORT=${CI_PORT}" 2>/dev/null || true
+        env:
+          PSQL: ${{ vars.NEON_PSQL_PATH || 'psql' }}
