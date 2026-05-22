@@ -18,7 +18,11 @@ vi.mock('@sentry/node', () => ({
   startSpan: vi.fn((_opts, fn) => fn()),
 }));
 
-import { handleGetSchemas, toLikePattern } from '../tools/handlers/schemas';
+import {
+  handleGetSchemas,
+  toLikePattern,
+  type SchemaRow,
+} from '../tools/handlers/schemas';
 import { NotFoundError } from '../server/errors';
 import type { ToolHandlerExtraParams } from '../tools/types';
 
@@ -100,7 +104,9 @@ describe('handleGetSchemas · happy path · sales table 4 columns', () => {
       mockExtra,
     );
 
-    const saleDate = result.rows.find((r) => r.column_name === 'sale_date');
+    const saleDate = (result.rows as SchemaRow[]).find(
+      (r) => r.column_name === 'sale_date',
+    );
     expect(saleDate?.is_indexed).toBe(false);
   });
 
@@ -269,8 +275,9 @@ describe('handleGetSchemas · type coercion', () => {
       mockExtra,
     );
 
-    expect(typeof result.rows[0].is_indexed).toBe('boolean');
-    expect(typeof result.rows[0].is_nullable).toBe('boolean');
+    const row = result.rows[0] as SchemaRow;
+    expect(typeof row.is_indexed).toBe('boolean');
+    expect(typeof row.is_nullable).toBe('boolean');
   });
 });
 
@@ -415,6 +422,163 @@ describe('handleGetSchemas · wildcard filter end-to-end (feat-004 #2)', () => {
     expect(caught).toBeInstanceOf(NotFoundError);
     expect(caught?.message).toMatch(/nonexistent\*/);
     expect(caught?.message).toMatch(/wildcard/);
+  });
+});
+
+describe('handleGetSchemas · progressive disclosure depth (feat-004 #4)', () => {
+  it('default (no depth) → shallow query (5 fields · is_indexed boolean · no indpred)', async () => {
+    mockSqlQuery.mockResolvedValueOnce([
+      {
+        table_name: 'sales',
+        column_name: 'id',
+        data_type: 'integer',
+        is_indexed: true,
+        is_nullable: false,
+      },
+    ]);
+
+    const result = await handleGetSchemas(
+      { filter: 'sales', projectId: 'p' },
+      mockNeonClient,
+      mockExtra,
+    );
+
+    expect(result.meta.depth).toBe('shallow');
+    expect(result.rows[0]).toHaveProperty('is_indexed');
+    expect(result.rows[0]).not.toHaveProperty('index_name');
+    const sqlString = mockSqlQuery.mock.calls[0][0] as string;
+    expect(sqlString).not.toContain('indpred'); // shallow has no partial-index introspection
+    expect(sqlString).not.toContain('pg_attrdef');
+  });
+
+  it('depth=full → 9-field rows (default_value + index detail) + meta.depth=full', async () => {
+    mockSqlQuery.mockResolvedValueOnce([
+      {
+        table_name: 'sales',
+        column_name: 'id',
+        data_type: 'integer',
+        is_nullable: false,
+        default_value: "nextval('sales_id_seq'::regclass)",
+        index_name: 'sales_pkey',
+        index_type: 'btree',
+        index_partial_where: null,
+        index_include_columns: null,
+      },
+      {
+        table_name: 'sales',
+        column_name: 'sale_date',
+        data_type: 'timestamp without time zone',
+        is_nullable: true,
+        default_value: null,
+        index_name: null,
+        index_type: null,
+        index_partial_where: null,
+        index_include_columns: null,
+      },
+    ]);
+
+    const result = await handleGetSchemas(
+      { filter: 'sales', projectId: 'p', depth: 'full' },
+      mockNeonClient,
+      mockExtra,
+    );
+
+    expect(result.meta.depth).toBe('full');
+    const idRow = result.rows[0] as Record<string, unknown>;
+    expect(idRow).toMatchObject({
+      table_name: 'sales',
+      column_name: 'id',
+      data_type: 'integer',
+      is_nullable: false,
+      default_value: "nextval('sales_id_seq'::regclass)",
+      index_name: 'sales_pkey',
+      index_type: 'btree',
+      index_partial_where: null,
+      index_include_columns: null,
+    });
+    // 9 fields · NO is_indexed (index_name conveys it)
+    expect(idRow).not.toHaveProperty('is_indexed');
+    expect(Object.keys(idRow)).toHaveLength(9);
+  });
+
+  it('depth=full · column in no index → index fields null (sale_date)', async () => {
+    mockSqlQuery.mockResolvedValueOnce([
+      {
+        table_name: 'sales',
+        column_name: 'sale_date',
+        data_type: 'timestamp without time zone',
+        is_nullable: true,
+        default_value: null,
+        index_name: null,
+        index_type: null,
+        index_partial_where: null,
+        index_include_columns: null,
+      },
+    ]);
+
+    const result = await handleGetSchemas(
+      { filter: 'sales', projectId: 'p', depth: 'full' },
+      mockNeonClient,
+      mockExtra,
+    );
+
+    const row = result.rows[0] as Record<string, unknown>;
+    expect(row.index_name).toBeNull();
+    expect(row.index_type).toBeNull();
+  });
+
+  it('depth=full SQL introspects pg_attrdef + pg_index (indpred / indnkeyatts INCLUDE / pg_am)', async () => {
+    mockSqlQuery.mockResolvedValueOnce([
+      {
+        table_name: 'sales',
+        column_name: 'id',
+        data_type: 'integer',
+        is_nullable: false,
+        default_value: null,
+        index_name: null,
+        index_type: null,
+        index_partial_where: null,
+        index_include_columns: null,
+      },
+    ]);
+
+    await handleGetSchemas(
+      { filter: 'sales', projectId: 'p', depth: 'full' },
+      mockNeonClient,
+      mockExtra,
+    );
+
+    const sqlString = mockSqlQuery.mock.calls[0][0] as string;
+    expect(sqlString).toContain('pg_attrdef'); // default_value
+    expect(sqlString).toContain('indpred'); // partial index WHERE
+    expect(sqlString).toContain('indnkeyatts'); // INCLUDE columns boundary
+    expect(sqlString).toContain('pg_am'); // index_type (access method)
+    expect(sqlString).toContain('pg_get_expr'); // default + partial WHERE expression rendering
+  });
+
+  it('depth=full + wildcard works together (same LIKE pattern · feat-004 #2 + #4)', async () => {
+    mockSqlQuery.mockResolvedValueOnce([
+      {
+        table_name: 'sales',
+        column_name: 'id',
+        data_type: 'integer',
+        is_nullable: false,
+        default_value: null,
+        index_name: 'sales_pkey',
+        index_type: 'btree',
+        index_partial_where: null,
+        index_include_columns: null,
+      },
+    ]);
+
+    await handleGetSchemas(
+      { filter: 'sales*', projectId: 'p', depth: 'full' },
+      mockNeonClient,
+      mockExtra,
+    );
+
+    // wildcard sales* → LIKE 'sales%' · works in full query too
+    expect(mockSqlQuery.mock.calls[0][1]).toEqual(['public', 'sales%']);
   });
 });
 

@@ -986,6 +986,12 @@ export const getNeondbSchemasInputSchema = z.object({
     .optional()
     .default('public')
     .describe('PostgreSQL schema name. Defaults to "public".'),
+  depth: z
+    .enum(['shallow', 'full'])
+    .optional()
+    .describe(
+      "Progressive disclosure depth (feat-004 #4). 'shallow' (default · token economy) returns 5 fields (table/column/type/is_indexed/is_nullable). 'full' returns 9 fields adding default_value + index detail (index_name/type/partial-WHERE/INCLUDE columns).",
+    ),
   format: outputFormatField,
 });
 

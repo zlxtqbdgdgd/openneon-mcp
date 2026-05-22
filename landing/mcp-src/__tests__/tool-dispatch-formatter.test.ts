@@ -173,6 +173,7 @@ describe('T8 get_neondb_schemas dispatch · feat-006 #2 CSV default', () => {
     meta: {
       filter: 'sales',
       schema: 'public',
+      depth: 'shallow' as const,
       totalRows: 3,
     },
   };
