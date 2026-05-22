@@ -948,6 +948,12 @@ export const getNeondbQueryStatementInputSchema = z.object({
     .describe(
       'The ID of the compute/endpoint. If not provided, the read-write compute associated with the branch will be used.',
     ),
+  depth: z
+    .enum(['shallow', 'full'])
+    .optional()
+    .describe(
+      "Progressive disclosure depth (feat-003 #3). 'shallow' (default · token economy) returns SQL truncated to first 30 lines + a tail marker. 'full' returns the complete SQL text (any length · explicit opt-in).",
+    ),
   format: outputFormatField,
 });
 

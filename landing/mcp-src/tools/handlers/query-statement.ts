@@ -22,7 +22,48 @@ import { startSpan } from '@sentry/node';
 import { NotFoundError } from '../../server/errors';
 import { handleGetConnectionString } from './connection-string';
 import { createSqlClient } from './sql-driver';
+import { DEFAULT_DEPTH, type DepthLevel } from '../../config/depth';
 import type { ToolHandlerExtraParams } from '../types';
+
+// feat-003 #3 · shallow depth truncation thresholds (per detail design §5 · shallow ≤ 1K token).
+const SHALLOW_MAX_LINES = 30;
+// Secondary char cap for pathological single-line SQL (a 10K-char one-liner has only 1 line ·
+// line-count alone wouldn't truncate it · token budget would blow). ~2K chars ≈ 500 token.
+const SHALLOW_MAX_CHARS = 2000;
+const TRUNCATION_MARKER = '-- <truncated · use depth=full for complete SQL>';
+
+/**
+ * Truncate SQL text for shallow depth (feat-003 #3).
+ *
+ * - `full` → return SQL unchanged.
+ * - `shallow` → first 30 lines (line-boundary cut · never mid-line, so a WHERE clause on its
+ *   own line is never split mid-token), then a secondary 2K-char cap for pathological
+ *   single-line SQL (cut at last whitespace to avoid splitting a token). Appends a tail marker
+ *   so the agent knows to re-request with depth=full.
+ *
+ * Returns the (possibly truncated) query string. Idempotent for short SQL (no marker added).
+ */
+export function truncateSqlForDepth(sql: string, depth: DepthLevel): string {
+  if (depth === 'full') return sql;
+
+  const lines = sql.split('\n');
+  let result = sql;
+  let truncated = false;
+
+  if (lines.length > SHALLOW_MAX_LINES) {
+    result = lines.slice(0, SHALLOW_MAX_LINES).join('\n');
+    truncated = true;
+  }
+
+  if (result.length > SHALLOW_MAX_CHARS) {
+    const slice = result.slice(0, SHALLOW_MAX_CHARS);
+    const lastWhitespace = slice.lastIndexOf(' ');
+    result = lastWhitespace > 0 ? slice.slice(0, lastWhitespace) : slice;
+    truncated = true;
+  }
+
+  return truncated ? `${result}\n${TRUNCATION_MARKER}` : result;
+}
 
 export type GetQueryStatementInput = {
   /** PostgreSQL pg_stat_statements queryid (bigint as string per detail design §4). */
@@ -35,6 +76,12 @@ export type GetQueryStatementInput = {
   databaseName?: string;
   /** Optional compute ID. Defaults to default compute (per handleGetConnectionString). */
   computeId?: string;
+  /**
+   * Progressive disclosure depth (feat-003 #3 · feat-007 shared infra).
+   * - 'shallow' (default · token economy) · SQL truncated to first 30 lines + tail marker
+   * - 'full' · complete SQL text (any length · agent explicit opt-in)
+   */
+  depth?: DepthLevel;
 };
 
 export type QueryStatementResult = {
@@ -121,9 +168,12 @@ export async function handleGetQueryStatement(
         }
 
         const row = rows[0];
+        const depth = args.depth ?? DEFAULT_DEPTH;
         return {
           query_signature: String(row.query_signature),
-          query: String(row.query),
+          // Truncate to first 30 lines for shallow depth (token economy · per §5) · full = complete.
+          // Parameterized $1/$2 placeholders preserved either way (truncation is line-level · OWASP LLM02 防护 intact).
+          query: truncateSqlForDepth(String(row.query), depth),
           calls: Number(row.calls),
           total_exec_time_ms: Number(row.total_exec_time_ms),
           mean_exec_time_ms: Number(row.mean_exec_time_ms),

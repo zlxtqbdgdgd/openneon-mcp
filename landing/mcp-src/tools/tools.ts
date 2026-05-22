@@ -1752,6 +1752,7 @@ You MUST follow these steps:
         branchId: params.branchId,
         databaseName: params.databaseName,
         computeId: params.computeId,
+        depth: params.depth,
       },
       neonClient,
       extra,
