@@ -77,3 +77,27 @@ to confirm it goes green. Then edit `.github/workflows/l1-e2e-matrix.yml` `on:` 
   by feat-062's local-call (empty `fakeNeonClient`). Tracked as **feat-063** (deferred · neon_local
   single-project makes T1 listing degenerate + T1 logic is unit-tested). `run-checks.sh` asserts T1
   returns the *expected* deferred TypeError rather than skipping silently.
+
+## Troubleshooting (lessons from first bring-up · 2026-05-22)
+
+These bit us when the runner first went live · keep them in mind when touching the workflow or
+registering another runner.
+
+1. **The runner uses its ambient (system) Node, which is too old.** A self-hosted runner inherits
+   the PATH of the shell that launched `run.sh` — on this dev server that's an old system Node whose
+   npm 6 cannot read `package-lock.json` lockfileVersion 3 (`npm ERR! Cannot read property
+   '@keyv/postgres' of undefined`). The workflow's **"Use Node 20"** step prepends Node 20 to
+   `$GITHUB_PATH` (`vars.NODE20_BIN_PATH`, default `/home/z1/liqiang/tools/node20/bin`). Don't remove
+   that step; if you register a new runner, point that var at its Node 20 install.
+
+2. **`NEON_LOCAL_URL` must NOT be a global workflow env var.** It short-circuits
+   `connection-string.ts` (feat-062 self-hosted bypass), and the mocked unit tests
+   (`connection-string.test.ts`) assert the *non-bypassed* Neon Cloud path. If `NEON_LOCAL_URL` is
+   in the global `env:` block, the unit-test step inherits it and 4 connection-string tests fail.
+   Set it **only on the "Start server" step** (the one process that actually needs the bypass).
+
+3. **The runner is started with `nohup ./run.sh &` (non-sudo) — it does NOT survive a dev server
+   reboot.** After a reboot, re-run the start command (`cd ~/actions-runner && nohup ./run.sh >
+   ~/actions-runner/runner.log 2>&1 &`). Jobs queue (don't fail) while the runner is down. For
+   auto-restart, install the systemd service instead (`sudo ./svc.sh install liqiang && sudo
+   ./svc.sh start` · see the registration section · needs one-time sudo).
