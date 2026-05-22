@@ -111,6 +111,23 @@ describe('tool category field (feat-005 #2 · narrative #3 ecosystem-friendly)',
     expect(t8!.category).toBe('core');
   });
 
+  it('T6/T8 descriptions embed anti-hallucination workflow_rule (feat-003 #5 · agent internalizes via default prompt)', () => {
+    const t6 = NEON_TOOLS.find((t) => t.name === 'get_neondb_query_statement');
+    const t8 = NEON_TOOLS.find((t) => t.name === 'get_neondb_schemas');
+
+    // T6 rule · NEVER fabricate SQL · always call first · pairs with T8
+    expect(t6!.description).toContain('<workflow_rule>');
+    expect(t6!.description).toContain('HALLUCINATION GUARD');
+    expect(t6!.description).toContain('get_neondb_schemas'); // references the T8 pair
+    expect(t6!.description).toMatch(/NEVER.*(write|quote|edit|reason)/);
+
+    // T8 rule · NEVER assume columns · always call first · pairs with T6
+    expect(t8!.description).toContain('<workflow_rule>');
+    expect(t8!.description).toContain('HALLUCINATION GUARD');
+    expect(t8!.description).toContain('get_neondb_query_statement'); // references the T6 pair
+    expect(t8!.description).toContain('防幻觉一对组合');
+  });
+
   it('upstream Neon tools default to optional (spot-check 5: run_sql / list_projects / delete_branch / create_project / describe_table_schema)', () => {
     const upstreamSpotCheck = [
       'run_sql',
