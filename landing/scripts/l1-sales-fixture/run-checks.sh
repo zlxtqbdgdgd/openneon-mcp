@@ -90,5 +90,22 @@ T6BAD=$(post get_neondb_query_statement '{"query_signature":"999999999999999999"
 [ "$(echo "$T6BAD" | pyck "d.get('name')=='NotFoundError'")" = "OK" ] \
   && pass "T6 invalid queryid → NotFoundError (no fabrication)" || fail "T6 invalid unexpected: $T6BAD"
 
+# ---- Depth · feat-007 #5 progressive disclosure · 4 case ----
+# shallow rows have NO index_name field (5 fields) · full rows DO (9 fields).
+echo "[Depth · feat-007 #5 · 4 case] T8 default / shallow / full / invalid→fallback"
+D1=$(post get_neondb_schemas '{"filter":"sales","format":"json"}' | inner_py)
+[ "$(echo "$D1" | pyck "isinstance(d,list) and all('index_name' not in r for r in d)")" = "OK" ] \
+  && pass "depth default (omitted) → shallow · 5 fields" || fail "depth default unexpected: $D1"
+D2=$(post get_neondb_schemas '{"filter":"sales","depth":"shallow","format":"json"}' | inner_py)
+[ "$(echo "$D2" | pyck "isinstance(d,list) and all('index_name' not in r for r in d)")" = "OK" ] \
+  && pass "depth=shallow explicit → 5 fields" || fail "depth=shallow unexpected: $D2"
+D3=$(post get_neondb_schemas '{"filter":"sales","depth":"full","format":"json"}' | inner_py)
+[ "$(echo "$D3" | pyck "isinstance(d,list) and all('index_name' in r for r in d)")" = "OK" ] \
+  && pass "depth=full explicit → 9 fields (index_name present)" || fail "depth=full unexpected: $D3"
+# invalid depth via OAuth-free local-call (skips zod) → isValidDepth normalizes to shallow · NOT error
+D4=$(post get_neondb_schemas '{"filter":"sales","depth":"deep","format":"json"}' | inner_py)
+[ "$(echo "$D4" | pyck "isinstance(d,list) and all('index_name' not in r for r in d)")" = "OK" ] \
+  && pass "depth=invalid ('deep') → fallback shallow (no error)" || fail "depth=invalid unexpected: $D4"
+
 echo "== result: ${PASS} passed · ${FAIL} failed =="
 [ "$FAIL" -eq 0 ]

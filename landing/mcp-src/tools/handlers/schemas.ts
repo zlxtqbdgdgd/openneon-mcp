@@ -23,7 +23,11 @@ import { startSpan } from '@sentry/node';
 import { NotFoundError } from '../../server/errors';
 import { handleGetConnectionString } from './connection-string';
 import { createSqlClient } from './sql-driver';
-import { DEFAULT_DEPTH, type DepthLevel } from '../../config/depth';
+import {
+  DEFAULT_DEPTH,
+  isValidDepth,
+  type DepthLevel,
+} from '../../config/depth';
 import type { ToolHandlerExtraParams } from '../types';
 
 export type GetSchemasInput = {
@@ -262,7 +266,10 @@ export async function handleGetSchemas(
       //    plain Postgres TCP based on URI · see sql-driver.ts).
       const sql = await createSqlClient(connectionString.uri);
       try {
-        const depth = args.depth ?? DEFAULT_DEPTH;
+        // Normalize: undefined OR invalid (e.g. via OAuth-free local-call which skips zod) → shallow.
+        const depth: DepthLevel = isValidDepth(args.depth)
+          ? args.depth
+          : DEFAULT_DEPTH;
         const likePattern = toLikePattern(args.filter);
 
         // 3. Query pg system catalogs for column metadata · depth决定字段宽度 (feat-004 #4 + feat-007):

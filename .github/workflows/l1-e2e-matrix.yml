@@ -48,6 +48,16 @@ jobs:
       run:
         working-directory: landing
     steps:
+      # dev server's HTTPS to github.com is flaky over HTTP/2 (RPC "HTTP2 framing layer" errors +
+      # stream resets during checkout fetch). Force HTTP/1.1 + a big post-buffer so actions/checkout
+      # below fetches reliably. Runs before checkout (needs no repo · just sets the runner's git).
+      - name: Prefer HTTP/1.1 for git (dev server flaky HTTP/2 → github.com)
+        # override job default working-directory (landing) · that subdir doesn't exist pre-checkout
+        working-directory: ${{ github.workspace }}
+        run: |
+          git config --global http.version HTTP/1.1
+          git config --global http.postBuffer 524288000
+
       - name: Checkout
         uses: actions/checkout@v4
 
