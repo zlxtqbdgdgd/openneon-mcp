@@ -16,7 +16,9 @@ concurrency:
 
 jobs:
   claude:
+    # fork guard: upstream-only (neondatabase runner group + ANTHROPIC secret not in forks)
     if: |
+      github.repository == 'neondatabase/mcp-server-neon' &&
       (
         (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude') &&
          (github.event.comment.author_association == 'OWNER' ||
