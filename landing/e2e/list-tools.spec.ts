@@ -102,6 +102,29 @@ test.describe('/api/list-tools endpoint · all-listing opt-in', () => {
     expect(byName['find_neondb_instances'].defaultDepth).toBeNull();
   });
 
+  test('advertises outputFormat (feat-006 #3 · day-one tools accept ?format=)', async ({
+    request,
+  }) => {
+    const response = await request.get('/api/list-tools?include=all');
+    expect(response.ok()).toBeTruthy();
+
+    const body = await response.json();
+    const byName = Object.fromEntries(
+      body.tools.map((t: { name: string }) => [t.name, t]),
+    );
+    expect(byName['get_neondb_query_statement'].outputFormat).toEqual([
+      'csv',
+      'json',
+      'tsv',
+    ]);
+    expect(byName['find_neondb_instances'].outputFormat).toEqual([
+      'csv',
+      'json',
+      'tsv',
+    ]);
+    expect(byName['run_sql'].outputFormat).toBeNull();
+  });
+
   test('?include=all returns 12 tools for category=querying (10 upstream + 2 day-one T6/T2)', async ({
     request,
   }) => {
