@@ -17,6 +17,7 @@ import {
 import { NEON_HANDLERS } from '../../../mcp-src/tools/index';
 import { classifyOp } from '../../../mcp-src/protection/destructive-detector';
 import { runPipeline } from '../../../mcp-src/policy/pipeline';
+import { resolvePolicy, applyOverrides } from '../../../mcp-src/policy/loader';
 import {
   getDocResource,
   listDocsResources,
@@ -464,12 +465,15 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                         ? (a.sqlStatements as string[]).join('; ')
                         : undefined;
                   const opClass = classifyOp(tool.name, sqlForClassify);
+                  const effectiveProjectId =
+                    grant.projectId ?? (a.projectId as string | undefined);
+                  const resolved = resolvePolicy(effectiveProjectId);
                   const verdict = runPipeline({
                     opClass,
                     toolName: tool.name,
-                    projectId:
-                      grant.projectId ?? (a.projectId as string | undefined),
-                    autonomyLevel: 'L1', // stub · policy.yaml loader 在 feat-056/#2 (#75)
+                    projectId: effectiveProjectId,
+                    // feat-056/#2 (#75): per-project autonomy_level + SQL-pattern override
+                    autonomyLevel: applyOverrides(sqlForClassify, resolved),
                     grant: { projectId: grant.projectId },
                   });
                   if (verdict.action === 'deny') {
