@@ -479,6 +479,8 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                     // feat-056/#2 (#75): per-project autonomy_level + SQL-pattern override
                     autonomyLevel: applyOverrides(sqlForClassify, resolved),
                     grant: { projectId: grant.projectId },
+                    // feat-030/#79: per-project timeout 覆盖 → timeoutInjectionStage (执行前注入消费在后续 write-path 成熟)
+                    timeoutOverrides: resolved.timeout_overrides,
                   });
                   if (verdict.action === 'deny') {
                     logger.warn('policy deny (feat-056):', {
