@@ -472,6 +472,10 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                     opClass,
                     toolName: tool.name,
                     projectId: effectiveProjectId,
+                    // feat-056/#3 (#76): G1 用原始请求 projectId (injectProjectId 覆盖前) 检测跨 project 越权
+                    requestedProjectId: (
+                      args as Record<string, unknown> | undefined
+                    )?.projectId as string | undefined,
                     // feat-056/#2 (#75): per-project autonomy_level + SQL-pattern override
                     autonomyLevel: applyOverrides(sqlForClassify, resolved),
                     grant: { projectId: grant.projectId },

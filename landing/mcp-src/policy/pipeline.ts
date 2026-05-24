@@ -11,6 +11,11 @@
 import type { OpClass } from '../protection/destructive-detector';
 import { isHardDenied } from './hard-deny';
 import { lookupMatrix } from './matrix';
+import {
+  isRateLimitedOp,
+  recordAndCheckRateLimit,
+  RATE_LIMIT_CONFIG,
+} from './rate-limiter';
 
 export type AutonomyLevel = 'L1' | 'L2a' | 'L2b' | 'L3' | 'L4';
 
@@ -31,9 +36,10 @@ export type Verdict = {
 export type EnforcementCtx = {
   opClass: OpClass;
   toolName: string;
-  projectId?: string;
+  projectId?: string; // effective (injectProjectId 后 · 审计/限流 key)
+  requestedProjectId?: string; // 原始 args.projectId (injectProjectId 前 · G1 检测跨 project 意图)
   autonomyLevel: AutonomyLevel;
-  grant?: { projectId?: string | null }; // key 的 project scope (G1 · #76 用 · null = 非 project-scoped)
+  grant?: { projectId?: string | null }; // key 的 project scope (G1 · null = 非 project-scoped)
 };
 
 /** stage: 适用则返回 Verdict · 不适用返回 null (继续下一 stage) */
@@ -45,6 +51,37 @@ const hardDenyG4Stage: Stage = (ctx) => {
     return {
       action: 'deny',
       reason: `${ctx.opClass} 命中 hard-deny · 任何 L 级别都不允许 (ADR-0007)`,
+      audit_severity: 'high',
+      terminal: true,
+    };
+  }
+  return null;
+};
+
+// G1 跨 project stage (feat-056/#76) · §8.2 第 1 步 · 原始请求 projectId ≠ key scope → deny+alert
+// (显式拒越权 · 比 injectProjectId 静默覆盖更明确 · hard-deny · 任何 L 不可禁 · ADR-0007)
+const g1CrossProjectStage: Stage = (ctx) => {
+  const scope = ctx.grant?.projectId;
+  if (scope && ctx.requestedProjectId && scope !== ctx.requestedProjectId) {
+    return {
+      action: 'deny',
+      reason: `跨 project 越权: 请求 ${ctx.requestedProjectId} · key scope ${scope} (G1 hard-deny)`,
+      audit_severity: 'high',
+      terminal: true,
+    };
+  }
+  return null;
+};
+
+// G9 速率限制 stage (feat-056/#76) · §8.2 第 3 步 (G4 之后) · destructive op 5min 滑窗超限 → deny
+// (hard-deny · 防 agent 批量删 · R10 Cursor 9 秒删库)。注: 有 in-memory counter 副作用 (rate-limit 本质)。
+const g9RateLimitStage: Stage = (ctx) => {
+  if (!isRateLimitedOp(ctx.opClass)) return null; // 只读/建索引/分支 不计
+  const key = ctx.grant?.projectId ?? ctx.projectId ?? 'global';
+  if (recordAndCheckRateLimit(key)) {
+    return {
+      action: 'deny',
+      reason: `destructive ops 速率超限 (G9 · >${RATE_LIMIT_CONFIG.MAX_DESTRUCTIVE}/${RATE_LIMIT_CONFIG.WINDOW_MS / 60000}min) · hard-deny`,
       audit_severity: 'high',
       terminal: true,
     };
@@ -74,8 +111,14 @@ const matrixStage: Stage = (ctx) => {
   };
 };
 
-// §8.2 顺序 stage 链 · 内置: hard-deny G4 (#73) → matrix lookup (#75) · 后续护栏 registerStage 注册
-const BUILTIN_STAGES: readonly Stage[] = [hardDenyG4Stage, matrixStage];
+// §8.2 顺序 stage 链 · 内置: G1 跨project (#76) → G4 hard-deny (#73) → G9 速率 (#76) → matrix (#75)
+// · 后续护栏 (feat-026/027/030) registerStage 注册
+const BUILTIN_STAGES: readonly Stage[] = [
+  g1CrossProjectStage,
+  hardDenyG4Stage,
+  g9RateLimitStage,
+  matrixStage,
+];
 const STAGES: Stage[] = [...BUILTIN_STAGES];
 
 /** 注册一个 stage 到链尾 (供 feat-026/027/028/030 等护栏注册自己的 stage) */
