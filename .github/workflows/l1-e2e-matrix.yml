@@ -58,6 +58,22 @@ jobs:
           git config --global http.version HTTP/1.1
           git config --global http.postBuffer 524288000
 
+      # dev server's connectivity to github.com drops for minutes at a time (Connection timed out /
+      # Empty reply). Those outage windows made the checkout below fail (PR #70/#71 needed manual
+      # reruns). Wait out a transient outage (~9min patience) so checkout runs while github.com is
+      # reachable · then actions/checkout's own 3 retries cover any mid-fetch blip.
+      - name: Wait for github.com reachability (dev server flaky network)
+        working-directory: ${{ github.workspace }}
+        run: |
+          for i in $(seq 1 24); do
+            if curl -sSf --max-time 8 -o /dev/null https://github.com; then
+              echo "github.com reachable (attempt $i)"; exit 0
+            fi
+            echo "github.com unreachable · waiting 15s (attempt $i/24)"
+            sleep 15
+          done
+          echo "::error::github.com still unreachable after ~9min"; exit 1
+
       - name: Checkout
         uses: actions/checkout@v4
 
