@@ -76,6 +76,12 @@ export const describeProjectInputSchema = z.object({
   projectId: z.string().describe('The ID of the project to describe'),
 });
 
+export const getNeondbPolicyInputSchema = z.object({
+  projectId: z
+    .string()
+    .describe('The Neon project_id to get the autonomy policy advisory for'),
+});
+
 export const runSqlInputSchema = z.object({
   sql: z.string().describe('The SQL query to execute'),
   projectId: z
@@ -998,9 +1004,7 @@ export const getNeondbSchemasInputSchema = z.object({
 // feat-002 T2 get_neondb_calling_services input schema · sales 剧本应用归因工具
 // detail design: features/feat-002-L1-mcp-tool-t2-calling-services.html
 export const getNeondbCallingServicesInputSchema = z.object({
-  projectId: z
-    .string()
-    .describe('The ID of the Neon project to query.'),
+  projectId: z.string().describe('The ID of the Neon project to query.'),
   branchId: z
     .string()
     .optional()

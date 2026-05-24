@@ -16,6 +16,7 @@ import { handleConfigureNeonAuth } from './handlers/neon-auth-config';
 import { handleGetNeonAuthConfig } from './handlers/neon-auth-get-config';
 import { handleProvisionNeonDataApi } from './handlers/data-api';
 import { handleSearch } from './handlers/search';
+import { handleGetPolicy } from './handlers/get-policy';
 import { handleFetch } from './handlers/fetch';
 import { getDocResource, listDocsResources } from './handlers/docs';
 
@@ -1801,6 +1802,13 @@ You MUST follow these steps:
   // 1 次调用拿到 project + branch + endpoint 全部必要信息 · 不用 2-3 次串调 Neon API
   //
   // feat-006 #2 (token economy): tabular array · format via formatToolResponse · default 'csv'
+  get_neondb_policy: async ({ params }) => {
+    const result = handleGetPolicy({ projectId: params.projectId });
+    return {
+      content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+    };
+  },
+
   find_neondb_instances: async ({ params }, neonClient, extra) => {
     const result = await handleFindNeondbInstances(
       {

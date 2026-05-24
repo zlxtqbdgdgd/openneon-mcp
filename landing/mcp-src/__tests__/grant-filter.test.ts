@@ -47,7 +47,7 @@ describe('filterToolsForGrant', () => {
       grant({ projectId: 'proj-123', scopes: null }),
     );
     const names = tools.map((t) => t.name);
-    expect(tools).toHaveLength(27); // 24 upstream + 3 day-one (T6/T8/T2 · all require projectId · T1 in PROJECT_AGNOSTIC_TOOLS so hidden)
+    expect(tools).toHaveLength(28); // 24 upstream + 3 day-one (T6/T8/T2) + feat-057 get_policy (require projectId · T1 hidden)
     expect(names).not.toContain('list_projects');
     expect(names).not.toContain('create_project');
     expect(names).not.toContain('search');
