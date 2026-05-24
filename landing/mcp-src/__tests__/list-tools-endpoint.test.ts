@@ -57,10 +57,10 @@ describe('/api/list-tools endpoint', () => {
     });
   });
 
-  it('returns 35 tools when include=all (full listing opt-in · backward-compat for clients wanting upstream tools)', async () => {
+  it('returns 36 tools when include=all (full listing opt-in · backward-compat for clients wanting upstream tools)', async () => {
     const body = await callListTools({ include: 'all' });
     expect(body.categoryInclude).toBe('all');
-    expect(body.tools).toHaveLength(35); // 31 upstream + 4 day-one (T1/T2/T6/T8)
+    expect(body.tools).toHaveLength(36); // 31 upstream + 4 day-one (T1/T2/T6/T8) + feat-057 get_policy
   });
 
   it('filters by scopes when category param is present (with include=all to isolate grant filter)', async () => {
@@ -82,7 +82,7 @@ describe('/api/list-tools endpoint', () => {
       include: 'all',
     });
     expect(body.grant.projectId).toBe('proj-123');
-    expect(body.tools).toHaveLength(27); // 24 upstream + 3 day-one (T6/T8/T2 require projectId · T1 in PROJECT_AGNOSTIC_TOOLS · hidden)
+    expect(body.tools).toHaveLength(28); // 24 upstream + 3 day-one (T6/T8/T2) + feat-057 get_policy (require projectId · T1 hidden)
     const names = body.tools.map((t) => t.name);
     expect(names).not.toContain('list_projects');
     expect(names).not.toContain('create_project');
@@ -93,7 +93,7 @@ describe('/api/list-tools endpoint', () => {
   it('filters to readOnlySafe tools with readonly=true (with include=all)', async () => {
     const body = await callListTools({ readonly: 'true', include: 'all' });
     expect(body.readOnly).toBe(true);
-    expect(body.tools).toHaveLength(23); // 19 upstream + 4 day-one (T1/T2/T6/T8 · all readOnlySafe: true)
+    expect(body.tools).toHaveLength(24); // 19 upstream + 4 day-one (T1/T2/T6/T8) + feat-057 get_policy · all readOnlySafe
     for (const tool of body.tools) {
       expect(tool.readOnlySafe).toBe(true);
     }
@@ -108,7 +108,7 @@ describe('/api/list-tools endpoint', () => {
     const res = await GET(req);
     const body = (await res.json()) as ListToolsResponse;
     expect(body.readOnly).toBe(true);
-    expect(body.tools).toHaveLength(23); // 19 upstream + 4 day-one (T1/T2/T6/T8 · readOnlySafe)
+    expect(body.tools).toHaveLength(24); // 19 upstream + 4 day-one (T1/T2/T6/T8) + feat-057 · readOnlySafe
   });
 
   it('readonly query param takes precedence over x-read-only header (with include=all)', async () => {
@@ -121,7 +121,7 @@ describe('/api/list-tools endpoint', () => {
     const res = await GET(req);
     const body = (await res.json()) as ListToolsResponse;
     expect(body.readOnly).toBe(false);
-    expect(body.tools).toHaveLength(35); // 31 upstream + 4 day-one (T1/T2/T6/T8)
+    expect(body.tools).toHaveLength(36); // 31 upstream + 4 day-one (T1/T2/T6/T8) + feat-057 get_policy
   });
 
   it('include=core explicit returns the same as default (4 day-one core tools · full · sales 4-step 完整)', async () => {

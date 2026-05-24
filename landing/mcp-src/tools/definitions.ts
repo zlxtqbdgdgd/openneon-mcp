@@ -16,6 +16,7 @@ import {
   explainSqlStatementInputSchema,
   getConnectionStringInputSchema,
   getDatabaseTablesInputSchema,
+  getNeondbPolicyInputSchema,
   listBranchComputesInputSchema,
   listProjectsInputSchema,
   prepareDatabaseMigrationInputSchema,
@@ -1374,6 +1375,34 @@ export const NEON_TOOLS = [
     readOnlySafe: true,
     annotations: {
       title: 'Find Neon DB Instances (T1 · sales 剧本入口)',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    } satisfies ToolAnnotations,
+  },
+  // feat-057 get_neondb_policy · agent 事前感知 L 边界 (advisory · 非 enforcement · feat-056 配套)
+  // detail design: https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-057-L2-mcp-tool-get-policy.html
+  {
+    name: 'get_neondb_policy' as const,
+    scope: 'projects',
+    category: 'optional',
+    description: `Get a project's autonomy policy advisory (L level + per-op-class verdict + overrides + hard-deny).
+
+    <use_case>
+      Use this FIRST (before write ops) to learn what the project's autonomy level allows — which op-classes
+      are allow / require approval / deny. Embed the returned advisory into your prompt to plan within bounds
+      and avoid hitting enforcement.
+    </use_case>
+
+    <important_notes>
+      Advisory ONLY · enforcement at call time (server pipeline) is authoritative · SQL-pattern overrides may
+      apply to specific statements (see the overrides field).
+    </important_notes>`,
+    inputSchema: getNeondbPolicyInputSchema,
+    readOnlySafe: true,
+    annotations: {
+      title: 'Get Neon DB Policy (feat-057 · agent 事前感知 L 边界)',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,

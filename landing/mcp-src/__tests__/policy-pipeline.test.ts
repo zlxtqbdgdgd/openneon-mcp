@@ -123,10 +123,18 @@ describe('runPipeline (feat-056/#1 · §8.2 短路)', () => {
     expect(runPipeline(ctx({ opClass: 'READ_ONLY' })).action).toBe('allow');
   });
 
-  it('DROP TABLE @ L1 → allow (#73 无 matrix · 非 hard-deny 默认 allow · matrix 在 #75)', () => {
+  it('DROP TABLE @ L1 → deny (#75 matrix: L1 write = deny · human-only)', () => {
     expect(runPipeline(ctx({ opClass: 'DROP_TABLE_OR_INDEX' })).action).toBe(
-      'allow',
+      'deny',
     );
+  });
+
+  it('DROP TABLE @ L2b → deny (#75 matrix: gated · feat-027 #77 前 fail-closed)', () => {
+    const v = runPipeline(
+      ctx({ opClass: 'DROP_TABLE_OR_INDEX', autonomyLevel: 'L2b' }),
+    );
+    expect(v.action).toBe('deny');
+    expect(v.reason).toContain('plan mode');
   });
 
   it('hard-deny 不受 autonomy_level 影响: 即便 L4 也拦 DROP DATABASE', () => {

@@ -2,7 +2,7 @@
 # feat-061 · L1 e2e chain checks against a running openneon-mcp server + real Neon fixture.
 #
 # Covers the real-Neon chain steps that unit tests (mocked) cannot:
-#   - listing: /api/list-tools default core (4) + all (35) + supportsDepth + outputFormat advertise
+#   - listing: /api/list-tools default core (4) + all (36) + supportsDepth + outputFormat advertise
 #   - Stage B (T2): get_neondb_calling_services → application_name aggregation
 #   - Stage C (T8): get_neondb_schemas → sale_date NOT indexed + no created_at + wildcard + depth=full 9 fields
 #   - Stage D (T6): get_neondb_query_statement → parameterized $1/$2 (no raw date) + invalid → NotFoundError
@@ -45,8 +45,8 @@ BODY=$(get "${MCP}/api/list-tools")
 [ "$(echo "$BODY" | pyck "len(d['tools'])==4 and d['categoryInclude']=='core'")" = "OK" ] \
   && pass "default core listing = 4 (T1/T2/T6/T8)" || fail "default core listing != 4"
 BODY_ALL=$(get "${MCP}/api/list-tools?include=all")
-[ "$(echo "$BODY_ALL" | pyck "len(d['tools'])==35")" = "OK" ] \
-  && pass "include=all = 35 tools" || fail "include=all != 35"
+[ "$(echo "$BODY_ALL" | pyck "len(d['tools'])==36")" = "OK" ] \
+  && pass "include=all = 36 tools" || fail "include=all != 36"
 [ "$(echo "$BODY_ALL" | pyck "[t for t in d['tools'] if t['name']=='get_neondb_query_statement'][0]['supportsDepth'] is True")" = "OK" ] \
   && pass "T6 supportsDepth advertised" || fail "T6 supportsDepth missing"
 [ "$(echo "$BODY_ALL" | pyck "[t for t in d['tools'] if t['name']=='get_neondb_schemas'][0]['outputFormat']==['csv','json','tsv']")" = "OK" ] \
