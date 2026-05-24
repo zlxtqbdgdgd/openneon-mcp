@@ -10,6 +10,7 @@ describe('handleGetPolicy (feat-057 · advisory)', () => {
         'rapid-art-12345': {
           autonomy_level: 'L2b',
           overrides: { 'DROP TABLE production_*': 'L1' },
+          timeout_overrides: {},
         },
       },
       defaults: { autonomy_level: 'L1', shadow_mode: true },

@@ -72,8 +72,13 @@ describe('resolvePolicy + per-project verdict (feat-056/#2)', () => {
         'rapid-art-12345': {
           autonomy_level: 'L2b',
           overrides: { 'DROP TABLE production_*': 'L1' },
+          timeout_overrides: {},
         },
-        'noisy-bird-13579': { autonomy_level: 'L4', overrides: {} },
+        'noisy-bird-13579': {
+          autonomy_level: 'L4',
+          overrides: {},
+          timeout_overrides: {},
+        },
       },
       defaults: { autonomy_level: 'L1', shadow_mode: true },
     });
@@ -123,14 +128,16 @@ describe('resolvePolicy + per-project verdict (feat-056/#2)', () => {
     expect(v.action).toBe('deny');
   });
 
-  it('toy(L4) CREATE INDEX → runPipeline allow', () => {
+  it('toy(L4) CREATE INDEX → 放行 + feat-030 注入 lock_timeout (非 deny)', () => {
     const lvl = resolvePolicy('noisy-bird-13579').autonomy_level;
     const v = runPipeline({
       opClass: 'CREATE_INDEX_CONCURRENTLY',
       toolName: 'run_sql',
       autonomyLevel: lvl,
     });
-    expect(v.action).toBe('allow');
+    // matrix @ L4 放行 → 链跑到 feat-030 timeout stage → inject_timeout (非 deny · CONCURRENTLY 仅 lock_timeout)
+    expect(v.action).toBe('inject_timeout');
+    expect(v.timeouts).toEqual({ lock_timeout: '30s' });
   });
 });
 

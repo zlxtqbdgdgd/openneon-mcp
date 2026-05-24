@@ -14,6 +14,11 @@ import { join } from 'node:path';
 import { load } from 'js-yaml';
 import { logger } from '../utils/logger';
 import type { AutonomyLevel } from './pipeline';
+import type { OpClass } from '../protection/destructive-detector';
+import {
+  isValidPgTimeoutValue,
+  type TimeoutSpec,
+} from './stages/timeout-injection';
 
 const POLICY_PATH = join(homedir(), '.openneon', 'policy.yaml');
 const VALID_LEVELS: ReadonlySet<string> = new Set([
@@ -30,6 +35,8 @@ export type ProjectPolicy = {
   display_name?: string;
   autonomy_level: AutonomyLevel;
   overrides: Record<string, AutonomyLevel>; // SQL-pattern → 更严 level
+  // feat-030/#79: op-class → 覆盖 DEFAULT_TIMEOUTS 的注入值 (校验过的合法 PG interval · 详设 §4.2)
+  timeout_overrides: Partial<Record<OpClass, TimeoutSpec>>;
   shadow_mode?: unknown; // {enabled, days_remaining, pass_threshold} | boolean · 详见 feat-056 §4.4(#78 用)
   audit_severity?: 'info' | 'medium' | 'high';
 };
@@ -44,6 +51,8 @@ export type ResolvedPolicy = {
   project_id: string;
   autonomy_level: AutonomyLevel;
   overrides: Record<string, AutonomyLevel>;
+  // feat-030/#79: per-project timeout 覆盖 (空 = 用 DEFAULT_TIMEOUTS · 见 timeout-injection.ts)
+  timeout_overrides: Partial<Record<OpClass, TimeoutSpec>>;
   shadow_mode?: unknown;
   source: 'configured' | 'defaults';
 };
@@ -64,6 +73,40 @@ function isAutonomyLevel(v: unknown): v is AutonomyLevel {
 
 function stricter(a: AutonomyLevel, b: AutonomyLevel): AutonomyLevel {
   return LEVEL_ORDER.indexOf(a) <= LEVEL_ORDER.indexOf(b) ? a : b;
+}
+
+/**
+ * 校验 + 规整 timeout_overrides (feat-030/#79 · 详设 §4.2)。
+ *
+ * key = op-class 名 (不校验枚举 · 未知 key 无害 · 永不匹配真实 op-class · forward-compat feat-028
+ * 扩 taxonomy)。value 的 lock_timeout 必给且必须是合法 PG interval (防 SQL 注入 · 注入走字符串拼接)
+ * · statement_timeout 可省 · 给则同样校验。非法 → 抛错 (调用方 fail-safe · 绝不 fail-open)。
+ */
+function validateTimeoutOverrides(
+  pid: string,
+  raw: unknown,
+): Partial<Record<OpClass, TimeoutSpec>> {
+  const result: Partial<Record<OpClass, TimeoutSpec>> = {};
+  const ovRaw = (raw ?? {}) as Record<string, unknown>;
+  for (const [opClass, specRaw] of Object.entries(ovRaw)) {
+    const spec = (specRaw ?? {}) as Record<string, unknown>;
+    if (!isValidPgTimeoutValue(spec.lock_timeout)) {
+      throw new Error(
+        `project ${pid} timeout_overrides "${opClass}" 的 lock_timeout 非法 (须合法 PG interval): ${String(spec.lock_timeout)}`,
+      );
+    }
+    const out: TimeoutSpec = { lock_timeout: spec.lock_timeout };
+    if (spec.statement_timeout !== undefined) {
+      if (!isValidPgTimeoutValue(spec.statement_timeout)) {
+        throw new Error(
+          `project ${pid} timeout_overrides "${opClass}" 的 statement_timeout 非法 (须合法 PG interval): ${String(spec.statement_timeout)}`,
+        );
+      }
+      out.statement_timeout = spec.statement_timeout;
+    }
+    result[opClass as OpClass] = out;
+  }
+  return result;
 }
 
 /** 校验 + 规整 js-yaml load 结果 → PolicyConfig · 非法抛错(调用方 fail-safe) */
@@ -104,6 +147,7 @@ export function validate(raw: unknown): PolicyConfig {
         typeof p.display_name === 'string' ? p.display_name : undefined,
       autonomy_level: p.autonomy_level,
       overrides,
+      timeout_overrides: validateTimeoutOverrides(pid, p.timeout_overrides),
       shadow_mode: p.shadow_mode,
       audit_severity: p.audit_severity as ProjectPolicy['audit_severity'],
     };
@@ -190,6 +234,7 @@ export function resolvePolicy(projectId?: string): ResolvedPolicy {
       project_id: projectId as string,
       autonomy_level: p.autonomy_level,
       overrides: p.overrides,
+      timeout_overrides: p.timeout_overrides,
       shadow_mode: p.shadow_mode,
       source: 'configured',
     };
@@ -198,6 +243,7 @@ export function resolvePolicy(projectId?: string): ResolvedPolicy {
     project_id: projectId ?? '(unknown)',
     autonomy_level: current.defaults.autonomy_level,
     overrides: {},
+    timeout_overrides: {},
     shadow_mode: current.defaults.shadow_mode,
     source: 'defaults',
   };

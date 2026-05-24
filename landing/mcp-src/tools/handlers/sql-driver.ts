@@ -17,6 +17,10 @@
 
 import { neon } from '@neondatabase/serverless';
 import pg from 'pg';
+import {
+  isValidPgTimeoutValue,
+  type TimeoutSpec,
+} from '../../policy/stages/timeout-injection';
 
 const { Client: PgClient } = pg;
 
@@ -44,14 +48,52 @@ function isLocalPgUri(uri: string): boolean {
 }
 
 /**
+ * Inject feat-030 timeouts on a live pg session (pg TCP path · isLocalPgUri true).
+ *
+ * Connection persists, so a plain session-level `SET` before any SQL keeps the timeout in force
+ * for every subsequent query on this client. Values come only from DEFAULT_TIMEOUTS or validated
+ * policy overrides, but we guard again at the injection point: the value is string-interpolated
+ * into the SET statement, so a strict PG-interval whitelist is the SQL-injection防线 (详设 §6).
+ */
+async function injectPgTimeouts(
+  client: InstanceType<typeof PgClient>,
+  timeouts: TimeoutSpec,
+): Promise<void> {
+  const lock = timeouts.lock_timeout;
+  if (!isValidPgTimeoutValue(lock)) {
+    throw new Error(`非法 lock_timeout (拒绝注入): ${String(lock)}`);
+  }
+  await client.query(`SET lock_timeout = '${lock}'`);
+  if (timeouts.statement_timeout !== undefined) {
+    const stmt = timeouts.statement_timeout;
+    if (!isValidPgTimeoutValue(stmt)) {
+      throw new Error(`非法 statement_timeout (拒绝注入): ${String(stmt)}`);
+    }
+    await client.query(`SET statement_timeout = '${stmt}'`);
+  }
+}
+
+/**
  * Create a SqlClient over the given URI. Caller MUST `await client.release()`
  * to close the TCP connection when done (no-op for Neon HTTP driver, required
  * for pg).
+ *
+ * `timeouts` (feat-030/#79 · from the pipeline's inject_timeout verdict) injects
+ * lock_timeout (+ optional statement_timeout) before any query runs:
+ * - pg TCP path (this PR): session-level `SET` on the persistent connection.
+ * - Neon Cloud HTTP path: transaction-wrapped `SET LOCAL` is feat-030/#80 (stateless
+ *   single-shot requests can't carry a session SET reliably) · not injected here yet.
  */
-export async function createSqlClient(uri: string): Promise<SqlClient> {
+export async function createSqlClient(
+  uri: string,
+  timeouts?: TimeoutSpec,
+): Promise<SqlClient> {
   if (isLocalPgUri(uri)) {
     const client = new PgClient({ connectionString: uri });
     await client.connect();
+    if (timeouts) {
+      await injectPgTimeouts(client, timeouts);
+    }
     return {
       query: async (sql, params) => {
         const result = await client.query(sql, params ?? []);

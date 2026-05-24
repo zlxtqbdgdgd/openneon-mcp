@@ -6,7 +6,7 @@
  * (单一 ordering 权威 · 根治 R001 Blocker 6 "三方打架")。
  *
  * #73 (骨架 tracer bullet): 只 hard-deny G4 stage + 默认 allow。
- * 后续: #75 matrix lookup stage · #76 G1/G9 · #77 plan mode · #80 timeout。
+ * 后续: #75 matrix lookup stage · #76 G1/G9 · #77 plan mode · #79/#80 timeout。
  */
 import type { OpClass } from '../protection/destructive-detector';
 import { isHardDenied } from './hard-deny';
@@ -16,6 +16,10 @@ import {
   recordAndCheckRateLimit,
   RATE_LIMIT_CONFIG,
 } from './rate-limiter';
+import {
+  timeoutInjectionStage,
+  type TimeoutSpec,
+} from './stages/timeout-injection';
 
 export type AutonomyLevel = 'L1' | 'L2a' | 'L2b' | 'L3' | 'L4';
 
@@ -31,6 +35,8 @@ export type Verdict = {
   reason: string;
   audit_severity: 'info' | 'medium' | 'high';
   terminal: boolean; // true → pipeline 终止 (§8.2 先到先终止)
+  // feat-030/#79: inject_timeout verdict 携带要注入的 timeout (orchestrator 执行 SQL 前 SET · 详设 §4.3)
+  timeouts?: TimeoutSpec;
 };
 
 export type EnforcementCtx = {
@@ -40,6 +46,8 @@ export type EnforcementCtx = {
   requestedProjectId?: string; // 原始 args.projectId (injectProjectId 前 · G1 检测跨 project 意图)
   autonomyLevel: AutonomyLevel;
   grant?: { projectId?: string | null }; // key 的 project scope (G1 · null = 非 project-scoped)
+  // feat-030/#79: per-project op-class → timeout 覆盖 (来自 policy.yaml timeout_overrides · loader 校验过)
+  timeoutOverrides?: Partial<Record<OpClass, TimeoutSpec>>;
 };
 
 /** stage: 适用则返回 Verdict · 不适用返回 null (继续下一 stage) */
@@ -112,12 +120,13 @@ const matrixStage: Stage = (ctx) => {
 };
 
 // §8.2 顺序 stage 链 · 内置: G1 跨project (#76) → G4 hard-deny (#73) → G9 速率 (#76) → matrix (#75)
-// · 后续护栏 (feat-026/027/030) registerStage 注册
+// → timeout 注入 (#79 · 第 8 步 · 执行前最后一道 · non-terminal)。后续护栏 (feat-026/027) registerStage 注册。
 const BUILTIN_STAGES: readonly Stage[] = [
   g1CrossProjectStage,
   hardDenyG4Stage,
   g9RateLimitStage,
   matrixStage,
+  timeoutInjectionStage,
 ];
 const STAGES: Stage[] = [...BUILTIN_STAGES];
 
@@ -133,19 +142,26 @@ export function __resetStagesForTest(): void {
 }
 
 /**
- * 按 §8.2 顺序跑 pipeline。第一个 terminal Verdict 短路返回。
- * #73: hard-deny 命中 → deny terminal · 否则 allow (per-project matrix lookup 在 #75)。
+ * 按 §8.2 顺序跑 pipeline。第一个 terminal Verdict 短路返回 (deny 先到先终止)。
+ * 无 terminal 时: 若某 stage 给了 non-terminal inject_timeout (#79) → 返回它 (携 timeouts ·
+ * orchestrator 执行前 SET) · 否则默认 allow。
  */
 export function runPipeline(ctx: EnforcementCtx): Verdict {
+  // non-terminal inject_timeout verdict (#79 · 执行前注入 · 不短路 · 跑完全链后返回)
+  let injectTimeout: Verdict | null = null;
   for (const stage of STAGES) {
     const verdict = stage(ctx);
-    if (verdict && verdict.terminal) return verdict;
-    // 非 terminal verdict (require_plan / inject_timeout) 的累积处理在后续护栏 stage (#77/#80)
+    if (!verdict) continue;
+    if (verdict.terminal) return verdict;
+    if (verdict.action === 'inject_timeout') injectTimeout = verdict;
+    // require_plan 非 terminal 的审批放行在 feat-027 plan stage (#77)
   }
-  return {
-    action: 'allow',
-    reason: 'no stage denied',
-    audit_severity: 'info',
-    terminal: false,
-  };
+  return (
+    injectTimeout ?? {
+      action: 'allow',
+      reason: 'no stage denied',
+      audit_severity: 'info',
+      terminal: false,
+    }
+  );
 }
