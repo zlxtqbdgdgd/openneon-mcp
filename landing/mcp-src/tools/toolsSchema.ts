@@ -127,6 +127,28 @@ export const explainSqlStatementInputSchema = z.object({
     .default(true)
     .describe('Whether to include ANALYZE in the EXPLAIN command'),
 });
+// feat-019/#1 · get_neondb_explain_plans (op-class-aware safe explain · wraps explain_sql_statement)
+export const explainPlansInputSchema = z.object({
+  sql: z
+    .string()
+    .describe('The SQL statement to analyze the execution plan for'),
+  projectId: z
+    .string()
+    .describe('The ID of the project to run the EXPLAIN against'),
+  branchId: z
+    .string()
+    .optional()
+    .describe(
+      'An optional ID of the branch to run the EXPLAIN against. If not provided the default branch is used.',
+    ),
+  databaseName: z.string().optional().describe(DATABASE_NAME_DESCRIPTION),
+  analyze: z
+    .boolean()
+    .default(true)
+    .describe(
+      'Run EXPLAIN ANALYZE (execute the query for real timings). SAFETY: for non-SELECT (DML/DDL) statements this is forced to false — a plain estimate-only EXPLAIN that never executes — regardless of the value passed.',
+    ),
+});
 export const describeTableSchemaInputSchema = z.object({
   tableName: z.string().describe('The name of the table'),
   projectId: z
