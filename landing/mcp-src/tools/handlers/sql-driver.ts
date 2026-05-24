@@ -48,29 +48,45 @@ function isLocalPgUri(uri: string): boolean {
 }
 
 /**
- * Inject feat-030 timeouts on a live pg session (pg TCP path · isLocalPgUri true).
+ * Build the validated feat-030 timeout `SET` / `SET LOCAL` statements.
  *
- * Connection persists, so a plain session-level `SET` before any SQL keeps the timeout in force
- * for every subsequent query on this client. Values come only from DEFAULT_TIMEOUTS or validated
- * policy overrides, but we guard again at the injection point: the value is string-interpolated
- * into the SET statement, so a strict PG-interval whitelist is the SQL-injection防线 (详设 §6).
+ * - `local = false` (pg TCP · persistent session · #79): plain `SET` stays in force for the
+ *   connection's whole lifetime.
+ * - `local = true` (Neon Cloud HTTP · stateless single-shot · #80): `SET LOCAL` scopes the timeout
+ *   to the wrapping transaction only, so it never leaks onto a pooled connection reused by another
+ *   request (详设 §3.2 / OQ3).
+ *
+ * Values come only from DEFAULT_TIMEOUTS or validated policy overrides, but the value is
+ * string-interpolated into the statement, so we re-guard with a strict PG-interval whitelist here —
+ * that whitelist is the SQL-injection防线 (详设 §6).
  */
-async function injectPgTimeouts(
-  client: InstanceType<typeof PgClient>,
-  timeouts: TimeoutSpec,
-): Promise<void> {
+function timeoutSetStatements(timeouts: TimeoutSpec, local: boolean): string[] {
+  const keyword = local ? 'SET LOCAL' : 'SET';
   const lock = timeouts.lock_timeout;
   if (!isValidPgTimeoutValue(lock)) {
     throw new Error(`非法 lock_timeout (拒绝注入): ${String(lock)}`);
   }
-  await client.query(`SET lock_timeout = '${lock}'`);
+  const statements = [`${keyword} lock_timeout = '${lock}'`];
   if (timeouts.statement_timeout !== undefined) {
     const stmt = timeouts.statement_timeout;
     if (!isValidPgTimeoutValue(stmt)) {
       throw new Error(`非法 statement_timeout (拒绝注入): ${String(stmt)}`);
     }
-    await client.query(`SET statement_timeout = '${stmt}'`);
+    statements.push(`${keyword} statement_timeout = '${stmt}'`);
   }
+  return statements;
+}
+
+/**
+ * CONCURRENTLY index ops (CREATE / DROP INDEX CONCURRENTLY · REINDEX CONCURRENTLY) cannot run
+ * inside a transaction block (PostgreSQL hard limit). The Neon Cloud HTTP path injects timeouts by
+ * wrapping `SET LOCAL` + SQL in one transaction — impossible for these — so we fall back to a bare
+ * query and accept no HTTP session timeout for them (详设 §3.2 / §11 OQ1: CONCURRENTLY already
+ * exempts statement_timeout, and the lock_timeout loss is acceptable because the lock is short).
+ * The pg TCP path is unaffected — session `SET` works without a transaction.
+ */
+function cannotRunInTransaction(sql: string): boolean {
+  return /\bCONCURRENTLY\b/i.test(sql);
 }
 
 /**
@@ -78,11 +94,12 @@ async function injectPgTimeouts(
  * to close the TCP connection when done (no-op for Neon HTTP driver, required
  * for pg).
  *
- * `timeouts` (feat-030/#79 · from the pipeline's inject_timeout verdict) injects
- * lock_timeout (+ optional statement_timeout) before any query runs:
- * - pg TCP path (this PR): session-level `SET` on the persistent connection.
- * - Neon Cloud HTTP path: transaction-wrapped `SET LOCAL` is feat-030/#80 (stateless
- *   single-shot requests can't carry a session SET reliably) · not injected here yet.
+ * `timeouts` (feat-030 · from the pipeline's inject_timeout verdict) injects lock_timeout
+ * (+ optional statement_timeout) before any SQL runs:
+ * - pg TCP path (#79): session-level `SET` on the persistent connection.
+ * - Neon Cloud HTTP path (#80): each query is wrapped in a transaction with `SET LOCAL` so the
+ *   stateless single-shot request carries the timeout on the same connection (CONCURRENTLY ops are
+ *   the exception — see `cannotRunInTransaction`).
  */
 export async function createSqlClient(
   uri: string,
@@ -92,7 +109,9 @@ export async function createSqlClient(
     const client = new PgClient({ connectionString: uri });
     await client.connect();
     if (timeouts) {
-      await injectPgTimeouts(client, timeouts);
+      for (const statement of timeoutSetStatements(timeouts, false)) {
+        await client.query(statement);
+      }
     }
     return {
       query: async (sql, params) => {
@@ -108,6 +127,20 @@ export async function createSqlClient(
   const neonSql = neon(uri);
   return {
     query: async (sql, params) => {
+      if (timeouts && !cannotRunInTransaction(sql)) {
+        // 把 SET LOCAL + 实际 SQL 包进同一事务 → stateless HTTP 下同连接保证 timeout 生效,
+        // 且 SET LOCAL 仅本事务有效 · 不泄漏到连接池其他请求 (详设 §3.2)。
+        // transaction 返回各语句结果数组 · 取末条 (= 实际 SQL 的结果)。
+        const queries = [
+          ...timeoutSetStatements(timeouts, true).map((s) => neonSql.query(s)),
+          neonSql.query(sql, params ?? []),
+        ];
+        const results = await neonSql.transaction(queries);
+        return (results[results.length - 1] ?? []) as Array<
+          Record<string, unknown>
+        >;
+      }
+      // 无 timeout · 或 CONCURRENTLY (不能进事务 · OQ1 接受 HTTP 下无 session timeout) → 裸 query
       return (await neonSql.query(sql, params ?? [])) as Array<
         Record<string, unknown>
       >;
