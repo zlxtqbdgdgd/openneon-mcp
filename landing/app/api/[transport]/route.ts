@@ -15,6 +15,8 @@ import {
   getPromptTemplate,
 } from '../../../mcp-src/prompts';
 import { NEON_HANDLERS } from '../../../mcp-src/tools/index';
+import { classifyOp } from '../../../mcp-src/protection/destructive-detector';
+import { runPipeline } from '../../../mcp-src/policy/pipeline';
 import {
   getDocResource,
   listDocsResources,
@@ -452,6 +454,40 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                     (args ?? {}) as Record<string, unknown>,
                     grant,
                   );
+
+                  // feat-056 enforcement pipeline (ADR-0007 · #73 骨架: hard-deny G4 · 在 toolHandler 之前)
+                  const a = effectiveArgs as Record<string, unknown>;
+                  const sqlForClassify =
+                    typeof a.sql === 'string'
+                      ? a.sql
+                      : Array.isArray(a.sqlStatements)
+                        ? (a.sqlStatements as string[]).join('; ')
+                        : undefined;
+                  const opClass = classifyOp(tool.name, sqlForClassify);
+                  const verdict = runPipeline({
+                    opClass,
+                    toolName: tool.name,
+                    projectId:
+                      grant.projectId ?? (a.projectId as string | undefined),
+                    autonomyLevel: 'L1', // stub · policy.yaml loader 在 feat-056/#2 (#75)
+                    grant: { projectId: grant.projectId },
+                  });
+                  if (verdict.action === 'deny') {
+                    logger.warn('policy deny (feat-056):', {
+                      ...properties,
+                      opClass,
+                      reason: verdict.reason,
+                    });
+                    return {
+                      content: [
+                        {
+                          type: 'text' as const,
+                          text: `Denied by policy: ${verdict.reason}`,
+                        },
+                      ],
+                      isError: true,
+                    };
+                  }
 
                   // Wrap args in { params } structure expected by handlers
                   const result = await (toolHandler as any)(
