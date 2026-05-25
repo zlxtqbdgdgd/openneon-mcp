@@ -17,8 +17,13 @@ describe('depth constants', () => {
     expect(DEFAULT_DEPTH).toBe('shallow');
   });
 
-  it('DEPTH_SUPPORTING_TOOLS contains 3 tools (T6/T8 L1 day-one + feat-019 explain_plans L2a)', () => {
-    expect(DEPTH_SUPPORTING_TOOLS.size).toBe(3);
+  it('DEPTH_SUPPORTING_TOOLS contains 5 tools (T6/T8 L1 + feat-019 explain_plans + feat-020 T4 + feat-021 T5 L2a)', () => {
+    expect(DEPTH_SUPPORTING_TOOLS.size).toBe(5);
+  });
+
+  it('DEPTH_SUPPORTING_TOOLS contains get_neondb_health_signals (T4) + get_neondb_query_performance (T5)', () => {
+    expect(DEPTH_SUPPORTING_TOOLS.has('get_neondb_health_signals')).toBe(true);
+    expect(DEPTH_SUPPORTING_TOOLS.has('get_neondb_query_performance')).toBe(true);
   });
 
   it('DEPTH_SUPPORTING_TOOLS contains get_neondb_query_statement (T6 · narrative #3 主卖点)', () => {
@@ -90,8 +95,8 @@ describe('isValidDepth', () => {
 });
 
 describe('day-one ship scope check (feat-007 §3)', () => {
-  it('depth-supporting tools = 3 (T6/T8 L1 day-one + feat-019 explain_plans L2a) · not over-spec', () => {
-    expect(DEPTH_SUPPORTING_TOOLS.size).toBe(3);
+  it('depth-supporting tools = 5 (T6/T8 + feat-019 + feat-020 T4 + feat-021 T5) · not over-spec', () => {
+    expect(DEPTH_SUPPORTING_TOOLS.size).toBe(5);
   });
 
   it('T1/T2 do not support depth (simple list/lookup · no shallow/full distinction)', () => {
