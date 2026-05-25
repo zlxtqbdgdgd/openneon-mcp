@@ -50,6 +50,7 @@ import {
   getAccessControlWarnings,
   injectProjectId,
 } from '../../../mcp-src/tools/grant-filter';
+import { filterToolsByRole } from '../../../mcp-src/tools/role-toolsets';
 import {
   parseCategoryInclude,
   type CategoryInclude,
@@ -635,7 +636,15 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
         // Avoid relying on MCP SDK private fields (`_registeredTools`), which can
         // change across SDK versions and break request handling. Build the list from
         // our canonical tool definitions and convert schemas explicitly.
-        const tools = composedTools.map((tool) => {
+        //
+        // feat-059/#1: role 软过滤 —— listing ∩ ROLE_TOOLSETS[agent_role] (per-project policy ·
+        // 未配 → 不过滤)。**软**: 只裁 listing · 不影响上面已 registerTool 的可调用集 (非 toolset 的
+        // tool 仍可被调 · 走 feat-056 enforcement · 不因"不在 toolset"而拒)。
+        const agentRole = resolvePolicy(
+          staticToolContext.grant.projectId ?? undefined,
+        ).agent_role;
+        const listedTools = filterToolsByRole(composedTools, agentRole);
+        const tools = listedTools.map((tool) => {
           const normalizedSchema = normalizeObjectSchema(tool.inputSchema);
           const inputSchema = normalizedSchema
             ? toJsonSchemaCompat(normalizedSchema, {

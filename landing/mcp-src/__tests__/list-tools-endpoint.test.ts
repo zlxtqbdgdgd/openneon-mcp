@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { GET, OPTIONS } from '../../app/api/list-tools/route';
+import { validate, __setPolicyForTest } from '../policy/loader';
 
 type ListToolsResponse = {
   grant: {
@@ -8,6 +9,7 @@ type ListToolsResponse = {
   };
   readOnly: boolean;
   categoryInclude: 'core' | 'all';
+  agentRole?: string | null;
   warnings?: string[];
   tools: Array<{
     name: string;
@@ -215,5 +217,61 @@ describe('/api/list-tools endpoint', () => {
         body.grant.scopes === null || Array.isArray(body.grant.scopes),
       ).toBe(true);
     }
+  });
+});
+
+describe('/api/list-tools · feat-059 role toolset 软过滤', () => {
+  function setRoles() {
+    __setPolicyForTest(
+      validate({
+        projects: {
+          'cs-proj': {
+            autonomy_level: 'L1',
+            agent_role: 'customer-service',
+          },
+          'ops-proj': { autonomy_level: 'L2a', agent_role: 'ops' },
+          'no-role-proj': { autonomy_level: 'L2a' },
+        },
+        defaults: { autonomy_level: 'L1' },
+      }),
+    );
+  }
+
+  it('客服 role → listing 无 run_sql / 无写 tool · agentRole 回显', async () => {
+    setRoles();
+    const body = await callListTools({ projectId: 'cs-proj', include: 'all' });
+    expect(body.agentRole).toBe('customer-service');
+    const names = body.tools.map((t) => t.name);
+    expect(names).not.toContain('run_sql');
+    expect(names).not.toContain('run_sql_transaction');
+    expect(names).not.toContain('create_branch');
+    expect(names).not.toContain('prepare_database_migration');
+  });
+
+  it('ops role → listing 含 run_sql (写 tool 可见)', async () => {
+    setRoles();
+    const body = await callListTools({ projectId: 'ops-proj', include: 'all' });
+    expect(body.agentRole).toBe('ops');
+    expect(body.tools.map((t) => t.name)).toContain('run_sql');
+  });
+
+  it('无 agent_role → 退 category-only listing (无 role 过滤 · run_sql 仍在 all)', async () => {
+    setRoles();
+    const body = await callListTools({
+      projectId: 'no-role-proj',
+      include: 'all',
+    });
+    expect(body.agentRole).toBeNull();
+    expect(body.tools.map((t) => t.name)).toContain('run_sql');
+  });
+
+  it('role ∩ category: 客服 + include=core → 交集 (core 4 ∩ 客服只读)', async () => {
+    setRoles();
+    const body = await callListTools({ projectId: 'cs-proj', include: 'core' });
+    expect(body.categoryInclude).toBe('core');
+    const names = body.tools.map((t) => t.name);
+    // core day-one 里属于客服 toolset 的只读 tool (run_sql 不在 core 也不在客服)
+    expect(names).not.toContain('run_sql');
+    expect(names.every((n) => typeof n === 'string')).toBe(true);
   });
 });
