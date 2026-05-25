@@ -41,7 +41,10 @@ import { handleGetSchemas } from './handlers/schemas';
 import { handleFindNeondbInstances } from './handlers/find-instances';
 // feat-002 day-one ship · sales 剧本应用归因 · pg_stat_activity 聚合
 import { handleGetCallingServices } from './handlers/calling-services';
-import { handleGetHealthSignals } from './handlers/health-signals';
+import {
+  handleGetHealthSignals,
+  flattenSignalRow,
+} from './handlers/health-signals';
 import { handleGetQueryPerformance } from './handlers/query-performance';
 // feat-006 #2 day-one ship · token economy地基 · CSV default output
 import { formatToolResponse } from '../server/response-formatter';
@@ -1890,10 +1893,8 @@ You MUST follow these steps:
     };
   },
 
-  // feat-020 T4 get_neondb_health_signals · 多信号健康聚合 · 遍历 signal registry 读当前值 ·
-  // baseline/SLI enrich 在 #4/#6 接入。
-  //
-  // feat-006 #2 (token economy): enriched signal array · format via formatToolResponse · default 'csv'
+  // feat-020 T4 get_neondb_health_signals · 多信号健康聚合 · 遍历 signal registry 读当前值 +
+  // feat-016 baseline (#4) + feat-018 SLO burn rate (#6) enrich。
   get_neondb_health_signals: async ({ params }, neonClient, extra) => {
     const result = await handleGetHealthSignals(
       {
@@ -1907,11 +1908,20 @@ You MUST follow these steps:
       neonClient,
       extra,
     );
+    // JSON: 结构化直出 (保留嵌套 slo 块)。CSV/TSV (feat-006 默认 token 经济): 每信号拍平成
+    // 标量行 (嵌套 slo 块拍平成列 · csv-stringify 不能渲染对象单元格)。
+    if (params.format === 'json') {
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      };
+    }
     return {
       content: [
         {
           type: 'text',
-          text: formatToolResponse(result, { format: params.format }),
+          text: formatToolResponse(result.map(flattenSignalRow), {
+            format: params.format,
+          }),
         },
       ],
     };

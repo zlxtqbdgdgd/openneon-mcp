@@ -24,6 +24,8 @@ import {
 } from '../../config/depth';
 import { SIGNAL_REGISTRY, type SignalDef } from '../signal-registry';
 import { baseline } from '../../server-enrich/baseline/baseline';
+import { sloBurnRate, type SloBlock } from '../../server-enrich/baseline/slo-burn-rate';
+import { getSloSpec } from '../../server-enrich/baseline/slo-specs';
 import type { ToolHandlerExtraParams } from '../types';
 
 export type GetHealthSignalsInput = {
@@ -62,6 +64,8 @@ export type HealthSignal = {
   /** SLO burn-rate verdict (feat-018 · feat-020/#6) · 'unknown' when SLI history is insufficient. */
   is_sli_burning?: boolean | 'unknown';
   baseline_algo?: 'median-mad' | null;
+  /** Full SLO block (feat-018 · ~7 fields) for signals with an SLO spec. */
+  slo?: SloBlock;
 };
 
 const DEFAULT_DATABASE = 'neondb';
@@ -136,6 +140,39 @@ async function enrichWithBaseline(
 }
 
 /**
+ * Enrich a signal with the feat-018 SLO burn-rate block (feat-020/#6), when an SLO spec exists.
+ *
+ * Surfaces the full SLO block + the top-level is_sli_burning verdict. A burning SLI (true) flips
+ * status to 'anomalous' so it surfaces in shallow depth — a page-level burn is the MOST important
+ * thing to show, even when the baseline label is normal (the two answer different questions:
+ * deviation vs budget burn). 'unknown' never flips status (blind ≠ burning). Failure degrades,
+ * never blocks (§8).
+ */
+async function enrichWithSlo(
+  sig: HealthSignal,
+  def: SignalDef,
+  dimensions: Record<string, string>,
+): Promise<HealthSignal> {
+  if (sig.status === 'unavailable') return sig;
+  const spec = getSloSpec(def.signal);
+  if (!spec) return sig;
+  try {
+    const slo = await sloBurnRate(spec, dimensions);
+    const next: HealthSignal = {
+      ...sig,
+      slo,
+      is_sli_burning: slo.is_sli_burning,
+    };
+    if (slo.is_sli_burning === true && next.status === 'ok') {
+      next.status = 'anomalous';
+    }
+    return next;
+  } catch {
+    return sig;
+  }
+}
+
+/**
  * Filter signals for the requested depth (feat-007 token economy).
  *
  * - `shallow` (default): anomalous + unavailable signals (always surfaced for honesty) plus
@@ -152,6 +189,33 @@ function filterByDepth(
     const def = SIGNAL_REGISTRY.find((d) => d.signal === s.signal_type);
     return def?.keySummary === true;
   });
+}
+
+/**
+ * Flatten an enriched signal into a single scalar-only row for CSV/TSV output (feat-006 token
+ * economy · csv-stringify can't render the nested `slo` object). Every row carries the same key set
+ * (missing values → '') so the CSV columns stay consistent across heterogeneously-enriched signals.
+ * The structured form (nested `slo`) is preserved for `format=json`.
+ */
+export function flattenSignalRow(
+  sig: HealthSignal,
+): Record<string, string | number> {
+  const blank = (v: number | string | boolean | null | undefined) =>
+    v === undefined || v === null ? '' : typeof v === 'boolean' ? String(v) : v;
+  return {
+    signal_type: sig.signal_type,
+    value: blank(sig.value),
+    status: sig.status,
+    baseline_value: blank(sig.baseline_value),
+    robust_z: blank(sig.robust_z),
+    label: blank(sig.label),
+    is_sli_burning: blank(sig.is_sli_burning),
+    sli_value: blank(sig.slo?.sli_value),
+    slo_target: blank(sig.slo?.slo_target),
+    burn_rate_1h: blank(sig.slo?.burn_rate_1h),
+    burn_rate_5m: blank(sig.slo?.burn_rate_5m),
+    error_budget_remaining: blank(sig.slo?.error_budget_remaining),
+  };
 }
 
 /**
@@ -190,6 +254,9 @@ export async function handleGetHealthSignals(
           let sig = await readCurrentValue(sql, def);
           if (def.baselineApplicable) {
             sig = await enrichWithBaseline(sig, def, dimensions);
+          }
+          if (def.sliDirection !== 'none') {
+            sig = await enrichWithSlo(sig, def, dimensions);
           }
           signals.push(sig);
         }
