@@ -54,6 +54,8 @@ export const DEFAULT_DEPTH: DepthLevel = 'shallow';
 export const DEPTH_SUPPORTING_TOOLS: ReadonlySet<string> = new Set<string>([
   'get_neondb_query_statement',
   'get_neondb_schemas',
+  // feat-019/#2 (L2a): T3 explain · shallow = signals 摘要 / full = raw EXPLAIN JSON
+  'get_neondb_explain_plans',
 ]);
 
 /**

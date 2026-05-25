@@ -1568,6 +1568,7 @@ You MUST follow these steps:
         branchId: params.branchId,
         databaseName: params.databaseName,
         analyze: params.analyze,
+        depth: params.depth,
       },
       (analyze) =>
         handleExplainSqlStatement(

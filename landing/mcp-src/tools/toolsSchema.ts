@@ -148,6 +148,12 @@ export const explainPlansInputSchema = z.object({
     .describe(
       'Run EXPLAIN ANALYZE (execute the query for real timings). SAFETY: for non-SELECT (DML/DDL) statements this is forced to false — a plain estimate-only EXPLAIN that never executes — regardless of the value passed.',
     ),
+  depth: z
+    .enum(['shallow', 'full'])
+    .optional()
+    .describe(
+      "Progressive disclosure depth (feat-019/#2 · reuses feat-007). 'shallow' (default · token economy) returns a parsed signals summary (seq_scan / missing_index_hint / expensive_node / total_cost) — avoids the agent hallucinating over a huge nested plan JSON. 'full' returns the raw EXPLAIN JSON.",
+    ),
 });
 export const describeTableSchemaInputSchema = z.object({
   tableName: z.string().describe('The name of the table'),

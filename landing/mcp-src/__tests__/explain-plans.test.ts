@@ -3,6 +3,7 @@ import {
   gateAnalyze,
   explainAnnotationFor,
   handleExplainPlans,
+  parsePlanSignals,
   type ExplainRunner,
   type RawExplainResult,
 } from '../tools/handlers/explain-plans';
@@ -116,18 +117,20 @@ describe('handleExplainPlans (feat-019/#1 · wrapper + gate)', () => {
     expect(r.downgraded).toBe(false);
   });
 
-  it('plan: 合法 JSON 文本 → 解析为对象 · 非 JSON → 原文兜底', async () => {
+  it('depth=full: plan 合法 JSON → 解析为对象 · 非 JSON → 原文兜底', async () => {
     const parsed = await handleExplainPlans(
-      { sql: 'SELECT 1', projectId: 'p1' },
+      { sql: 'SELECT 1', projectId: 'p1', depth: 'full' },
       makeRunner([{ Plan: { 'Node Type': 'Result' } }]).runner,
     );
+    expect(parsed.depth).toBe('full');
     expect(parsed.plan).toEqual([{ Plan: { 'Node Type': 'Result' } }]);
+    expect(parsed.signals).toBeUndefined();
 
     const rawText: ExplainRunner = async () => ({
       content: [{ type: 'text', text: 'not-json-plan' }],
     });
     const fallback = await handleExplainPlans(
-      { sql: 'SELECT 1', projectId: 'p1' },
+      { sql: 'SELECT 1', projectId: 'p1', depth: 'full' },
       rawText,
     );
     expect(fallback.plan).toBe('not-json-plan');
@@ -145,5 +148,119 @@ describe('handleExplainPlans (feat-019/#1 · wrapper + gate)', () => {
     );
     expect(calls).toEqual([false]);
     expect(r.analyzed).toBe(false);
+  });
+});
+
+// 慢 SELECT 无索引的典型 plan: Aggregate → Seq Scan on sales (带 Filter)
+const SLOW_SELECT_PLAN = [
+  {
+    Plan: {
+      'Node Type': 'Aggregate',
+      'Total Cost': 20000.5,
+      Plans: [
+        {
+          'Node Type': 'Seq Scan',
+          'Relation Name': 'sales',
+          'Total Cost': 18000.25,
+          'Plan Rows': 1000000,
+          Filter: "(sale_date > '2020-01-01'::date)",
+        },
+      ],
+    },
+  },
+];
+
+describe('parsePlanSignals (feat-019/#2 · 防幻觉摘要 · 详设 §4)', () => {
+  it('Seq Scan → seq_scan(table+est_rows) + missing_index_hint(table+filter_col)', () => {
+    const { signals } = parsePlanSignals(SLOW_SELECT_PLAN);
+    expect(signals).toContainEqual({
+      type: 'seq_scan',
+      table: 'sales',
+      est_rows: 1000000,
+    });
+    expect(signals).toContainEqual({
+      type: 'missing_index_hint',
+      table: 'sales',
+      filter_col: 'sale_date',
+    });
+  });
+
+  it('expensive_node = 全树 Total Cost 最高节点 · total_cost = 根节点 cost', () => {
+    const { signals, total_cost } = parsePlanSignals(SLOW_SELECT_PLAN);
+    expect(total_cost).toBe(20000.5);
+    expect(signals).toContainEqual({
+      type: 'expensive_node',
+      node: 'Aggregate',
+      cost: 20000.5,
+    });
+  });
+
+  it('Seq Scan 无 Filter → 不出 missing_index_hint', () => {
+    const { signals } = parsePlanSignals([
+      {
+        Plan: {
+          'Node Type': 'Seq Scan',
+          'Relation Name': 't',
+          'Total Cost': 10,
+          'Plan Rows': 5,
+        },
+      },
+    ]);
+    expect(signals.some((s) => s.type === 'missing_index_hint')).toBe(false);
+    expect(signals).toContainEqual({ type: 'seq_scan', table: 't', est_rows: 5 });
+  });
+
+  it('非法 / 非 EXPLAIN JSON → 空 signals (不抛)', () => {
+    expect(parsePlanSignals(null)).toEqual({ signals: [], total_cost: 0 });
+    expect(parsePlanSignals('garbage')).toEqual({ signals: [], total_cost: 0 });
+    expect(parsePlanSignals([])).toEqual({ signals: [], total_cost: 0 });
+  });
+});
+
+describe('handleExplainPlans depth (feat-019/#2 · progressive disclosure)', () => {
+  it('depth 默认 shallow → 返回 signals 摘要 · 无 raw plan (token 经济)', async () => {
+    const { runner } = makeRunner(SLOW_SELECT_PLAN);
+    const r = await handleExplainPlans(
+      { sql: 'SELECT count(*) FROM sales WHERE sale_date > $1', projectId: 'p1' },
+      runner,
+    );
+    expect(r.depth).toBe('shallow');
+    expect(r.plan).toBeUndefined();
+    expect(r.total_cost).toBe(20000.5);
+    expect(r.signals).toContainEqual({
+      type: 'seq_scan',
+      table: 'sales',
+      est_rows: 1000000,
+    });
+    expect(r.signals).toContainEqual({
+      type: 'missing_index_hint',
+      table: 'sales',
+      filter_col: 'sale_date',
+    });
+  });
+
+  it('depth=full → 返回 raw plan · 无 signals', async () => {
+    const { runner } = makeRunner(SLOW_SELECT_PLAN);
+    const r = await handleExplainPlans(
+      { sql: 'SELECT 1', projectId: 'p1', depth: 'full' },
+      runner,
+    );
+    expect(r.depth).toBe('full');
+    expect(r.plan).toEqual(SLOW_SELECT_PLAN);
+    expect(r.signals).toBeUndefined();
+  });
+
+  it('非法 depth 值 → 落默认 shallow', async () => {
+    const { runner } = makeRunner(SLOW_SELECT_PLAN);
+    const r = await handleExplainPlans(
+      {
+        sql: 'SELECT 1',
+        projectId: 'p1',
+        depth: 'deep' as unknown as 'shallow',
+      },
+      runner,
+    );
+    expect(r.depth).toBe('shallow');
+    expect(r.signals).toBeDefined();
   });
 });

@@ -73,15 +73,26 @@ describe.skipIf(!NEON_LOCAL_URL)(
         await client.query(`INSERT INTO ${TBL}(id) VALUES (1),(2)`);
 
         const sql = `SELECT count(*) FROM ${TBL}`;
-        const result = await handleExplainPlans(
+
+        // depth=full → raw plan
+        const full = await handleExplainPlans(
+          { sql, projectId: 'x', analyze: true, depth: 'full' },
+          neonLocalRunner(client, sql),
+        );
+        expect(full.analyzed).toBe(true);
+        expect(full.downgraded).toBe(false);
+        expect(full.annotation.readOnlyHint).toBe(true);
+        expect(full.plan).toBeTruthy();
+
+        // depth=shallow (默认) → signals 摘要 · 无 raw plan (token 经济)
+        const shallow = await handleExplainPlans(
           { sql, projectId: 'x', analyze: true },
           neonLocalRunner(client, sql),
         );
-
-        expect(result.analyzed).toBe(true);
-        expect(result.downgraded).toBe(false);
-        expect(result.annotation.readOnlyHint).toBe(true);
-        expect(result.plan).toBeTruthy();
+        expect(shallow.depth).toBe('shallow');
+        expect(shallow.plan).toBeUndefined();
+        expect(Array.isArray(shallow.signals)).toBe(true);
+        expect(typeof shallow.total_cost).toBe('number');
       } finally {
         try {
           await client.query(`DROP TABLE IF EXISTS ${TBL}`);
