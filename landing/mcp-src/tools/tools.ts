@@ -17,6 +17,7 @@ import { handleGetNeonAuthConfig } from './handlers/neon-auth-get-config';
 import { handleProvisionNeonDataApi } from './handlers/data-api';
 import { handleSearch } from './handlers/search';
 import { handleGetPolicy } from './handlers/get-policy';
+import { handleExplainPlans } from './handlers/explain-plans';
 import { handleFetch } from './handlers/fetch';
 import { getDocResource, listDocsResources } from './handlers/docs';
 
@@ -1554,6 +1555,38 @@ You MUST follow these steps:
       extra,
     );
     return result;
+  },
+
+  // feat-019/#1 get_neondb_explain_plans · op-class-aware safe wrapper around explain_sql_statement.
+  // classifyOp(内层 sql) → DML/DDL 强制 analyze=false (纯 EXPLAIN 估算 · 不执行)。上游调用经注入,
+  // 避免 handlers/explain-plans.ts ↔ tools.ts 循环依赖。
+  get_neondb_explain_plans: async ({ params }, neonClient, extra) => {
+    const result = await handleExplainPlans(
+      {
+        sql: params.sql,
+        projectId: params.projectId,
+        branchId: params.branchId,
+        databaseName: params.databaseName,
+        analyze: params.analyze,
+      },
+      (analyze) =>
+        handleExplainSqlStatement(
+          {
+            params: {
+              sql: params.sql,
+              databaseName: params.databaseName,
+              projectId: params.projectId,
+              branchId: params.branchId,
+              analyze,
+            },
+          },
+          neonClient,
+          extra,
+        ),
+    );
+    return {
+      content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+    };
   },
 
   prepare_query_tuning: async ({ params }, neonClient, extra) => {

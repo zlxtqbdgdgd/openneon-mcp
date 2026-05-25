@@ -16,8 +16,8 @@ import {
 } from '../config/categories';
 
 describe('NEON_TOOLS definitions', () => {
-  it('has 36 tools (31 upstream + 4 day-one T1/T2/T6/T8 + feat-057 get_neondb_policy)', () => {
-    expect(NEON_TOOLS).toHaveLength(36);
+  it('has 37 tools (31 upstream + 4 day-one T1/T2/T6/T8 + feat-057 get_neondb_policy + feat-019 get_neondb_explain_plans)', () => {
+    expect(NEON_TOOLS).toHaveLength(37);
   });
 
   it('every tool has a name, scope (or null), and readOnlySafe flag', () => {
@@ -151,9 +151,9 @@ describe('tool category field (feat-005 #2 · narrative #3 ecosystem-friendly)',
     expect(coreTools.length).toBe(4);
   });
 
-  it('current optional count = 32 (36 total - 4 core · keeps 26+ listing budget for ecosystem MCPs)', () => {
+  it('current optional count = 33 (37 total - 4 core · keeps 26+ listing budget for ecosystem MCPs)', () => {
     const optional = NEON_TOOLS.filter((t) => t.category === 'optional');
-    expect(optional.length).toBe(32);
+    expect(optional.length).toBe(33);
   });
 
   it('T1 find_neondb_instances is core (sales 剧本入口 · narrative §3 demo spine 第 1 步)', () => {

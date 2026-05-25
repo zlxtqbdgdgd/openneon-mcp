@@ -14,6 +14,7 @@ import {
   describeProjectInputSchema,
   describeTableSchemaInputSchema,
   explainSqlStatementInputSchema,
+  explainPlansInputSchema,
   getConnectionStringInputSchema,
   getDatabaseTablesInputSchema,
   getNeondbPolicyInputSchema,
@@ -633,6 +634,35 @@ export const NEON_TOOLS = [
     readOnlySafe: true,
     annotations: {
       title: 'Explain SQL Statement',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    } satisfies ToolAnnotations,
+  },
+  // feat-019/#1 get_neondb_explain_plans · op-class-aware safe explain (wraps explain_sql_statement)
+  // 堵上游坑: DML/DDL 强制 analyze=false (纯 EXPLAIN 估算 · 不执行) · readOnlyHint:true 在此 gate 下成立
+  // (上游同名 hint 因 DML 可真执行而误导)。详设 §3/§6:
+  // https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-019-L2-mcp-tool-t3-explain-plans.html
+  {
+    name: 'get_neondb_explain_plans' as const,
+    scope: 'querying',
+    category: 'optional',
+    description: `Get a SQL statement's execution plan (EXPLAIN) — the safe T3 analyzer. Prefer this over \`explain_sql_statement\`.
+
+    <use_case>
+      Use to inspect a query's plan (e.g. spot a Seq Scan / missing index on a slow SELECT before recommending an index).
+    </use_case>
+
+    <important_notes>
+      SAFETY: for non-SELECT statements (DML/DDL like DELETE/UPDATE/ALTER) ANALYZE is forced OFF — you get an
+      estimate-only EXPLAIN that NEVER executes the statement. This gate cannot be disabled. Only SELECT/read-only
+      SQL runs EXPLAIN ANALYZE (real timings on the target branch).
+    </important_notes>`,
+    inputSchema: explainPlansInputSchema,
+    readOnlySafe: true,
+    annotations: {
+      title: 'Get Neon DB Explain Plans (feat-019 · op-class-aware safe explain)',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
