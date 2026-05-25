@@ -6,6 +6,8 @@ import {
   getAvailableTools,
   getAccessControlWarnings,
 } from '../../../mcp-src/tools/grant-filter';
+import { filterToolsByRole } from '../../../mcp-src/tools/role-toolsets';
+import { resolvePolicy } from '../../../mcp-src/policy/loader';
 import { parseCategoryInclude } from '../../../mcp-src/config/categories';
 import {
   isToolSupportingDepth,
@@ -75,6 +77,12 @@ export function GET(req: Request) {
     phase = 'get_available_tools';
     const tools = getAvailableTools(grant, readOnly, categoryInclude);
 
+    // feat-059/#1: role 软过滤 (tools/list ∩ ROLE_TOOLSETS[agent_role]) · 在 category filter 之上 ·
+    // role 来自 per-project policy.agent_role (未配 → 不过滤 · 退 category-only listing)。软 · 不拦调用。
+    phase = 'apply_role_toolset';
+    const agentRole = resolvePolicy(grant.projectId ?? undefined).agent_role;
+    const roleFilteredTools = filterToolsByRole(tools, agentRole);
+
     phase = 'get_access_control_warnings';
     const warnings = getAccessControlWarnings(grant, readOnly);
 
@@ -83,8 +91,9 @@ export function GET(req: Request) {
       grant,
       readOnly,
       categoryInclude,
+      agentRole: agentRole ?? null,
       ...(warnings.length > 0 ? { warnings } : {}),
-      tools: tools.map((tool) => {
+      tools: roleFilteredTools.map((tool) => {
         // feat-007 #4 · advertise progressive disclosure capability so clients know which
         // tools accept ?depth=full opt-in (T6/T8 day-one · per DEPTH_SUPPORTING_TOOLS).
         const supportsDepth = isToolSupportingDepth(tool.name);

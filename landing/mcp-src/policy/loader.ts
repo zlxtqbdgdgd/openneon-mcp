@@ -37,6 +37,8 @@ export type ProjectPolicy = {
   overrides: Record<string, AutonomyLevel>; // SQL-pattern → 更严 level
   // feat-030/#79: op-class → 覆盖 DEFAULT_TIMEOUTS 的注入值 (校验过的合法 PG interval · 详设 §4.2)
   timeout_overrides: Partial<Record<OpClass, TimeoutSpec>>;
+  // feat-059/#1: per-project agent 角色 (tools/list 软过滤 default · per-key 优先兜底 · OQ1)
+  agent_role?: string;
   shadow_mode?: unknown; // {enabled, days_remaining, pass_threshold} | boolean · 详见 feat-056 §4.4(#78 用)
   audit_severity?: 'info' | 'medium' | 'high';
 };
@@ -53,6 +55,8 @@ export type ResolvedPolicy = {
   overrides: Record<string, AutonomyLevel>;
   // feat-030/#79: per-project timeout 覆盖 (空 = 用 DEFAULT_TIMEOUTS · 见 timeout-injection.ts)
   timeout_overrides: Partial<Record<OpClass, TimeoutSpec>>;
+  // feat-059/#1: per-project agent_role (undefined = 未配 · tools/list 不做 role 软过滤)
+  agent_role?: string;
   shadow_mode?: unknown;
   source: 'configured' | 'defaults';
 };
@@ -148,6 +152,9 @@ export function validate(raw: unknown): PolicyConfig {
       autonomy_level: p.autonomy_level,
       overrides,
       timeout_overrides: validateTimeoutOverrides(pid, p.timeout_overrides),
+      // feat-059/#1: agent_role 不强校验枚举 (未知 role → 软过滤 no-op · forward-compat 自定义 role OQ4)
+      agent_role:
+        typeof p.agent_role === 'string' ? p.agent_role : undefined,
       shadow_mode: p.shadow_mode,
       audit_severity: p.audit_severity as ProjectPolicy['audit_severity'],
     };
@@ -235,6 +242,7 @@ export function resolvePolicy(projectId?: string): ResolvedPolicy {
       autonomy_level: p.autonomy_level,
       overrides: p.overrides,
       timeout_overrides: p.timeout_overrides,
+      agent_role: p.agent_role,
       shadow_mode: p.shadow_mode,
       source: 'configured',
     };
