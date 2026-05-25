@@ -42,6 +42,7 @@ import { handleFindNeondbInstances } from './handlers/find-instances';
 // feat-002 day-one ship · sales 剧本应用归因 · pg_stat_activity 聚合
 import { handleGetCallingServices } from './handlers/calling-services';
 import { handleGetHealthSignals } from './handlers/health-signals';
+import { handleGetQueryPerformance } from './handlers/query-performance';
 // feat-006 #2 day-one ship · token economy地基 · CSV default output
 import { formatToolResponse } from '../server/response-formatter';
 
@@ -1911,6 +1912,49 @@ You MUST follow these steps:
         {
           type: 'text',
           text: formatToolResponse(result, { format: params.format }),
+        },
+      ],
+    };
+  },
+
+  // feat-021 T5 get_neondb_query_performance · pg_stat_statements 累积 top-N + 派生画像 ·
+  // 诊断链 T4 → T5 → T3。
+  get_neondb_query_performance: async ({ params }, neonClient, extra) => {
+    const result = await handleGetQueryPerformance(
+      {
+        projectId: params.projectId,
+        branchId: params.branchId,
+        databaseName: params.databaseName,
+        computeId: params.computeId,
+        rank_by: params.rank_by,
+        limit: params.limit,
+        depth: params.depth,
+      },
+      neonClient,
+      extra,
+    );
+    // JSON: 整对象直出 (profile 保留数组)。CSV/TSV (feat-006 默认 token 经济): JSON 信封头
+    // (stats_since/visibility 标量元信息) + 表格,profile 数组拍平成 'tag|tag' 单元格 (csv-stringify
+    // 不能直接渲染数组列)。
+    if (params.format === 'json') {
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      };
+    }
+    const header = JSON.stringify(
+      { stats_since: result.stats_since, visibility: result.visibility },
+      null,
+      2,
+    );
+    const flatRows = result.queries.map((q) => ({
+      ...q,
+      profile: q.profile.join('|'),
+    }));
+    return {
+      content: [
+        {
+          type: 'text',
+          text: `${header}\n${formatToolResponse(flatRows, { format: params.format })}`,
         },
       ],
     };

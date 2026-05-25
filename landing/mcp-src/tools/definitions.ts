@@ -42,6 +42,7 @@ import {
   findNeondbInstancesInputSchema,
   getNeondbCallingServicesInputSchema,
   getNeondbHealthSignalsInputSchema,
+  getNeondbQueryPerformanceInputSchema,
 } from './toolsSchema';
 
 type NeonToolDefinition = {
@@ -693,6 +694,34 @@ export const NEON_TOOLS = [
     readOnlySafe: true,
     annotations: {
       title: 'Get Neon DB Health Signals (feat-020 · T4 multi-signal aggregation)',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    } satisfies ToolAnnotations,
+  },
+  // feat-021 get_neondb_query_performance · T5 slow-query ranking. Cumulative top-N from
+  // pg_stat_statements + deterministic profile tags. Diagnostic chain T4 → T5 → T3. 详设:
+  // https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-021-L2-mcp-tool-t5-query-performance.html
+  {
+    name: 'get_neondb_query_performance' as const,
+    scope: 'querying',
+    category: 'optional',
+    description: `Rank the slowest / heaviest queries — the T5 locator. Prefer this over raw \`run_sql\` against pg_stat_statements.
+
+    <use_case>
+      Use after T4 flags a problem to find WHICH queries are responsible: returns cumulative top-N (rank by total/mean/calls/io)
+      with per-query profile tags (slow-per-call / high-frequency / io-heavy). Pick the worst offender, then explain it with T3.
+    </use_case>
+
+    <important_notes>
+      If the connecting role lacks pg_read_all_stats, visibility='partial' — you only see your own queries, not the whole DB,
+      so don't conclude "this is the only slow query". Query text is normalized ($1 placeholders · no literal values leak).
+    </important_notes>`,
+    inputSchema: getNeondbQueryPerformanceInputSchema,
+    readOnlySafe: true,
+    annotations: {
+      title: 'Get Neon DB Query Performance (feat-021 · T5 slow-query ranking)',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,

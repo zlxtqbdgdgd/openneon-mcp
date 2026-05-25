@@ -1094,6 +1094,44 @@ export const getNeondbHealthSignalsInputSchema = z.object({
   format: outputFormatField,
 });
 
+// feat-021 T5 get_neondb_query_performance input schema · 慢 query 累积排名 + 派生画像
+// detail design: features/feat-021-L2-mcp-tool-t5-query-performance.html
+export const getNeondbQueryPerformanceInputSchema = z.object({
+  projectId: z.string().describe('The ID of the Neon project to query.'),
+  branchId: z
+    .string()
+    .optional()
+    .describe(
+      'An optional ID of the branch. If not provided the default branch is used.',
+    ),
+  databaseName: z.string().optional().describe(DATABASE_NAME_DESCRIPTION),
+  computeId: z
+    .string()
+    .optional()
+    .describe(
+      'The ID of the compute/endpoint. If not provided, the read-write compute associated with the branch will be used.',
+    ),
+  rank_by: z
+    .enum(['total_exec_time', 'mean_exec_time', 'calls', 'io'])
+    .optional()
+    .describe(
+      "Ranking dimension for the cumulative top-N. Default 'total_exec_time' (biggest overall time sink). 'mean_exec_time' = slowest per call · 'calls' = most frequent · 'io' = most shared blocks read.",
+    ),
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe('Number of top queries to return. Default 20 · clamped to [1, 100].'),
+  depth: z
+    .enum(['shallow', 'full'])
+    .optional()
+    .describe(
+      "Progressive disclosure depth for the query text (reuses feat-007). 'shallow' (default · token economy) truncates SQL to first 30 lines + a tail marker. 'full' returns the complete normalized SQL.",
+    ),
+  format: outputFormatField,
+});
+
 // feat-001 T1 find_neondb_instances input schema · sales 剧本入口工具
 // detail design: features/feat-001-L1-mcp-tool-t1-find-instances.html
 export const findNeondbInstancesInputSchema = z.object({
