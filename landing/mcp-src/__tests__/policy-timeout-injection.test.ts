@@ -139,16 +139,17 @@ describe('runPipeline surfaces inject_timeout (feat-030/#79 · AC1 注册进 §8
     expect(v.timeouts).toBeUndefined();
   });
 
-  it('hard-deny / matrix deny 优先于 inject_timeout (terminal 短路)', () => {
+  it('hard-deny terminal 优先于 inject_timeout · require_plan (#77) 也优先', () => {
     // DROP DATABASE → G4 hard-deny terminal · 永远不到 timeout stage
     expect(runPipeline(ctx({ opClass: 'DROP_DATABASE_OR_TRUNCATE' })).action).toBe(
       'deny',
     );
-    // ALTER @ L2a = require_plan → matrix fail-closed deny terminal (#77 前)
-    expect(
-      runPipeline(ctx({ opClass: 'ALTER_TABLE_BIG_LOCK', autonomyLevel: 'L2a' }))
-        .action,
-    ).toBe('deny');
+    // ALTER @ L2a = require_plan → planModeStage (feat-027/#2) 接管 · require_plan 优先于 inject_timeout
+    const v = runPipeline(
+      ctx({ opClass: 'ALTER_TABLE_BIG_LOCK', autonomyLevel: 'L2a' }),
+    );
+    expect(v.action).toBe('require_plan');
+    expect(v.timeouts).toBeUndefined(); // 返回 require_plan · 非 inject_timeout
   });
 
   it('timeoutOverrides 经 pipeline ctx 流到注入值 (AC6)', () => {

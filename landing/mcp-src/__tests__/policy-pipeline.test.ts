@@ -129,11 +129,13 @@ describe('runPipeline (feat-056/#1 · §8.2 短路)', () => {
     );
   });
 
-  it('DROP TABLE @ L2b → deny (#75 matrix: gated · feat-027 #77 前 fail-closed)', () => {
+  it('DROP TABLE @ L2b → require_plan (feat-027/#2: planModeStage 接管 · 非 fail-closed deny)', () => {
     const v = runPipeline(
       ctx({ opClass: 'DROP_TABLE_OR_INDEX', autonomyLevel: 'L2b' }),
     );
-    expect(v.action).toBe('deny');
+    expect(v.action).toBe('require_plan');
+    expect(v.terminal).toBe(false);
+    expect(v.plan?.op_class).toBe('DROP_TABLE_OR_INDEX');
     expect(v.reason).toContain('plan mode');
   });
 
