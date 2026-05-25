@@ -41,6 +41,7 @@ import { handleGetSchemas } from './handlers/schemas';
 import { handleFindNeondbInstances } from './handlers/find-instances';
 // feat-002 day-one ship · sales 剧本应用归因 · pg_stat_activity 聚合
 import { handleGetCallingServices } from './handlers/calling-services';
+import { handleGetHealthSignals } from './handlers/health-signals';
 // feat-006 #2 day-one ship · token economy地基 · CSV default output
 import { formatToolResponse } from '../server/response-formatter';
 
@@ -1874,6 +1875,33 @@ You MUST follow these steps:
         databaseName: params.databaseName,
         computeId: params.computeId,
         threshold: params.threshold,
+      },
+      neonClient,
+      extra,
+    );
+    return {
+      content: [
+        {
+          type: 'text',
+          text: formatToolResponse(result, { format: params.format }),
+        },
+      ],
+    };
+  },
+
+  // feat-020 T4 get_neondb_health_signals · 多信号健康聚合 · 遍历 signal registry 读当前值 ·
+  // baseline/SLI enrich 在 #4/#6 接入。
+  //
+  // feat-006 #2 (token economy): enriched signal array · format via formatToolResponse · default 'csv'
+  get_neondb_health_signals: async ({ params }, neonClient, extra) => {
+    const result = await handleGetHealthSignals(
+      {
+        projectId: params.projectId,
+        branchId: params.branchId,
+        databaseName: params.databaseName,
+        computeId: params.computeId,
+        dimensions: params.dimensions,
+        depth: params.depth,
       },
       neonClient,
       extra,

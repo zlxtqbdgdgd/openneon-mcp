@@ -1062,6 +1062,38 @@ export const getNeondbCallingServicesInputSchema = z.object({
   format: outputFormatField,
 });
 
+// feat-020 T4 get_neondb_health_signals input schema · 多信号健康聚合 + baseline/SLI enrich
+// detail design: features/feat-020-L2-mcp-tool-t4-health-signals.html
+export const getNeondbHealthSignalsInputSchema = z.object({
+  projectId: z.string().describe('The ID of the Neon project to query.'),
+  branchId: z
+    .string()
+    .optional()
+    .describe(
+      'An optional ID of the branch. If not provided the default branch is used.',
+    ),
+  databaseName: z.string().optional().describe(DATABASE_NAME_DESCRIPTION),
+  computeId: z
+    .string()
+    .optional()
+    .describe(
+      'The ID of the compute/endpoint. If not provided, the read-write compute associated with the branch will be used.',
+    ),
+  dimensions: z
+    .record(z.string())
+    .optional()
+    .describe(
+      'Optional dimension filters (e.g. { "endpoint": "main" }). Used as part of the baseline cache key — full dimensions form the cross-tenant isolation boundary.',
+    ),
+  depth: z
+    .enum(['shallow', 'full'])
+    .optional()
+    .describe(
+      "Progressive disclosure depth (reuses feat-007). 'shallow' (default · token economy) returns anomalous + unavailable signals plus key summary signals. 'full' returns every signal.",
+    ),
+  format: outputFormatField,
+});
+
 // feat-001 T1 find_neondb_instances input schema · sales 剧本入口工具
 // detail design: features/feat-001-L1-mcp-tool-t1-find-instances.html
 export const findNeondbInstancesInputSchema = z.object({

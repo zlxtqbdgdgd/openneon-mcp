@@ -41,6 +41,7 @@ import {
   getNeondbSchemasInputSchema,
   findNeondbInstancesInputSchema,
   getNeondbCallingServicesInputSchema,
+  getNeondbHealthSignalsInputSchema,
 } from './toolsSchema';
 
 type NeonToolDefinition = {
@@ -663,6 +664,35 @@ export const NEON_TOOLS = [
     readOnlySafe: true,
     annotations: {
       title: 'Get Neon DB Explain Plans (feat-019 · op-class-aware safe explain)',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    } satisfies ToolAnnotations,
+  },
+  // feat-020 get_neondb_health_signals · T4 multi-signal health aggregation. One call → whole-DB
+  // health: each signal's current value + (later) baseline deviation + is_sli_burning. The agent's
+  // first choice instead of raw run_sql + DIY statistics (§3.3.0). 详设:
+  // https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-020-L2-mcp-tool-t4-health-signals.html
+  {
+    name: 'get_neondb_health_signals' as const,
+    scope: 'querying',
+    category: 'optional',
+    description: `Get a whole-database health snapshot — the T4 aggregator. Prefer this over raw \`run_sql\` against pg_stat_* views.
+
+    <use_case>
+      Use first when diagnosing "the DB is slow / unhealthy": one call returns every health signal's current value
+      (connections, cache hit, replication lag, …) so you can see what's off without writing SQL or computing statistics yourself.
+    </use_case>
+
+    <important_notes>
+      Signals that read a neon-specific extension view (e.g. LFC) report status='unavailable' when the extension is absent —
+      standard signals still return (graceful degradation). A blind signal is never silently treated as "ok".
+    </important_notes>`,
+    inputSchema: getNeondbHealthSignalsInputSchema,
+    readOnlySafe: true,
+    annotations: {
+      title: 'Get Neon DB Health Signals (feat-020 · T4 multi-signal aggregation)',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
