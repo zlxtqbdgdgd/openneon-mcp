@@ -87,3 +87,11 @@ export function lookupMatrix(
   const idx = LEVELS.indexOf(level);
   return MATRIX[opClass][idx];
 }
+
+/** feat-027/#2: 该 (op-class, level) 是否需 plan mode 审批 (matrix cell === 'require_plan')。 */
+export function matrixRequiresPlan(
+  opClass: OpClass,
+  level: AutonomyLevel,
+): boolean {
+  return lookupMatrix(opClass, level) === 'require_plan';
+}

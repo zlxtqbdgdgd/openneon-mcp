@@ -20,6 +20,7 @@ import {
   timeoutInjectionStage,
   type TimeoutSpec,
 } from './stages/timeout-injection';
+import { planModeStage, type PlanPayload } from './stages/plan-mode';
 
 export type AutonomyLevel = 'L1' | 'L2a' | 'L2b' | 'L3' | 'L4';
 
@@ -37,6 +38,8 @@ export type Verdict = {
   terminal: boolean; // true → pipeline 终止 (§8.2 先到先终止)
   // feat-030/#79: inject_timeout verdict 携带要注入的 timeout (orchestrator 执行 SQL 前 SET · 详设 §4.3)
   timeouts?: TimeoutSpec;
+  // feat-027/#2: require_plan verdict 携带 server 事实 plan (orchestrator 弹 elicitInput 审批 · 详设 §4.3)
+  plan?: PlanPayload;
 };
 
 export type EnforcementCtx = {
@@ -48,6 +51,8 @@ export type EnforcementCtx = {
   grant?: { projectId?: string | null }; // key 的 project scope (G1 · null = 非 project-scoped)
   // feat-030/#79: per-project op-class → timeout 覆盖 (来自 policy.yaml timeout_overrides · loader 校验过)
   timeoutOverrides?: Partial<Record<OpClass, TimeoutSpec>>;
+  // feat-027/#2: 原始 SQL (run_sql 写路径 · plan-mode stage 组 plan payload 用 · 只读 op 可空)
+  sql?: string;
 };
 
 /** stage: 适用则返回 Verdict · 不适用返回 null (继续下一 stage) */
@@ -109,23 +114,22 @@ const matrixStage: Stage = (ctx) => {
       terminal: true,
     };
   }
-  // cell === 'require_plan': feat-027 plan mode (#77) 实现**前** fail-closed deny —— 没有审批
-  // 机制就不放行写 (保守);#77 后由 plan stage 接管 elicitation 审批放行。
-  return {
-    action: 'deny',
-    reason: `${ctx.opClass} @ ${ctx.autonomyLevel} 需 plan mode 审批 · feat-027 (#77) 实现前 fail-closed`,
-    audit_severity: 'medium',
-    terminal: true,
-  };
+  // cell === 'require_plan': feat-027/#2 起由 planModeStage 接管 (组 plan + orchestrator elicitation)。
+  // matrix 此处放行下游 (null) · planModeStage 紧随其后产出 require_plan verdict。
+  // 安全前提: planModeStage 恒在 BUILTIN_STAGES 内 (require_plan 永不漏成 allow · 且 orchestrator 对
+  // require_plan 不支持/超时 fail-closed deny · ADR-0008)。
+  return null;
 };
 
 // §8.2 顺序 stage 链 · 内置: G1 跨project (#76) → G4 hard-deny (#73) → G9 速率 (#76) → matrix (#75)
-// → timeout 注入 (#79 · 第 8 步 · 执行前最后一道 · non-terminal)。后续护栏 (feat-026/027) registerStage 注册。
+// → plan mode (#77 · 第 6 步 · require_plan non-terminal) → timeout 注入 (#79 · 第 8 步 · non-terminal)。
+// 后续护栏 (feat-026) registerStage 注册。
 const BUILTIN_STAGES: readonly Stage[] = [
   g1CrossProjectStage,
   hardDenyG4Stage,
   g9RateLimitStage,
   matrixStage,
+  planModeStage,
   timeoutInjectionStage,
 ];
 const STAGES: Stage[] = [...BUILTIN_STAGES];
@@ -143,20 +147,22 @@ export function __resetStagesForTest(): void {
 
 /**
  * 按 §8.2 顺序跑 pipeline。第一个 terminal Verdict 短路返回 (deny 先到先终止)。
- * 无 terminal 时: 若某 stage 给了 non-terminal inject_timeout (#79) → 返回它 (携 timeouts ·
- * orchestrator 执行前 SET) · 否则默认 allow。
+ * 无 terminal 时按优先级返回 non-terminal gating verdict:
+ *   require_plan (#77 · 需 orchestrator elicitation 审批 · 门禁) > inject_timeout (#79 · 执行前 SET) > allow。
+ * require_plan 优先于 inject_timeout —— 审批 (第 6 步) 在 timeout 注入 (第 8 步) 之前 · 未批准不应执行。
  */
 export function runPipeline(ctx: EnforcementCtx): Verdict {
-  // non-terminal inject_timeout verdict (#79 · 执行前注入 · 不短路 · 跑完全链后返回)
-  let injectTimeout: Verdict | null = null;
+  let requirePlan: Verdict | null = null; // #77 · 门禁 (orchestrator 弹 elicitation)
+  let injectTimeout: Verdict | null = null; // #79 · 执行前注入
   for (const stage of STAGES) {
     const verdict = stage(ctx);
     if (!verdict) continue;
     if (verdict.terminal) return verdict;
-    if (verdict.action === 'inject_timeout') injectTimeout = verdict;
-    // require_plan 非 terminal 的审批放行在 feat-027 plan stage (#77)
+    if (verdict.action === 'require_plan') requirePlan = verdict;
+    else if (verdict.action === 'inject_timeout') injectTimeout = verdict;
   }
   return (
+    requirePlan ??
     injectTimeout ?? {
       action: 'allow',
       reason: 'no stage denied',

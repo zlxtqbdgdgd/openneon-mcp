@@ -17,6 +17,10 @@ import {
 import { NEON_HANDLERS } from '../../../mcp-src/tools/index';
 import { classifyOp } from '../../../mcp-src/protection/destructive-detector';
 import { runPipeline } from '../../../mcp-src/policy/pipeline';
+import {
+  resolvePlanApproval,
+  type ElicitResultLike,
+} from '../../../mcp-src/policy/stages/plan-mode';
 import { resolvePolicy, applyOverrides } from '../../../mcp-src/policy/loader';
 import {
   getDocResource,
@@ -482,6 +486,8 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                     grant: { projectId: grant.projectId },
                     // feat-030/#79: per-project timeout 覆盖 → timeoutInjectionStage (执行前注入消费在后续 write-path 成熟)
                     timeoutOverrides: resolved.timeout_overrides,
+                    // feat-027/#2: 原始 SQL → planModeStage 组 plan payload
+                    sql: sqlForClassify,
                   });
                   if (verdict.action === 'deny') {
                     logger.warn('policy deny (feat-056):', {
@@ -498,6 +504,66 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                       ],
                       isError: true,
                     };
+                  }
+
+                  // feat-027/#2 plan mode: require_plan → orchestrator 弹 MCP elicitInput 给 DBA 审批 ·
+                  // 人批才放行 · fail-closed (client 无 capability / 超时 / 异常 → deny · ADR-0008)。
+                  if (verdict.action === 'require_plan') {
+                    if (!verdict.plan) {
+                      return {
+                        content: [
+                          {
+                            type: 'text' as const,
+                            text: 'Plan not approved: plan payload missing · fail-closed',
+                          },
+                        ],
+                        isError: true,
+                      };
+                    }
+                    const caps = server.server.getClientCapabilities();
+                    const elicit = caps?.elicitation
+                      ? async (
+                          message: string,
+                          requestedSchema: Record<string, unknown>,
+                          timeoutMs: number,
+                        ): Promise<ElicitResultLike> => {
+                          const res = await server.server.elicitInput(
+                            { message, requestedSchema } as never,
+                            { timeout: timeoutMs },
+                          );
+                          return {
+                            action: res.action,
+                            content: res.content,
+                          } as ElicitResultLike;
+                        }
+                      : undefined;
+                    const approval = await resolvePlanApproval(
+                      elicit,
+                      verdict.plan,
+                    );
+                    if (!approval.approved) {
+                      logger.warn('plan mode deny (feat-027):', {
+                        ...properties,
+                        opClass,
+                        reason: approval.reason,
+                        failClosed: approval.failClosed,
+                      });
+                      return {
+                        content: [
+                          {
+                            type: 'text' as const,
+                            text: `Plan not approved: ${approval.reason}`,
+                          },
+                        ],
+                        isError: true,
+                      };
+                    }
+                    logger.info('plan mode approved (feat-027):', {
+                      ...properties,
+                      opClass,
+                      reason: approval.reason,
+                    });
+                    // approved → fall through to execute (audit high · 已批准高危 op)
                   }
 
                   // Wrap args in { params } structure expected by handlers
