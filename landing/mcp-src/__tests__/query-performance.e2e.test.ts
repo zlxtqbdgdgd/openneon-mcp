@@ -11,9 +11,11 @@ import { describe, it, expect, vi, beforeAll } from 'vitest';
 
 const NEON_LOCAL_URL = process.env.NEON_LOCAL_URL;
 
+// NOTE: vi.mock is hoisted above module-level consts · reference process.env directly inside the
+// factory (never the outer NEON_LOCAL_URL const · that would be a TDZ ReferenceError at hoist time).
 vi.mock('../tools/handlers/connection-string', () => ({
   handleGetConnectionString: vi.fn().mockResolvedValue({
-    uri: NEON_LOCAL_URL,
+    uri: process.env.NEON_LOCAL_URL,
     computeId: 'ep-local',
   }),
 }));
