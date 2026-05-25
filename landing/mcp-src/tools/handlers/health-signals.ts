@@ -23,6 +23,7 @@ import {
   type DepthLevel,
 } from '../../config/depth';
 import { SIGNAL_REGISTRY, type SignalDef } from '../signal-registry';
+import { baseline } from '../../server-enrich/baseline/baseline';
 import type { ToolHandlerExtraParams } from '../types';
 
 export type GetHealthSignalsInput = {
@@ -65,6 +66,11 @@ export type HealthSignal = {
 
 const DEFAULT_DATABASE = 'neondb';
 
+// Baseline window/bucket defaults for non-seasonal signals (feat-016 OQ2 · 7d history @ 1h buckets).
+// feat-017 (L2b) will vary these per-signal for seasonal signals.
+const DEFAULT_BASELINE_WINDOW = { last: '7d' } as const;
+const DEFAULT_BASELINE_BUCKET = '1h';
+
 /**
  * Read one signal's current value from the live DB.
  *
@@ -87,6 +93,45 @@ async function readCurrentValue(
     return { signal_type: def.signal, value: Number(raw), status: 'ok' };
   } catch {
     return { signal_type: def.signal, value: null, status: 'unavailable' };
+  }
+}
+
+/**
+ * Enrich an `ok` baseline_applicable signal with feat-016 median+MAD baseline (feat-020/#4).
+ *
+ * On a usable band + deviation: surface baseline_value / robust_z / label, and flip status to
+ * 'anomalous' when the label is high/low. On insufficient_data / degenerate: return the current
+ * value only with NO baseline fields and status='ok' — never report an anomaly off a non-existent
+ * or zero-width band (avoids noise). Baseline failure degrades, never blocks the signal (§8).
+ */
+async function enrichWithBaseline(
+  sig: HealthSignal,
+  def: SignalDef,
+  dimensions: Record<string, string>,
+): Promise<HealthSignal> {
+  if (sig.status !== 'ok' || sig.value === null) return sig;
+  try {
+    const b = await baseline({
+      signal: def.signal,
+      dimensions,
+      window: DEFAULT_BASELINE_WINDOW,
+      bucket: DEFAULT_BASELINE_BUCKET,
+      current_value: sig.value,
+    });
+    if (b.status === 'ok' && b.band && b.deviation) {
+      return {
+        ...sig,
+        baseline_value: b.band.median,
+        robust_z: b.deviation.robust_z,
+        label: b.deviation.label,
+        baseline_algo: 'median-mad',
+        status: b.deviation.label === 'normal' ? 'ok' : 'anomalous',
+      };
+    }
+    // insufficient_data / degenerate → current value only · no anomaly (§12).
+    return sig;
+  } catch {
+    return sig;
   }
 }
 
@@ -139,9 +184,14 @@ export async function handleGetHealthSignals(
 
       const sql = await createSqlClient(connectionString.uri);
       try {
+        const dimensions = args.dimensions ?? {};
         const signals: HealthSignal[] = [];
         for (const def of SIGNAL_REGISTRY) {
-          signals.push(await readCurrentValue(sql, def));
+          let sig = await readCurrentValue(sql, def);
+          if (def.baselineApplicable) {
+            sig = await enrichWithBaseline(sig, def, dimensions);
+          }
+          signals.push(sig);
         }
 
         const depth: DepthLevel = isValidDepth(args.depth)
