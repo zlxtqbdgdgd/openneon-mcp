@@ -41,6 +41,8 @@ import {
   getNeondbSchemasInputSchema,
   findNeondbInstancesInputSchema,
   getNeondbCallingServicesInputSchema,
+  getNeondbHealthSignalsInputSchema,
+  getNeondbQueryPerformanceInputSchema,
 } from './toolsSchema';
 
 type NeonToolDefinition = {
@@ -663,6 +665,63 @@ export const NEON_TOOLS = [
     readOnlySafe: true,
     annotations: {
       title: 'Get Neon DB Explain Plans (feat-019 · op-class-aware safe explain)',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    } satisfies ToolAnnotations,
+  },
+  // feat-020 get_neondb_health_signals · T4 multi-signal health aggregation. One call → whole-DB
+  // health: each signal's current value + (later) baseline deviation + is_sli_burning. The agent's
+  // first choice instead of raw run_sql + DIY statistics (§3.3.0). 详设:
+  // https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-020-L2-mcp-tool-t4-health-signals.html
+  {
+    name: 'get_neondb_health_signals' as const,
+    scope: 'querying',
+    category: 'optional',
+    description: `Get a whole-database health snapshot — the T4 aggregator. Prefer this over raw \`run_sql\` against pg_stat_* views.
+
+    <use_case>
+      Use first when diagnosing "the DB is slow / unhealthy": one call returns every health signal's current value
+      (connections, cache hit, replication lag, …) so you can see what's off without writing SQL or computing statistics yourself.
+    </use_case>
+
+    <important_notes>
+      Signals that read a neon-specific extension view (e.g. LFC) report status='unavailable' when the extension is absent —
+      standard signals still return (graceful degradation). A blind signal is never silently treated as "ok".
+    </important_notes>`,
+    inputSchema: getNeondbHealthSignalsInputSchema,
+    readOnlySafe: true,
+    annotations: {
+      title: 'Get Neon DB Health Signals (feat-020 · T4 multi-signal aggregation)',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    } satisfies ToolAnnotations,
+  },
+  // feat-021 get_neondb_query_performance · T5 slow-query ranking. Cumulative top-N from
+  // pg_stat_statements + deterministic profile tags. Diagnostic chain T4 → T5 → T3. 详设:
+  // https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-021-L2-mcp-tool-t5-query-performance.html
+  {
+    name: 'get_neondb_query_performance' as const,
+    scope: 'querying',
+    category: 'optional',
+    description: `Rank the slowest / heaviest queries — the T5 locator. Prefer this over raw \`run_sql\` against pg_stat_statements.
+
+    <use_case>
+      Use after T4 flags a problem to find WHICH queries are responsible: returns cumulative top-N (rank by total/mean/calls/io)
+      with per-query profile tags (slow-per-call / high-frequency / io-heavy). Pick the worst offender, then explain it with T3.
+    </use_case>
+
+    <important_notes>
+      If the connecting role lacks pg_read_all_stats, visibility='partial' — you only see your own queries, not the whole DB,
+      so don't conclude "this is the only slow query". Query text is normalized ($1 placeholders · no literal values leak).
+    </important_notes>`,
+    inputSchema: getNeondbQueryPerformanceInputSchema,
+    readOnlySafe: true,
+    annotations: {
+      title: 'Get Neon DB Query Performance (feat-021 · T5 slow-query ranking)',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,

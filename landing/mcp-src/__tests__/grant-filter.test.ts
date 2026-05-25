@@ -28,7 +28,7 @@ describe('filterToolsForGrant', () => {
       grant({ scopes: ['querying'] }),
     );
     const names = tools.map((t) => t.name);
-    expect(tools).toHaveLength(13); // 10 upstream + 2 day-one (T6 · T2) + feat-019 explain_plans · all scope='querying'
+    expect(tools).toHaveLength(15); // 10 upstream + 2 day-one (T6 · T2) + feat-019 explain_plans + feat-020 T4 + feat-021 T5 · all scope='querying'
     expect(names).toContain('run_sql');
     expect(names).toContain('search');
     expect(names).toContain('fetch');
@@ -47,7 +47,7 @@ describe('filterToolsForGrant', () => {
       grant({ projectId: 'proj-123', scopes: null }),
     );
     const names = tools.map((t) => t.name);
-    expect(tools).toHaveLength(29); // 24 upstream + 3 day-one (T6/T8/T2) + feat-057 get_policy + feat-019 explain_plans (require projectId · T1 hidden)
+    expect(tools).toHaveLength(31); // 24 upstream + 3 day-one (T6/T8/T2) + feat-057 get_policy + feat-019 explain_plans + feat-020 T4 + feat-021 T5 (require projectId · T1 hidden)
     expect(names).not.toContain('list_projects');
     expect(names).not.toContain('create_project');
     expect(names).not.toContain('search');
@@ -62,7 +62,7 @@ describe('filterToolsForGrant', () => {
       NEON_TOOLS,
       grant({ projectId: 'proj-123', scopes: ['querying'] }),
     );
-    expect(tools).toHaveLength(11); // 8 upstream + 2 day-one (T6/T2) + feat-019 explain_plans · scope='querying' + require projectId
+    expect(tools).toHaveLength(13); // 8 upstream + 2 day-one (T6/T2) + feat-019 explain_plans + feat-020 T4 + feat-021 T5 · scope='querying' + require projectId
     const names = tools.map((t) => t.name);
     expect(names).toContain('run_sql');
     expect(names).toContain('get_neondb_query_statement'); // T6 day-one
@@ -74,7 +74,7 @@ describe('filterToolsForGrant', () => {
 describe('getAvailableTools', () => {
   it('applies read-only filter after grant filtering', () => {
     const tools = getAvailableTools(grant({ scopes: ['querying'] }), true);
-    expect(tools).toHaveLength(9); // 6 upstream + 2 day-one (T6/T2) + feat-019 explain_plans · scope='querying' + readOnlySafe
+    expect(tools).toHaveLength(11); // 6 upstream + 2 day-one (T6/T2) + feat-019 explain_plans + feat-020 T4 + feat-021 T5 · scope='querying' + readOnlySafe
     for (const tool of tools) {
       expect(tool.readOnlySafe).toBe(true);
     }
