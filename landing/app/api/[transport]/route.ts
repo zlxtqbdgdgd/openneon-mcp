@@ -56,6 +56,10 @@ import {
 } from '../../../mcp-src/tools/grant-filter';
 import { filterToolsByRole } from '../../../mcp-src/tools/role-toolsets';
 import {
+  isLocalDevAuthEnabled,
+  buildLocalDevAuthInfo,
+} from '../../../mcp-src/server/local-dev-auth';
+import {
   parseCategoryInclude,
   type CategoryInclude,
 } from '../../../mcp-src/config/categories';
@@ -1131,6 +1135,16 @@ const verifyToken = async (
     tokenPrefix: bearerToken?.substring(0, 10) ?? 'none',
     userAgent,
   });
+
+  // 自托管 dev auth 旁路: NEON_LOCAL_URL set (neon_local · 非生产) → 跳过 Neon Cloud 鉴权 ·
+  // 返回 synthetic 本地身份。危险操作仍由 feat-056 pipeline (policy.yaml + hard-deny) 把关 ·
+  // 严格 env-gate (production 绝不 set NEON_LOCAL_URL · 同 feat-062 local-call)。
+  if (isLocalDevAuthEnabled()) {
+    logger.warn(
+      'verifyToken · self-hosted dev auth bypass (NEON_LOCAL_URL · no Neon Cloud auth)',
+    );
+    return buildLocalDevAuthInfo(req, bearerToken, userAgent);
+  }
 
   if (!bearerToken) {
     return undefined;
