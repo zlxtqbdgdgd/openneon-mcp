@@ -25,6 +25,14 @@ export const SLO_SPECS: Record<string, SloSpec> = {
     slo_target: 0.99,
     budget_window: '30d',
   },
+  // cache_hit_ratio · native_ratio · the canonical SLO example (feat-018 §12): the signal IS already
+  // a ratio, used directly as the SLI. 99% / 30d is the conservative default (OQ3 · overridable).
+  cache_hit_ratio: {
+    signal: 'cache_hit_ratio',
+    sli_kind: 'native_ratio',
+    slo_target: 0.99,
+    budget_window: '30d',
+  },
 };
 
 export function getSloSpec(signal: string): SloSpec | undefined {

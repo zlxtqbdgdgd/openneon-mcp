@@ -62,12 +62,13 @@ describe('handleGetHealthSignals · happy path', () => {
     });
   });
 
-  it('reads connections from pg_stat_activity scoped to the current database', async () => {
+  it('reads connections from pg_stat_activity scoped to the current database (first signal query)', async () => {
     mockSqlQuery.mockResolvedValueOnce([{ value: 5 }]);
 
     await handleGetHealthSignals({ projectId: 'proj-abc' }, mockNeonClient, mockExtra);
 
-    expect(mockSqlQuery).toHaveBeenCalledOnce();
+    // connections is the first registry signal · its read is the first DB query (the handler now
+    // reads the full L2a signal set, so it's no longer the only call).
     const [actualSql] = mockSqlQuery.mock.calls[0];
     expect(actualSql).toMatch(/FROM pg_stat_activity/);
     expect(actualSql).toMatch(/datname = current_database\(\)/);

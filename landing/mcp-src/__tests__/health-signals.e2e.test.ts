@@ -47,5 +47,45 @@ describe.skipIf(!NEON_LOCAL_URL)(
       // This test session holds at least one connection.
       expect(connections?.value as number).toBeGreaterThanOrEqual(1);
     });
+
+    it('cache_hit_ratio reads a real ratio in [0,1] from pg_stat_database', async () => {
+      const result = await handleGetHealthSignals(
+        { projectId: 'x', depth: 'full' },
+        mockNeonClient,
+        mockExtra,
+      );
+      const chr = result.find((s) => s.signal_type === 'cache_hit_ratio');
+      expect(chr?.status).toBe('ok');
+      expect(chr?.value as number).toBeGreaterThanOrEqual(0);
+      expect(chr?.value as number).toBeLessThanOrEqual(1);
+    });
+
+    it('storage_size returns a real size · NOT baselined (no robust_z · 不误报 high)', async () => {
+      const result = await handleGetHealthSignals(
+        { projectId: 'x', depth: 'full' },
+        mockNeonClient,
+        mockExtra,
+      );
+      const storage = result.find((s) => s.signal_type === 'storage_size_bytes');
+      expect(storage?.status).toBe('ok');
+      expect(storage?.value as number).toBeGreaterThan(0);
+      expect(storage?.robust_z).toBeUndefined();
+    });
+
+    it('graceful degradation: neon ext absent → lfc_hit_rate unavailable · single-node → replication unavailable', async () => {
+      const result = await handleGetHealthSignals(
+        { projectId: 'x', depth: 'full' },
+        mockNeonClient,
+        mockExtra,
+      );
+      // dev server has no `neon` extension → LFC blind, but the call still succeeds.
+      expect(result.find((s) => s.signal_type === 'lfc_hit_rate')?.status).toBe(
+        'unavailable',
+      );
+      // neon_local is single-node → no replica → replication lag unavailable (honest, not 0).
+      expect(
+        result.find((s) => s.signal_type === 'replication_lag_seconds')?.status,
+      ).toBe('unavailable');
+    });
   },
 );

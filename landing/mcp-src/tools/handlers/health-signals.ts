@@ -90,7 +90,7 @@ async function readCurrentValue(
 ): Promise<HealthSignal> {
   try {
     const rows = await sql.query(def.currentValueSql);
-    const raw = rows[0]?.value;
+    const raw = rows?.[0]?.value;
     if (raw === undefined || raw === null) {
       return { signal_type: def.signal, value: null, status: 'unavailable' };
     }
@@ -98,6 +98,33 @@ async function readCurrentValue(
   } catch {
     return { signal_type: def.signal, value: null, status: 'unavailable' };
   }
+}
+
+/**
+ * Lazily check (and memoize) whether the `neon` extension is installed. Only consulted for signals
+ * with requiresNeonExt — since those come last in the registry, the check fires after the standard
+ * signals' reads (and is skipped entirely if no neon-ext signal is reached). On any error → treated
+ * as absent (conservative · the signal degrades to unavailable).
+ */
+function makeNeonExtGate(
+  sql: { query: (q: string, p?: unknown[]) => Promise<Array<Record<string, unknown>>> },
+): () => Promise<boolean> {
+  let checked = false;
+  let installed = false;
+  return async () => {
+    if (!checked) {
+      try {
+        const rows = await sql.query(
+          `SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'neon') AS has_neon`,
+        );
+        installed = rows?.[0]?.has_neon === true;
+      } catch {
+        installed = false;
+      }
+      checked = true;
+    }
+    return installed;
+  };
 }
 
 /**
@@ -249,8 +276,19 @@ export async function handleGetHealthSignals(
       const sql = await createSqlClient(connectionString.uri);
       try {
         const dimensions = args.dimensions ?? {};
+        const neonExtInstalled = makeNeonExtGate(sql);
         const signals: HealthSignal[] = [];
         for (const def of SIGNAL_REGISTRY) {
+          // neon-extension-backed signal + extension absent → unavailable (graceful · standard
+          // signals unaffected). Never silently dropped — the agent sees the signal is blind.
+          if (def.requiresNeonExt && !(await neonExtInstalled())) {
+            signals.push({
+              signal_type: def.signal,
+              value: null,
+              status: 'unavailable',
+            });
+            continue;
+          }
           let sig = await readCurrentValue(sql, def);
           if (def.baselineApplicable) {
             sig = await enrichWithBaseline(sig, def, dimensions);

@@ -48,13 +48,15 @@ export type SignalDef = {
 };
 
 /**
- * feat-020/#1 · single tracer-bullet signal.
- *
- * `connections` = current active connection count from pg_stat_activity. baseline_applicable
- * (a busy-vs-quiet gauge that swings around a stable band) · high-bad (approaching max_connections
- * is the failure mode). Key summary signal · always shown.
+ * L2a signal set. Every SQL below was verified against the dev server's real neon_local PG 16.9
+ * (`先核实再假设` · OQ1) — the neon extension is NOT installed there, so `lfc_hit_rate` exercises
+ * the graceful-degradation path (extension absent → status='unavailable' · standard signals still
+ * return). The LFC view/column (`neon_stat_file_cache.file_cache_hit_ratio`) is taken from the neon
+ * source (pgxn/neon/neon--1.1--1.2.sql), not guessed.
  */
 export const SIGNAL_REGISTRY: readonly SignalDef[] = [
+  // connections · current active connection count · swings around a stable band → baseline ·
+  // high-bad (approaching max_connections is the failure mode). Key summary.
   {
     signal: 'connections',
     source: 'pg_stat_activity',
@@ -64,6 +66,56 @@ export const SIGNAL_REGISTRY: readonly SignalDef[] = [
     baselineApplicable: true,
     sliDirection: 'high-bad',
     keySummary: true,
+  },
+  // cache_hit_ratio · shared-buffer hit ratio [0,1] from pg_stat_database · low-bad (low hit ratio
+  // means more storage reads). The canonical native_ratio SLO signal (feat-018). Key summary.
+  {
+    signal: 'cache_hit_ratio',
+    source: 'pg_stat_database',
+    currentValueSql:
+      'SELECT (sum(blks_hit)::float8 / nullif(sum(blks_hit + blks_read), 0)) AS value FROM pg_stat_database WHERE datname = current_database()',
+    requiresNeonExt: false,
+    baselineApplicable: true,
+    sliDirection: 'low-bad',
+    keySummary: true,
+  },
+  // replication_lag_seconds · max replay lag across replicas (pg_stat_replication) · high-bad.
+  // neon_local is single-node (0 replicas) → null → status='unavailable' (honest · OQ5). Non-key
+  // (only surfaces when anomalous / unavailable).
+  {
+    signal: 'replication_lag_seconds',
+    source: 'pg_stat_replication',
+    currentValueSql:
+      'SELECT max(EXTRACT(EPOCH FROM replay_lag))::float8 AS value FROM pg_stat_replication',
+    requiresNeonExt: false,
+    baselineApplicable: true,
+    sliDirection: 'high-bad',
+    keySummary: false,
+  },
+  // storage_size_bytes · database on-disk size · MONOTONIC-ish → baseline_applicable=false (median+
+  // MAD would forever report "high"; use threshold / growth-rate instead · §3). sli_direction none.
+  // Key summary (capacity is worth always showing).
+  {
+    signal: 'storage_size_bytes',
+    source: 'pg_database_size',
+    currentValueSql: 'SELECT pg_database_size(current_database())::float8 AS value',
+    requiresNeonExt: false,
+    baselineApplicable: false,
+    sliDirection: 'none',
+    keySummary: true,
+  },
+  // lfc_hit_rate · Neon Local File Cache hit ratio [0,1] · requires the neon extension. view +
+  // column verified from neon source (neon--1.1--1.2.sql · file_cache_hit_ratio is a 0–100 %, so
+  // /100 → ratio). low-bad. Extension absent → unavailable (graceful · standard signals unaffected).
+  {
+    signal: 'lfc_hit_rate',
+    source: 'neon_stat_file_cache',
+    currentValueSql:
+      'SELECT (file_cache_hit_ratio / 100.0)::float8 AS value FROM neon_stat_file_cache',
+    requiresNeonExt: true,
+    baselineApplicable: true,
+    sliDirection: 'low-bad',
+    keySummary: false,
   },
 ] as const;
 
