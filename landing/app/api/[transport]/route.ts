@@ -524,23 +524,29 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                         isError: true,
                       };
                     }
-                    const caps = server.server.getClientCapabilities();
-                    const elicit = caps?.elicitation
-                      ? async (
-                          message: string,
-                          requestedSchema: Record<string, unknown>,
-                          timeoutMs: number,
-                        ): Promise<ElicitResultLike> => {
-                          const res = await server.server.elicitInput(
-                            { message, requestedSchema } as never,
-                            { timeout: timeoutMs },
-                          );
-                          return {
-                            action: res.action,
-                            content: res.content,
-                          } as ElicitResultLike;
-                        }
-                      : undefined;
+                    // 不预检 getClientCapabilities() —— mcp-handler streamable HTTP 下该快照可能拿不到
+                    // (tool-call 那次请求的 server 实例未必见过 initialize 握手) → 会误判 fail-closed。
+                    // 直接 attempt elicitInput · 由 resolvePlanApproval 的 try/catch 兜底:client 真不支持
+                    // 时 SDK 同步抛 "Client does not support elicitation" → catch → fail-closed (SPIKE feat-027/#1)。
+                    logger.info('plan mode · attempting elicitation (feat-027):', {
+                      ...properties,
+                      opClass,
+                      clientCaps: server.server.getClientCapabilities() ?? null,
+                    });
+                    const elicit = async (
+                      message: string,
+                      requestedSchema: Record<string, unknown>,
+                      timeoutMs: number,
+                    ): Promise<ElicitResultLike> => {
+                      const res = await server.server.elicitInput(
+                        { message, requestedSchema } as never,
+                        { timeout: timeoutMs },
+                      );
+                      return {
+                        action: res.action,
+                        content: res.content,
+                      } as ElicitResultLike;
+                    };
                     const approval = await resolvePlanApproval(
                       elicit,
                       verdict.plan,
