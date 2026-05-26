@@ -52,6 +52,7 @@ describe('T4 baseline enrich · tracer bullet (value + baseline + label)', () =>
       status: 'ok',
       band: { median: 20, mad: 4, lo: 2, hi: 38 },
       deviation: { robust_z: 12.6, label: 'high' },
+      algo: 'median-mad',
       coverage: {
         actual_points: 120,
         expected_points: 168,
@@ -79,6 +80,7 @@ describe('T4 baseline enrich · tracer bullet (value + baseline + label)', () =>
     mockSqlQuery.mockResolvedValueOnce([{ value: 42 }]);
     mockBaseline.mockResolvedValueOnce({
       status: 'insufficient_data',
+      algo: null,
       coverage: { actual_points: 0, expected_points: 0, span_seconds: 0, latest_point_ts: null },
     });
 
@@ -101,6 +103,7 @@ describe('T4 baseline enrich · tracer bullet (value + baseline + label)', () =>
       status: 'ok',
       band: { median: 20, mad: 4, lo: 2, hi: 38 },
       deviation: { robust_z: 0.17, label: 'normal' },
+      algo: 'median-mad',
       coverage: { actual_points: 120, expected_points: 168, span_seconds: 604800, latest_point_ts: 1 },
     });
 
@@ -116,6 +119,7 @@ describe('T4 baseline enrich · honest degradation (§8 §12)', () => {
     mockSqlQuery.mockResolvedValueOnce([{ value: 50 }]);
     mockBaseline.mockResolvedValueOnce({
       status: 'insufficient_data',
+      algo: null,
       coverage: { actual_points: 5, expected_points: 168, span_seconds: 604800, latest_point_ts: 1 },
     });
 

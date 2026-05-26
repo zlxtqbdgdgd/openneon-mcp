@@ -63,7 +63,13 @@ export type HealthSignal = {
   label?: 'normal' | 'high' | 'low';
   /** SLO burn-rate verdict (feat-018 · feat-020/#6) · 'unknown' when SLI history is insufficient. */
   is_sli_burning?: boolean | 'unknown';
-  baseline_algo?: 'median-mad' | null;
+  /**
+   * feat-017 (L2b): which baseline algorithm produced the band · 'seasonal-mad' (per-bucket) /
+   * 'median-mad' (global) / null (no usable baseline). Lets the agent see when seasonal fell back.
+   */
+  baseline_algo?: 'median-mad' | 'seasonal-mad' | null;
+  /** feat-017: UTC hour-of-day of the chosen bucket (0..23) · set for both seasonal AND its fallback. */
+  bucket_id?: number;
   /** Full SLO block (feat-018 · ~7 fields) for signals with an SLO spec. */
   slo?: SloBlock;
 };
@@ -71,9 +77,13 @@ export type HealthSignal = {
 const DEFAULT_DATABASE = 'neondb';
 
 // Baseline window/bucket defaults for non-seasonal signals (feat-016 OQ2 · 7d history @ 1h buckets).
-// feat-017 (L2b) will vary these per-signal for seasonal signals.
 const DEFAULT_BASELINE_WINDOW = { last: '7d' } as const;
 const DEFAULT_BASELINE_BUCKET = '1h';
+
+// feat-017 (L2b): seasonal needs ≥ 21d history so each of the 24 hour-of-day buckets gets ≥ 20
+// samples (matching MIN_POINTS). 1h bucket keeps the hour boundaries clean.
+const DEFAULT_SEASONAL_WINDOW = { last: '21d' } as const;
+const DEFAULT_SEASONAL_BUCKET = '1h';
 
 /**
  * Read one signal's current value from the live DB.
@@ -128,12 +138,17 @@ function makeNeonExtGate(
 }
 
 /**
- * Enrich an `ok` baseline_applicable signal with feat-016 median+MAD baseline (feat-020/#4).
+ * Enrich an `ok` baseline_applicable signal with feat-016 median+MAD baseline (feat-020/#4) and —
+ * for `seasonalApplicable` signals — the feat-017 seasonal-MAD branch (24 hour-of-day buckets ·
+ * three-level fallback).
  *
- * On a usable band + deviation: surface baseline_value / robust_z / label, and flip status to
- * 'anomalous' when the label is high/low. On insufficient_data / degenerate: return the current
- * value only with NO baseline fields and status='ok' — never report an anomaly off a non-existent
- * or zero-width band (avoids noise). Baseline failure degrades, never blocks the signal (§8).
+ * On a usable band + deviation: surface baseline_value / robust_z / label / algo / bucket_id, and
+ * flip status to 'anomalous' when the label is high/low. On insufficient_data / degenerate: return
+ * the current value only with NO baseline fields and status='ok' — never report an anomaly off a
+ * non-existent or zero-width band (avoids noise). Baseline failure degrades, never blocks (§8).
+ *
+ * feat-017: when seasonal is taken, the longer 21d window is used; feat-016 7d window stays for
+ * non-seasonal signals (no premature window inflation).
  */
 async function enrichWithBaseline(
   sig: HealthSignal,
@@ -142,22 +157,26 @@ async function enrichWithBaseline(
 ): Promise<HealthSignal> {
   if (sig.status !== 'ok' || sig.value === null) return sig;
   try {
+    const seasonal = def.seasonalApplicable === true;
     const b = await baseline({
       signal: def.signal,
       dimensions,
-      window: DEFAULT_BASELINE_WINDOW,
-      bucket: DEFAULT_BASELINE_BUCKET,
+      window: seasonal ? DEFAULT_SEASONAL_WINDOW : DEFAULT_BASELINE_WINDOW,
+      bucket: seasonal ? DEFAULT_SEASONAL_BUCKET : DEFAULT_BASELINE_BUCKET,
       current_value: sig.value,
+      seasonal,
     });
     if (b.status === 'ok' && b.band && b.deviation) {
-      return {
+      const next: HealthSignal = {
         ...sig,
         baseline_value: b.band.median,
         robust_z: b.deviation.robust_z,
         label: b.deviation.label,
-        baseline_algo: 'median-mad',
+        baseline_algo: b.algo,
         status: b.deviation.label === 'normal' ? 'ok' : 'anomalous',
       };
+      if (b.bucket_id !== undefined) next.bucket_id = b.bucket_id;
+      return next;
     }
     // insufficient_data / degenerate → current value only · no anomaly (§12).
     return sig;
@@ -236,6 +255,8 @@ export function flattenSignalRow(
     baseline_value: blank(sig.baseline_value),
     robust_z: blank(sig.robust_z),
     label: blank(sig.label),
+    baseline_algo: blank(sig.baseline_algo),
+    bucket_id: blank(sig.bucket_id),
     is_sli_burning: blank(sig.is_sli_burning),
     sli_value: blank(sig.slo?.sli_value),
     slo_target: blank(sig.slo?.slo_target),

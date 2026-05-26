@@ -37,6 +37,12 @@ export type SignalDef = {
    * (feat-016) or it would forever report "high". Use threshold / growth-rate instead.
    */
   baselineApplicable: boolean;
+  /**
+   * feat-017 (L2b) · true → ALSO opt into seasonal-MAD (24 hour-of-day buckets). Only meaningful
+   * when `baselineApplicable === true`. Signals with no clear daily cycle (noise-dominated, e.g.
+   * replication_lag_seconds) keep this false and run feat-016 global baseline only.
+   */
+  seasonalApplicable: boolean;
   /** Direction that counts as bad · feat-018 burn-rate uses this. */
   sliDirection: SliDirection;
   /**
@@ -64,6 +70,7 @@ export const SIGNAL_REGISTRY: readonly SignalDef[] = [
       'SELECT count(*)::float8 AS value FROM pg_stat_activity WHERE datname = current_database()',
     requiresNeonExt: false,
     baselineApplicable: true,
+    seasonalApplicable: true,
     sliDirection: 'high-bad',
     keySummary: true,
   },
@@ -76,12 +83,14 @@ export const SIGNAL_REGISTRY: readonly SignalDef[] = [
       'SELECT (sum(blks_hit)::float8 / nullif(sum(blks_hit + blks_read), 0)) AS value FROM pg_stat_database WHERE datname = current_database()',
     requiresNeonExt: false,
     baselineApplicable: true,
+    seasonalApplicable: true,
     sliDirection: 'low-bad',
     keySummary: true,
   },
   // replication_lag_seconds · max replay lag across replicas (pg_stat_replication) · high-bad.
   // neon_local is single-node (0 replicas) → null → status='unavailable' (honest · OQ5). Non-key
-  // (only surfaces when anomalous / unavailable).
+  // (only surfaces when anomalous / unavailable). seasonal=false: replay lag is noise-dominated
+  // with no clear daily cycle · feat-017 §3.4 keeps it on the global feat-016 baseline.
   {
     signal: 'replication_lag_seconds',
     source: 'pg_stat_replication',
@@ -89,24 +98,27 @@ export const SIGNAL_REGISTRY: readonly SignalDef[] = [
       'SELECT max(EXTRACT(EPOCH FROM replay_lag))::float8 AS value FROM pg_stat_replication',
     requiresNeonExt: false,
     baselineApplicable: true,
+    seasonalApplicable: false,
     sliDirection: 'high-bad',
     keySummary: false,
   },
   // storage_size_bytes · database on-disk size · MONOTONIC-ish → baseline_applicable=false (median+
   // MAD would forever report "high"; use threshold / growth-rate instead · §3). sli_direction none.
-  // Key summary (capacity is worth always showing).
+  // Key summary (capacity is worth always showing). seasonal moot since baselineApplicable=false.
   {
     signal: 'storage_size_bytes',
     source: 'pg_database_size',
     currentValueSql: 'SELECT pg_database_size(current_database())::float8 AS value',
     requiresNeonExt: false,
     baselineApplicable: false,
+    seasonalApplicable: false,
     sliDirection: 'none',
     keySummary: true,
   },
   // lfc_hit_rate · Neon Local File Cache hit ratio [0,1] · requires the neon extension. view +
   // column verified from neon source (neon--1.1--1.2.sql · file_cache_hit_ratio is a 0–100 %, so
   // /100 → ratio). low-bad. Extension absent → unavailable (graceful · standard signals unaffected).
+  // seasonal=true: LFC daily cycle is the feat-017 §2 motivating example (workhour vs nighttime).
   {
     signal: 'lfc_hit_rate',
     source: 'neon_stat_file_cache',
@@ -114,6 +126,7 @@ export const SIGNAL_REGISTRY: readonly SignalDef[] = [
       'SELECT (file_cache_hit_ratio / 100.0)::float8 AS value FROM neon_stat_file_cache',
     requiresNeonExt: true,
     baselineApplicable: true,
+    seasonalApplicable: true,
     sliDirection: 'low-bad',
     keySummary: false,
   },
