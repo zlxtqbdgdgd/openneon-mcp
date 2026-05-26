@@ -1,7 +1,7 @@
 import { Api, Branch } from '@neondatabase/api-client';
 import { ToolHandlerExtraParams } from '../types';
 import { handleGetConnectionString } from './connection-string';
-import { neon } from '@neondatabase/serverless';
+import { createSqlClient } from './sql-driver';
 import { DESCRIBE_DATABASE_STATEMENTS } from '../utils';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { CONSOLE_URLS, generateConsoleUrl } from './urls';
@@ -60,10 +60,12 @@ export async function handleDescribeBranch(
       neonClient,
       extra,
     );
-    const runQuery = neon(connectionString.uri);
-    response = await runQuery.transaction(
-      DESCRIBE_DATABASE_STATEMENTS.map((sql) => runQuery.query(sql)),
-    );
+    const client = await createSqlClient(connectionString.uri);
+    try {
+      response = await client.transaction(DESCRIBE_DATABASE_STATEMENTS);
+    } finally {
+      await client.release();
+    }
 
     return {
       content: [
