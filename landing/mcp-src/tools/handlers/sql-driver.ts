@@ -26,6 +26,17 @@ const { Client: PgClient } = pg;
 
 export type SqlClient = {
   query: (sql: string, params?: unknown[]) => Promise<Array<Record<string, unknown>>>;
+  /**
+   * 跑多条语句作为单个原子事务 · 返回每条语句的 rows 数组(顺序与入参一致)。
+   * - pg TCP path: 用 `BEGIN [READ ONLY]` / 语句 / `COMMIT`,失败 ROLLBACK。
+   * - Neon HTTP path: 用 `neonSql.transaction([...], { readOnly? })` 单 round-trip。
+   * 用于 run_sql_transaction (多语句原子) · describe_branch (多 query 同事务) ·
+   * run_sql readOnly 模式 (单语句包 READ ONLY 事务 · 防误写)。
+   */
+  transaction: (
+    sqls: string[],
+    opts?: { readOnly?: boolean },
+  ) => Promise<Array<Array<Record<string, unknown>>>>;
   release: () => Promise<void>;
 };
 
@@ -118,6 +129,25 @@ export async function createSqlClient(
         const result = await client.query(sql, params ?? []);
         return result.rows as Array<Record<string, unknown>>;
       },
+      transaction: async (sqls, opts) => {
+        const begin = opts?.readOnly
+          ? 'BEGIN TRANSACTION READ ONLY'
+          : 'BEGIN';
+        await client.query(begin);
+        try {
+          const results: Array<Array<Record<string, unknown>>> = [];
+          for (const sql of sqls) {
+            const r = await client.query(sql);
+            results.push(r.rows as Array<Record<string, unknown>>);
+          }
+          await client.query('COMMIT');
+          return results;
+        } catch (err) {
+          // ROLLBACK 兜底 · 错误本身向上抛 (handler / orchestrator 决定怎么报)。
+          await client.query('ROLLBACK').catch(() => {});
+          throw err;
+        }
+      },
       release: async () => {
         await client.end();
       },
@@ -144,6 +174,13 @@ export async function createSqlClient(
       return (await neonSql.query(sql, params ?? [])) as Array<
         Record<string, unknown>
       >;
+    },
+    transaction: async (sqls, opts) => {
+      const results = await neonSql.transaction(
+        sqls.map((s) => neonSql.query(s)),
+        opts?.readOnly ? { readOnly: true } : undefined,
+      );
+      return results as Array<Array<Record<string, unknown>>>;
     },
     release: async () => {
       // Neon HTTP driver is stateless · nothing to release.

@@ -6,9 +6,9 @@ import {
   GetProjectBranchSchemaComparisonParams,
   ProjectCreateRequest,
 } from '@neondatabase/api-client';
-import { neon } from '@neondatabase/serverless';
 import crypto from 'crypto';
 import { InvalidArgumentError, NotFoundError } from '../server/errors';
+import { createSqlClient } from './handlers/sql-driver';
 
 import { describeTable, formatTableDescription } from '../describeUtils';
 import { handleProvisionNeonAuth } from './handlers/neon-auth';
@@ -106,20 +106,19 @@ async function handleRunSql(
       neonClient,
       extra,
     );
-    const runQuery = neon(connectionString.uri);
-
-    // If in read-only mode, use transaction with readOnly option
-    if (extra.readOnly) {
-      const response = await runQuery.transaction([runQuery.query(sql)], {
-        readOnly: true,
-      });
-      // Return the first result (the actual query result)
-      return response[0];
+    // sql-driver: 自托管 NEON_LOCAL_URL / 127.0.0.1 / localhost → pg TCP · 其余 → Neon HTTP。
+    // 自托管模式 neon(uri) 会拼 https://api.<host>/sql 失败,所以必须经 sql-driver 路由。
+    const client = await createSqlClient(connectionString.uri);
+    try {
+      if (extra.readOnly) {
+        // 单语句包 READ ONLY 事务 · 防误写 · 取首条结果 (与原 readOnly 路径语义一致)。
+        const results = await client.transaction([sql], { readOnly: true });
+        return results[0];
+      }
+      return await client.query(sql);
+    } finally {
+      await client.release();
     }
-
-    const response = await runQuery.query(sql);
-
-    return response;
   });
 }
 
@@ -147,15 +146,16 @@ async function handleRunSqlTransaction(
     neonClient,
     extra,
   );
-  const runQuery = neon(connectionString.uri);
-
-  // Use transaction with readOnly option when in read-only mode
-  const response = await runQuery.transaction(
-    sqlStatements.map((sql) => runQuery.query(sql)),
-    extra.readOnly ? { readOnly: true } : undefined,
-  );
-
-  return response;
+  const client = await createSqlClient(connectionString.uri);
+  try {
+    // 多语句原子事务 · readOnly 时进 READ ONLY 模式 (pg path: BEGIN READ ONLY · Neon HTTP: opts.readOnly)。
+    return await client.transaction(
+      sqlStatements,
+      extra.readOnly ? { readOnly: true } : undefined,
+    );
+  } finally {
+    await client.release();
+  }
 }
 
 async function handleGetDatabaseTables(
@@ -180,19 +180,21 @@ async function handleGetDatabaseTables(
     neonClient,
     extra,
   );
-  const runQuery = neon(connectionString.uri);
-  const query = `
-    SELECT 
-      table_schema,
-      table_name,
-      table_type
-    FROM information_schema.tables 
-    WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
-    ORDER BY table_schema, table_name;
-  `;
-
-  const tables = await runQuery.query(query);
-  return tables;
+  const client = await createSqlClient(connectionString.uri);
+  try {
+    const query = `
+      SELECT
+        table_schema,
+        table_name,
+        table_type
+      FROM information_schema.tables
+      WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+      ORDER BY table_schema, table_name;
+    `;
+    return await client.query(query);
+  } finally {
+    await client.release();
+  }
 }
 
 async function handleDescribeTableSchema(
@@ -947,50 +949,47 @@ async function handleListSlowQueries(
     extra,
   );
 
-  // Connect to the database
-  const sql = neon(connectionString.uri);
-
-  // First, check if pg_stat_statements extension is installed
-  const checkExtensionQuery = `
-    SELECT EXISTS (
-      SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'
-    ) as extension_exists;
-  `;
-
-  const extensionCheck = await sql.query(checkExtensionQuery);
-  const extensionExists = extensionCheck[0]?.extension_exists;
-
-  if (!extensionExists) {
-    throw new NotFoundError(
-      `pg_stat_statements extension is not installed on the database. Please install it using the following command: CREATE EXTENSION pg_stat_statements;`,
-    );
+  const client = await createSqlClient(connectionString.uri);
+  let slowQueries: Array<Record<string, unknown>>;
+  try {
+    const checkExtensionQuery = `
+      SELECT EXISTS (
+        SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'
+      ) as extension_exists;
+    `;
+    const extensionCheck = await client.query(checkExtensionQuery);
+    const extensionExists = extensionCheck[0]?.extension_exists;
+    if (!extensionExists) {
+      throw new NotFoundError(
+        `pg_stat_statements extension is not installed on the database. Please install it using the following command: CREATE EXTENSION pg_stat_statements;`,
+      );
+    }
+    const slowQueriesQuery = `
+      SELECT
+        query,
+        calls,
+        total_exec_time,
+        mean_exec_time,
+        rows,
+        shared_blks_hit,
+        shared_blks_read,
+        shared_blks_written,
+        shared_blks_dirtied,
+        temp_blks_read,
+        temp_blks_written,
+        wal_records,
+        wal_fpi,
+        wal_bytes
+      FROM pg_stat_statements
+      WHERE query NOT LIKE '%pg_stat_statements%'
+      AND query NOT LIKE '%EXPLAIN%'
+      ORDER BY mean_exec_time DESC
+      LIMIT $1;
+    `;
+    slowQueries = await client.query(slowQueriesQuery, [limit]);
+  } finally {
+    await client.release();
   }
-
-  // Query to get slow queries
-  const slowQueriesQuery = `
-    SELECT 
-      query,
-      calls,
-      total_exec_time,
-      mean_exec_time,
-      rows,
-      shared_blks_hit,
-      shared_blks_read,
-      shared_blks_written,
-      shared_blks_dirtied,
-      temp_blks_read,
-      temp_blks_written,
-      wal_records,
-      wal_fpi,
-      wal_bytes
-    FROM pg_stat_statements
-    WHERE query NOT LIKE '%pg_stat_statements%'
-    AND query NOT LIKE '%EXPLAIN%'
-    ORDER BY mean_exec_time DESC
-    LIMIT $1;
-  `;
-
-  const slowQueries = await sql.query(slowQueriesQuery, [limit]);
 
   // Format the results
   const formattedQueries = slowQueries.map((query: any) => {
