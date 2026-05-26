@@ -12,9 +12,12 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const { mockNeonQuery, mockNeonTransaction, mockNeon } = vi.hoisted(() => {
   const mockNeonQuery = vi.fn((sql: string, params?: unknown) => ({ sql, params }));
+  // 接受 opts 第二个参数(可选)以匹配 SqlClient.transaction 的真实 signature。
   const mockNeonTransaction = vi.fn(
-    async (queries: Array<{ sql: string; params?: unknown }>) =>
-      queries.map((q) => [{ sql: q.sql }]),
+    async (
+      queries: Array<{ sql: string; params?: unknown }>,
+      _opts?: { readOnly?: boolean },
+    ) => queries.map((q) => [{ sql: q.sql }]),
   );
   const neonSql = Object.assign(() => undefined, {
     query: mockNeonQuery,
