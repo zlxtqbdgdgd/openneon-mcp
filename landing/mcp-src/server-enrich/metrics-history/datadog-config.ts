@@ -8,7 +8,9 @@
  * Env vars:
  *   DD_API_KEY   · Datadog API key
  *   DD_APP_KEY   · Datadog Application key (read path)
- *   DD_SITE      · Datadog site · default 'us5' (dev server reports to us5.datadoghq.com)
+ *   DD_SITE      · Datadog site (full host · Datadog convention) · default 'us5.datadoghq.com'
+ *                  · accepted values include 'datadoghq.com' / 'us3.datadoghq.com' /
+ *                  'us5.datadoghq.com' / 'datadoghq.eu' / 'ap1.datadoghq.com' / 'ddog-gov.com'.
  */
 
 export type DatadogConfig = {
@@ -18,7 +20,7 @@ export type DatadogConfig = {
   baseUrl: string;
 };
 
-const DEFAULT_SITE = 'us5';
+const DEFAULT_SITE = 'us5.datadoghq.com';
 
 /**
  * Read Datadog config from the environment.
@@ -34,6 +36,6 @@ export function readDatadogConfig(): DatadogConfig | null {
   return {
     apiKey,
     appKey,
-    baseUrl: `https://api.${site}.datadoghq.com`,
+    baseUrl: `https://api.${site}`,
   };
 }
