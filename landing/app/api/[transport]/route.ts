@@ -37,6 +37,10 @@ import { logger } from '../../../mcp-src/utils/logger';
 import { generateTraceId } from '../../../mcp-src/utils/trace';
 import { waitUntil } from '@vercel/functions';
 import { track, flushAnalytics } from '../../../mcp-src/analytics/analytics';
+import {
+  saveCapabilities,
+  loadCapabilities,
+} from '../../../mcp-src/server/capability-cache';
 import { resolveAccountFromAuth } from '../../../mcp-src/server/account';
 import { model } from '../../../mcp-src/oauth/model';
 import { getApiKeys, type ApiKeyRecord } from '../../../mcp-src/oauth/kv-store';
@@ -228,6 +232,14 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
       let clientApplication = detectClientApplication(clientName);
       let hasTrackedServerInit = false;
       let lastKnownContext: ServerContext | undefined;
+      // issue #100 mitigation · one-shot guard for capability cache sync.
+      // mcp-handler 1.0.6 SSE reconnect 给 fresh McpServer 而 Claude Code 2.1.150
+      // 不重发 initialize → _clientCapabilities 永远 undefined → plan-mode fail-closed
+      // deny。每个 server instance 第一次 getAuthContext 时一次性检查:
+      //   - SDK 有真 caps → 写 redis cache (后续重连复用)
+      //   - SDK 无 caps → 从 redis 取上次同 (accountId, userAgent) 的 cache · 注入
+      //                  · 真的没 cache 才走 ADR-0008 fail-closed deny
+      let hasTriedCapabilityCacheSync = false;
 
       // Default app context for analytics/Sentry (used in onerror fallback)
       const defaultAppContext: AppContext = {
@@ -291,6 +303,56 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
           clientApplication = detectClientApplication(clientName);
         }
 
+        // issue #100 mitigation · one-shot capability cache save/load。
+        // 详 server/capability-cache.ts 头注释 + ADR-0008 后果段 "production 部署前置"。
+        if (
+          !hasTriedCapabilityCacheSync &&
+          account?.id &&
+          authInfo.extra.userAgent
+        ) {
+          hasTriedCapabilityCacheSync = true;
+          const currentCaps = server.server.getClientCapabilities();
+          if (currentCaps && Object.keys(currentCaps).length > 0) {
+            // 真 initialize 已来 (oninitialized hook 触发过) → 把 fresh caps 写
+            // redis 给后续 reconnect 用。fire-and-forget · 失败不阻塞主流程。
+            void saveCapabilities(
+              account.id,
+              authInfo.extra.userAgent,
+              currentCaps,
+            );
+          } else {
+            // SDK _clientCapabilities undefined = client 没发 initialize (或 mcp-handler
+            // 还没投递)。试 redis cache · 命中就直接注入 SDK · 跳过 fail-closed deny。
+            const cached = await loadCapabilities(
+              account.id,
+              authInfo.extra.userAgent,
+            );
+            if (cached) {
+              // SDK 1.25.3 server/index.js:272/286 把 `_clientCapabilities` 当普通
+              // property 读写 (TS 标 `private` 但运行时无 #private · 外部赋值合法 ·
+              // 通过 unknown cast 绕 TS visibility 检查)。等真 initialize 来时 SDK
+              // 会自然覆写,我们的 cache 会被刷新。
+              (
+                server.server as unknown as {
+                  _clientCapabilities?: typeof cached;
+                }
+              )._clientCapabilities = cached;
+              logger.info(
+                'capability-cache · injected (#100 · reconnect without re-init)',
+                { accountId: account.id, caps: cached },
+              );
+            } else {
+              logger.warn(
+                'capability-cache · miss + no initialize · plan-mode 将走 ADR-0008 fail-closed deny',
+                {
+                  accountId: account.id,
+                  userAgent: authInfo.extra.userAgent,
+                },
+              );
+            }
+          }
+        }
+
         // Create dynamic appContext with actual transport
         const dynamicAppContext: AppContext = {
           name: 'mcp-server-neon',
@@ -339,6 +401,11 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
           clientName = clientInfo.name;
           clientApplication = detectClientApplication(clientName);
         }
+        // issue #100 · 真 initialize 来时重置 cache sync guard · 让下次 getAuthContext
+        // 拿 fresh caps 刷 redis (覆盖可能 stale 的 cached value · 如 client 升级声明
+        // 新能力)。处理 init 与 first tool call 的 race: 即使 inject 路径先跑了,oninit
+        // 后下次 tool call 会重新 sync 把 fresh caps 写进 cache。
+        hasTriedCapabilityCacheSync = false;
         // Note: server_init is tracked on first authenticated request
         // because we don't have account info here yet
       };
