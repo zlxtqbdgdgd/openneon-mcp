@@ -29,9 +29,24 @@ import { computeSignature } from '../plan-store/signature';
 
 export type ObfuscatorMode = 'strict' | 'moderate';
 
-/** 读 OBFUSCATOR_MODE env · 默认 strict (§4)。 */
+/**
+ * 读 OBFUSCATOR_MODE env · 默认 strict (§4)。
+ *
+ * **production 强制 strict (§6 · OWASP LLM02)**: NODE_ENV==='production' 时无视
+ * OBFUSCATOR_MODE 一律返回 'strict' —— production 配 moderate 会让数字字面量逐字泄漏,
+ * 这里 fail-closed 强制覆盖 (不给 moderate 生效机会),并 warn 说明被强制。
+ * 非 production (dev/staging) 才允许 moderate。
+ */
 export function getObfuscatorMode(): ObfuscatorMode {
-  return process.env.OBFUSCATOR_MODE === 'moderate' ? 'moderate' : 'strict';
+  const requested =
+    process.env.OBFUSCATOR_MODE === 'moderate' ? 'moderate' : 'strict';
+  if (process.env.NODE_ENV === 'production' && requested !== 'strict') {
+    console.warn(
+      `[obfuscator] OBFUSCATOR_MODE='${process.env.OBFUSCATOR_MODE}' 在 production 被强制覆盖为 'strict' (feat-024 §6 · OWASP LLM02 · 数字字面量必须脱敏)。`,
+    );
+    return 'strict';
+  }
+  return requested;
 }
 
 /**
@@ -69,6 +84,7 @@ export function obfuscateText(
     const ch = sql[i];
 
     // 已有占位符 $1 $2 → 原样保留 + 推进 placeholder 计数 (避免新占位符冲突)。
+    // 注: 先于 dollar-quoted 判断 —— $1 是参数占位符 (数字紧跟 $) · 非 dollar-quote tag。
     if (ch === '$' && /[0-9]/.test(sql[i + 1] ?? '')) {
       let j = i + 1;
       while (j < n && /[0-9]/.test(sql[j])) j++;
@@ -77,6 +93,32 @@ export function obfuscateText(
       out += sql.slice(i, j);
       i = j;
       continue;
+    }
+
+    // dollar-quoted 字符串字面量 (安全 · fail-closed · §3/§11 OQ5):
+    //   $$...$$  /  $tag$...$tag$  —— body 内容是字面量 (可含 PII / 密码 / 函数体)。
+    //   tag = 合法标识符 (字母/下划线开头 · 后接字母数字下划线 · 不以数字开头)。
+    //   到此处的 $ 已排除 $1/$2 占位符 (上一分支先吃)。识别到完整配对的 dollar-quote →
+    //   整段 (含两端 $tag$) 替换为单个 $N。判不定 (无配对结束标记) 也 fail-closed:
+    //   把从开标记到串尾整段替换 (绝不逐字符原样输出 body · 防明文泄漏)。
+    if (ch === '$') {
+      // 解析开标记 $tag$。
+      let k = i + 1;
+      while (k < n && /[A-Za-z0-9_]/.test(sql[k])) k++;
+      if (sql[k] === '$') {
+        const tag = sql.slice(i, k + 1); // 含两端 $ · 如 "$$" 或 "$body$"
+        // 找配对的结束 tag。
+        const endIdx = sql.indexOf(tag, k + 1);
+        out += nextPlaceholder();
+        if (endIdx === -1) {
+          // fail-closed: 没有配对结束标记 → 整段 (开标记到串尾) 都当字面量吞掉。
+          i = n;
+        } else {
+          i = endIdx + tag.length;
+        }
+        continue;
+      }
+      // 不是 dollar-quote 开标记 (单个 $ 后非 $) → 落到末尾兜底原样输出。
     }
 
     // 单引号字符串字面量。
