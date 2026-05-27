@@ -78,6 +78,15 @@ const MATRIX: Record<
   DROP_DATABASE_OR_TRUNCATE: ['deny', 'deny', 'deny', 'deny', 'deny'],
   DROP_USER_OR_REVOKE: ['deny', 'deny', 'deny', 'deny', 'deny'],
   CROSS_PROJECT: ['deny', 'deny', 'deny', 'deny', 'deny'],
+  // feat-028/#108 fail-closed bucket · PG parser 解析失败 / 未识别 stmt 兜底
+  // L1 deny · 其他 L 都 require_plan (不放行未知 SQL · 走 plan mode 让人/agent 看一眼)
+  OTHER: [
+    'deny',
+    'require_plan',
+    'require_plan',
+    'require_plan',
+    'require_plan',
+  ],
 };
 
 export function lookupMatrix(

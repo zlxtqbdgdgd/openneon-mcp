@@ -17,12 +17,13 @@ describe('handleGetPolicy (feat-057 · advisory)', () => {
     });
   });
 
-  it('返回 advisory 清单: autonomy_level + ops(11) + overrides + hard_deny + disclaimer', () => {
+  it('返回 advisory 清单: autonomy_level + ops(12 = day-one 11 + feat-028/#108 加 OTHER fail-closed) + overrides + hard_deny + disclaimer', () => {
     const a = handleGetPolicy({ projectId: 'rapid-art-12345' });
     expect(a.autonomy_level).toBe('L2b');
     expect(a.advisory).toBe(true);
     expect(a.source).toBe('configured');
-    expect(a.ops).toHaveLength(11);
+    // day-one 11 类 + feat-028/#108 加 OTHER (fail-closed bucket) = 12
+    expect(a.ops).toHaveLength(12);
     expect(a.overrides).toEqual([
       { pattern: 'DROP TABLE production_*', effective_level: 'L1' },
     ]);

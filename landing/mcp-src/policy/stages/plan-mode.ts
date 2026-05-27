@@ -46,6 +46,8 @@ const RISK_BY_OP: Partial<Record<OpClass, PlanRisk>> = {
   CREATE_INDEX_CONCURRENTLY: 'medium',
   DDL_ADD_COLUMN: 'medium',
   CREATE_OR_RESTORE_BRANCH: 'low',
+  // feat-028/#108 fail-closed bucket · parse 失败 / 未识别 stmt · 按 high 处理 (保守)
+  OTHER: 'high',
 };
 
 // op-class → 可逆性 (server 事实 · 不含投机)
@@ -57,6 +59,7 @@ const REVERSIBILITY_BY_OP: Partial<Record<OpClass, string>> = {
   CREATE_INDEX_CONCURRENTLY: '可 DROP INDEX 回滚 (建索引本身不改数据)',
   DDL_ADD_COLUMN: 'ADD COLUMN 可 DROP COLUMN 回滚 (新列数据丢失)',
   CREATE_OR_RESTORE_BRANCH: '分支操作不影响源 · 可删分支回滚',
+  OTHER: '解析未识别 / fail-closed · 可逆性未知 · 按高危处理',
 };
 
 /** 从 SQL 提取受影响对象 (启发式 · best-effort · 详设校准点)。 */

@@ -21,6 +21,8 @@ const ALL_OPS: readonly OpClass[] = [
   'DROP_DATABASE_OR_TRUNCATE',
   'DROP_USER_OR_REVOKE',
   'CROSS_PROJECT',
+  // feat-028/#108 fail-closed bucket
+  'OTHER',
 ];
 
 // 3 层 hard-deny(任何 L 不可禁 · ADR-0007)· 给 agent 列出便于自省

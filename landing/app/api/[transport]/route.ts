@@ -15,7 +15,11 @@ import {
   getPromptTemplate,
 } from '../../../mcp-src/prompts';
 import { NEON_HANDLERS } from '../../../mcp-src/tools/index';
-import { classifyOp } from '../../../mcp-src/protection/destructive-detector';
+import {
+  classifyOp,
+  getParserBackend,
+  initPgParser,
+} from '../../../mcp-src/protection/destructive-detector';
 import { runPipeline } from '../../../mcp-src/policy/pipeline';
 import {
   resolvePlanApproval,
@@ -1559,6 +1563,27 @@ function getDocsOnlyHandler() {
   return docsOnlyHandler;
 }
 
+// feat-028/#108: mcp-server 启动期初始化 PG parser (WASM runtime · libpg-query)。
+// PARSER_BACKEND=pg-parser (默认) → 必须 await loadModule() 成功才接请求 · 失败 throw 让启动拒
+// (fail-closed · 不 silent fallback regex)。PARSER_BACKEND=regex (回滚) → 跳过 init。
+const parserInitPromise: Promise<void> = (async () => {
+  const backend = getParserBackend();
+  if (backend === 'regex') {
+    logger.info('feat-028 destructive-detector backend: regex (回滚通路 · 失 4 类绕过防护 + 长锁识别)');
+    return;
+  }
+  try {
+    await initPgParser();
+    logger.info('feat-028 destructive-detector backend: pg-parser (libpg-query · WASM)');
+  } catch (err) {
+    logger.error(
+      'feat-028 PG parser 初始化失败 · mcp-server 启动拒 (fail-closed · 不 silent fallback regex)',
+      { error: err instanceof Error ? err.message : String(err) },
+    );
+    throw err;
+  }
+})();
+
 // Normalize legacy paths (/mcp, /sse) to canonical /api/* paths
 // for mcp-handler's exact pathname matching.
 //
@@ -1566,7 +1591,9 @@ function getDocsOnlyHandler() {
 // but mcp-handler expects /api/mcp or /api/sse. Without this normalization,
 // requests to /mcp would get 404 after OAuth (before auth, withMcpAuth
 // returns 401 before pathname matching happens).
-const handleRequest = (req: Request) => {
+const handleRequest = async (req: Request) => {
+  // feat-028: 等 PG parser 初始化完 · 失败 throw 透传 → 5xx 给 client (不放行未初始化的 classify)
+  await parserInitPromise;
   const url = new URL(req.url);
 
   if (url.pathname === ROUTE_PATHS.legacyMcp) {
