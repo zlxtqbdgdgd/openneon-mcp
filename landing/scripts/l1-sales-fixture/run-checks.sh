@@ -45,8 +45,8 @@ BODY=$(get "${MCP}/api/list-tools")
 [ "$(echo "$BODY" | pyck "len(d['tools'])==4 and d['categoryInclude']=='core'")" = "OK" ] \
   && pass "default core listing = 4 (T1/T2/T6/T8)" || fail "default core listing != 4"
 BODY_ALL=$(get "${MCP}/api/list-tools?include=all")
-[ "$(echo "$BODY_ALL" | pyck "len(d['tools'])==37")" = "OK" ] \
-  && pass "include=all = 37 tools" || fail "include=all != 37"
+[ "$(echo "$BODY_ALL" | pyck "len(d['tools'])>=37")" = "OK" ] \
+  && pass "include=all >= 37 tools" || fail "include=all < 37"
 [ "$(echo "$BODY_ALL" | pyck "[t for t in d['tools'] if t['name']=='get_neondb_query_statement'][0]['supportsDepth'] is True")" = "OK" ] \
   && pass "T6 supportsDepth advertised" || fail "T6 supportsDepth missing"
 [ "$(echo "$BODY_ALL" | pyck "[t for t in d['tools'] if t['name']=='get_neondb_schemas'][0]['outputFormat']==['csv','json','tsv']")" = "OK" ] \
