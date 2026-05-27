@@ -24,6 +24,8 @@ import {
   resolvePlanApproval,
   type ElicitResultLike,
 } from '../../../mcp-src/policy/stages/plan-mode';
+import { issueConfirmToken } from '../../../mcp-src/policy/confirm-token-issuer';
+import { emitConfirmTokenAudit } from '../../../mcp-src/audit/event-types';
 import { resolvePolicy, applyOverrides } from '../../../mcp-src/policy/loader';
 import {
   getDocResource,
@@ -559,7 +561,7 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                   const effectiveProjectId =
                     grant.projectId ?? (a.projectId as string | undefined);
                   const resolved = resolvePolicy(effectiveProjectId);
-                  const verdict = runPipeline({
+                  const pipelineCtx = {
                     opClass,
                     toolName: tool.name,
                     projectId: effectiveProjectId,
@@ -574,7 +576,8 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                     timeoutOverrides: resolved.timeout_overrides,
                     // feat-027/#2: 原始 SQL → planModeStage 组 plan payload
                     sql: sqlForClassify,
-                  });
+                  } as const;
+                  const verdict = runPipeline({ ...pipelineCtx });
                   if (verdict.action === 'deny') {
                     logger.warn('policy deny (feat-056):', {
                       ...properties,
@@ -655,7 +658,45 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                       opClass,
                       reason: approval.reason,
                     });
-                    // approved → fall through to execute (audit high · 已批准高危 op)
+                    // feat-026/#1: approve 后 server 颁发 ConfirmToken (audit artifact ·
+                    // 短 TTL · single-use) · 注入 ctx 重跑 pipeline · planModeStage 看到
+                    // token 后 skip elicitation · confirmTokenStage (step 7) verify + audit
+                    // (token_id 是跨系统 join key · 详设 §3 调用链)。
+                    const tokenSnapshot = issueConfirmToken({
+                      op_class: opClass,
+                      args: sqlForClassify ?? '',
+                      principal: `human:${account?.id ?? 'unknown'}`,
+                      source: 'plan-mode-approval',
+                    });
+                    emitConfirmTokenAudit({
+                      event_type: 'confirm_token_issued',
+                      token_id: tokenSnapshot.id,
+                      source: tokenSnapshot.source,
+                      op_class: opClass,
+                      principal: `human:${account?.id ?? 'unknown'}`,
+                      ttl_seconds: 300,
+                    });
+                    const verdict2 = runPipeline({
+                      ...pipelineCtx,
+                      confirmToken: tokenSnapshot,
+                    });
+                    if (verdict2.action === 'deny') {
+                      logger.warn('policy deny after approve (feat-026):', {
+                        ...properties,
+                        opClass,
+                        reason: verdict2.reason,
+                      });
+                      return {
+                        content: [
+                          {
+                            type: 'text' as const,
+                            text: `Denied by policy: ${verdict2.reason}`,
+                          },
+                        ],
+                        isError: true,
+                      };
+                    }
+                    // verdict2 应为 allow / inject_timeout · 都放行执行 (audit high · 已批准高危 op)
                   }
 
                   // Wrap args in { params } structure expected by handlers

@@ -21,6 +21,8 @@ import {
   type TimeoutSpec,
 } from './stages/timeout-injection';
 import { planModeStage, type PlanPayload } from './stages/plan-mode';
+import { confirmTokenStage } from './stages/confirm-token';
+import type { ConfirmTokenSnapshot } from './confirm-token-store';
 
 export type AutonomyLevel = 'L1' | 'L2a' | 'L2b' | 'L3' | 'L4';
 
@@ -53,6 +55,9 @@ export type EnforcementCtx = {
   timeoutOverrides?: Partial<Record<OpClass, TimeoutSpec>>;
   // feat-027/#2: 原始 SQL (run_sql 写路径 · plan-mode stage 组 plan payload 用 · 只读 op 可空)
   sql?: string;
+  // feat-026/#1: confirm token snapshot (orchestrator 在 plan-mode approve 后注入 ·
+  // step 7 confirm-token stage 消费 · 详 confirm-token-store.ts + ADR-0008)
+  confirmToken?: ConfirmTokenSnapshot;
 };
 
 /** stage: 适用则返回 Verdict · 不适用返回 null (继续下一 stage) */
@@ -122,14 +127,15 @@ const matrixStage: Stage = (ctx) => {
 };
 
 // §8.2 顺序 stage 链 · 内置: G1 跨project (#76) → G4 hard-deny (#73) → G9 速率 (#76) → matrix (#75)
-// → plan mode (#77 · 第 6 步 · require_plan non-terminal) → timeout 注入 (#79 · 第 8 步 · non-terminal)。
-// 后续护栏 (feat-026) registerStage 注册。
+// → plan mode (#77 · 第 6 步 · require_plan non-terminal) → confirm-token (feat-026/#1 · 第 7 步)
+// → timeout 注入 (#79 · 第 8 步 · non-terminal)。
 const BUILTIN_STAGES: readonly Stage[] = [
   g1CrossProjectStage,
   hardDenyG4Stage,
   g9RateLimitStage,
   matrixStage,
   planModeStage,
+  confirmTokenStage,
   timeoutInjectionStage,
 ];
 const STAGES: Stage[] = [...BUILTIN_STAGES];
