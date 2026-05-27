@@ -9,6 +9,7 @@ import {
   isRateLimitedOp,
   __resetRateLimitForTest,
   RATE_LIMIT_CONFIG,
+  DEFAULT_RATE_COUNTER_CONFIG,
 } from '../policy/rate-limiter';
 
 describe('G1 跨 project (feat-056/#76 · §8.2 第 1 步)', () => {
@@ -73,24 +74,49 @@ describe('G9 rate-limit (feat-056/#76 · §8.2 第 3 步)', () => {
     expect(isRateLimitedOp('CREATE_INDEX_CONCURRENTLY')).toBe(false);
   });
 
-  it('recordAndCheckRateLimit: 前 N 个不超 · 第 N+1 超', () => {
-    const key = 'projA';
+  it('recordAndCheckRateLimit: 前 N 个不超(非 EXCEEDED) · 第 N+1 超(EXCEEDED)', () => {
+    // breaking change: 旧 (key, now)=>boolean 升级为结构化 ({projectId, opClass, config, now})=>Verdict。
+    // 默认 config maxUnits=5 · DROP_TABLE 权重 1 · 故 weightedCount = 第几次调用。
+    const projectId = 'projA';
     const now = Date.now();
     for (let i = 0; i < RATE_LIMIT_CONFIG.MAX_DESTRUCTIVE; i++) {
-      expect(recordAndCheckRateLimit(key, now)).toBe(false);
+      const v = recordAndCheckRateLimit({
+        projectId,
+        opClass: 'DROP_TABLE_OR_INDEX',
+        config: DEFAULT_RATE_COUNTER_CONFIG,
+        now,
+      });
+      expect(v.outcome).not.toBe('EXCEEDED'); // 前 5 次 weighted<=5 · 不超
     }
-    expect(recordAndCheckRateLimit(key, now)).toBe(true); // 第 N+1 个超
+    // 第 N+1 次:weighted=6 > maxUnits=5 → EXCEEDED
+    const exceeded = recordAndCheckRateLimit({
+      projectId,
+      opClass: 'DROP_TABLE_OR_INDEX',
+      config: DEFAULT_RATE_COUNTER_CONFIG,
+      now,
+    });
+    expect(exceeded.outcome).toBe('EXCEEDED');
   });
 
   it('滑窗: 超窗旧记录不计', () => {
-    const key = 'projB';
+    const projectId = 'projB';
     const t0 = 1_000_000;
     for (let i = 0; i < RATE_LIMIT_CONFIG.MAX_DESTRUCTIVE; i++) {
-      recordAndCheckRateLimit(key, t0);
+      recordAndCheckRateLimit({
+        projectId,
+        opClass: 'DROP_TABLE_OR_INDEX',
+        config: DEFAULT_RATE_COUNTER_CONFIG,
+        now: t0,
+      });
     }
-    expect(
-      recordAndCheckRateLimit(key, t0 + RATE_LIMIT_CONFIG.WINDOW_MS + 1),
-    ).toBe(false);
+    // 跨过整个窗后再来一次:旧 5 条全过期 · 仅本次计入 → weighted=1 · OK
+    const v = recordAndCheckRateLimit({
+      projectId,
+      opClass: 'DROP_TABLE_OR_INDEX',
+      config: DEFAULT_RATE_COUNTER_CONFIG,
+      now: t0 + RATE_LIMIT_CONFIG.WINDOW_MS + 1,
+    });
+    expect(v.outcome).toBe('OK');
   });
 
   it('runPipeline: DROP TABLE 连发超限 → G9 deny(速率超限 · 在 matrix 前)', () => {
@@ -105,6 +131,7 @@ describe('G9 rate-limit (feat-056/#76 · §8.2 第 3 步)', () => {
       last = runPipeline(c);
     }
     expect(last?.action).toBe('deny');
-    expect(last?.reason).toContain('速率超限');
+    // 新 G9 stage 的 deny reason 串 (旧串 '速率超限' 已随 breaking change 改掉)
+    expect(last?.reason).toContain('G9 rate limit exceeded');
   });
 });

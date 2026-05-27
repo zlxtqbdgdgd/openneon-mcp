@@ -14,7 +14,8 @@ import { lookupMatrix } from './matrix';
 import {
   isRateLimitedOp,
   recordAndCheckRateLimit,
-  RATE_LIMIT_CONFIG,
+  DEFAULT_RATE_COUNTER_CONFIG,
+  type RateCounterConfig,
 } from './rate-limiter';
 import {
   timeoutInjectionStage,
@@ -58,6 +59,10 @@ export type EnforcementCtx = {
   // feat-026/#1: confirm token snapshot (orchestrator 在 plan-mode approve 后注入 ·
   // step 7 confirm-token stage 消费 · 详 confirm-token-store.ts + ADR-0008)
   confirmToken?: ConfirmTokenSnapshot;
+  // feat-055/#1: per-project G9 rate counter 配置 (来自 resolvePolicy().rate_counter · loader 已 clamp
+  // 到 CONFIG_BOUNDS)· 缺省 → DEFAULT_RATE_COUNTER_CONFIG (day-one 5/5min/0.8 口径)。
+  // TODO(feat-056): 从 resolvePolicy().rate_counter 注入 per-project 配置 · 接线前此字段恒为 undefined。
+  rateCounterConfig?: RateCounterConfig;
 };
 
 /** stage: 适用则返回 Verdict · 不适用返回 null (继续下一 stage) */
@@ -91,15 +96,27 @@ const g1CrossProjectStage: Stage = (ctx) => {
   return null;
 };
 
-// G9 速率限制 stage (feat-056/#76) · §8.2 第 3 步 (G4 之后) · destructive op 5min 滑窗超限 → deny
-// (hard-deny · 防 agent 批量删 · R10 Cursor 9 秒删库)。注: 有 in-memory counter 副作用 (rate-limit 本质)。
+// G9 速率限制 stage (feat-056/#76 · feat-055/#1 升级) · §8.2 第 3 步 (G4 之后) · 调 feat-055 rate counter
+// 拿结构化 Verdict (OK / WARN / EXCEEDED) · EXCEEDED → 翻译成 terminal hard-deny。
+// (防 agent 批量删 · R10 Cursor 9 秒删库)。注: counter 有 in-memory 副作用 (rate-limit 本质) +
+// WARN/EXCEEDED 的 audit emit 在 counter 内部 (本 stage 只翻译决策 · ADR-0007 边界:counter 不拥有 deny)。
 const g9RateLimitStage: Stage = (ctx) => {
   if (!isRateLimitedOp(ctx.opClass)) return null; // 只读/建索引/分支 不计
-  const key = ctx.grant?.projectId ?? ctx.projectId ?? 'global';
-  if (recordAndCheckRateLimit(key)) {
+  const projectId = ctx.grant?.projectId ?? ctx.projectId ?? 'global';
+  // TODO(feat-056): 从 resolvePolicy().rate_counter 注入 per-project 配置。
+  // 在 feat-056 接线前 ctx.rateCounterConfig 永远是 undefined · 这里恒走 DEFAULT_RATE_COUNTER_CONFIG
+  // (day-one 5/5min/0.8 口径)· per-project / policy.yaml 可调能力此前不生效。
+  const config = ctx.rateCounterConfig ?? DEFAULT_RATE_COUNTER_CONFIG;
+  const verdict = recordAndCheckRateLimit({
+    projectId,
+    opClass: ctx.opClass,
+    config,
+  });
+  // OK / WARN 都不拦 (WARN 仅 audit 信号 · 已在 counter 内 emit) · 仅 EXCEEDED 翻译成 hard-deny。
+  if (verdict.outcome === 'EXCEEDED') {
     return {
       action: 'deny',
-      reason: `destructive ops 速率超限 (G9 · >${RATE_LIMIT_CONFIG.MAX_DESTRUCTIVE}/${RATE_LIMIT_CONFIG.WINDOW_MS / 60000}min) · hard-deny`,
+      reason: `G9 rate limit exceeded · weighted=${verdict.weightedCount}/${verdict.maxUnits} in last ${verdict.windowMs / 60000}min · hard-deny`,
       audit_severity: 'high',
       terminal: true,
     };
