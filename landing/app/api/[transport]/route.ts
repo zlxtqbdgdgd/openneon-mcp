@@ -700,9 +700,13 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                       // elicitation 协议不回传 responder 身份 (ElicitResultLike 只有
                       // action/content) → 填 human:unknown 占位 (design §3.2 a
                       // human:<elicitation-responder-id> · L2b 接通真实 responder id 时再填)。
-                      principal: approval.failClosed
-                        ? 'system:fail-closed'
-                        : 'human:unknown',
+                      emitAuditEvent({
+                        event_type: 'plan_mode_rejected',
+                        outcome: 'deny',
+                        op_class: opClass,
+                        principal: approval.failClosed
+                          ? 'system:fail-closed'
+                          : 'human:unknown',
                         severity: 'high',
                         project_id: effectiveProjectId,
                         db_statement_sha256: sqlForClassify
