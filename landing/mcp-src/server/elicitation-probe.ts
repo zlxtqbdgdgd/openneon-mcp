@@ -32,8 +32,8 @@ export type ElicitationSupport =
   | 'form' // 声明 elicitation.form (或空 elicitation:{} 被 SDK 归一化成 form)
   | 'url' // 声明 elicitation.url (URL 模式 · 罕见)
   | 'form+url' // 同时声明 form 与 url
-  | 'none' // 未声明 elicitation capability → 确定 fail-closed
-  | 'unknown'; // capability 快照尚不可得 (未 initialize / 传输丢失) → 保守按 fail-closed 处理
+  | 'none' // 快照可得但未声明 elicitation capability (含空快照 {}) → 确定不支持 · 确定性 fail-closed deny
+  | 'unknown'; // capability 快照**真的拿不到** (getClientCapabilities 返 null/undefined · 未 initialize / 传输丢) → 保守 fail-closed · 可随后重探
 
 export type ElicitationProbeResult = {
   support: ElicitationSupport;
@@ -56,18 +56,24 @@ export type ElicitationProbeResult = {
 export function classifyElicitation(
   caps: ClientCapabilities | undefined | null,
 ): ElicitationProbeResult {
-  if (!caps || Object.keys(caps).length === 0) {
+  // 快照**真的拿不到** (null/undefined): 未 initialize / 传输丢失 (issue #100) ·
+  // 这是唯一的 'unknown' 情形 —— "我还没拿到这个 client 声明了什么" · 可随后重探。
+  if (caps === undefined || caps === null) {
     return {
       support: 'unknown',
       capabilitiesPresent: false,
       canElicit: false,
-      raw: caps ?? undefined,
+      raw: undefined,
     };
   }
 
+  // 快照**拿到了**(含空对象 {}): capabilitiesPresent = true。
+  // 空 {} = "client 完成了 capability 声明 · 只是没声明任何 capability" = 确定不支持
+  // elicitation → 'none' (确定性 fail-closed deny · 不是可重试的 unknown)。这与"快照里
+  // 有别的 capability 但没 elicitation 字段"语义一致 · 都落到下面的 elicitation 缺失分支。
   const elicitation = (caps as { elicitation?: unknown }).elicitation;
   if (elicitation === undefined || elicitation === null) {
-    // capability 快照存在但**明确没有** elicitation 字段 = 确定不支持 → fail-closed。
+    // capability 快照存在但**明确没有** elicitation 字段 (含空 {}) = 确定不支持 → fail-closed。
     return {
       support: 'none',
       capabilitiesPresent: true,

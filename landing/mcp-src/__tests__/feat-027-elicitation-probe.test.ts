@@ -47,17 +47,25 @@ describe('feat-027/#74 · classifyElicitation', () => {
     expect(r.capabilitiesPresent).toBe(true);
   });
 
-  it('快照不可得 (undefined · 未 initialize / 传输丢 · issue #100) → unknown · fail-closed', () => {
+  it('快照真的拿不到 (undefined · 未 initialize / 传输丢 · issue #100) → unknown · fail-closed', () => {
     const r = classifyElicitation(undefined);
     expect(r.support).toBe('unknown');
     expect(r.canElicit).toBe(false);
     expect(r.capabilitiesPresent).toBe(false);
   });
 
-  it('空对象 {} 快照 → unknown (等价快照不可得)', () => {
-    const r = classifyElicitation({} as never);
+  it('快照真的拿不到 (null) → unknown · fail-closed', () => {
+    const r = classifyElicitation(null);
     expect(r.support).toBe('unknown');
     expect(r.canElicit).toBe(false);
+    expect(r.capabilitiesPresent).toBe(false);
+  });
+
+  it('空对象 {} 快照 → none (快照拿到了 · 只是没声明任何 capability · 确定不支持 → fail-closed · 非可重试 unknown)', () => {
+    const r = classifyElicitation({} as never);
+    expect(r.support).toBe('none');
+    expect(r.canElicit).toBe(false);
+    expect(r.capabilitiesPresent).toBe(true);
   });
 });
 
