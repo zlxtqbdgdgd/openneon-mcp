@@ -74,32 +74,32 @@ export const CONFIG_BOUNDS = {
 // ──────────────────────────────────────────────────────────────
 
 /** per-project 配置 (由 feat-056 loader.ts clamp 后传入 · 本模块不读文件) */
-export interface RateCounterConfig {
+export type RateCounterConfig = {
   windowMs: number; //  滑窗长度 · loader clamp [60_000, 3_600_000]
   maxUnits: number; //  加权单位上限 · loader clamp [1, 100]
   warnRatio: number; // warn 阈值比 · loader clamp [0.5, 0.95]
   /** 覆盖默认权重 · 每条 loader clamp [1, 10] · 缺省回落 DEFAULT_WEIGHTS */
   weights?: Partial<Record<OpClass, number>>;
-}
+};
 
 /** 滑窗里的一次 hit */
-interface HitEntry {
+type HitEntry = {
   ts: number; //        时间戳 ms
   weight: number; //    该 op 的加权
   opClass: OpClass; //  留给 audit 详情
-}
+};
 
 export type RateOutcome = 'OK' | 'WARN' | 'EXCEEDED';
 
 /** feat-055 → feat-056 G9 stage 的输出 (数据 · 非 deny 决策) */
-export interface RateCounterVerdict {
+export type RateCounterVerdict = {
   outcome: RateOutcome;
   weightedCount: number; //    含当前这次 op 后的窗内加权总和
   maxUnits: number; //         当前 config 上限 (给 audit)
   windowMs: number; //         当前 config 窗 (给 audit)
   warnedThreshold: number; //  = maxUnits * warnRatio (给 audit)
   recentOps: ReadonlyArray<OpClass>; // 窗内全部 hit 的 opClass (EXCEEDED 详情 + debug)
-}
+};
 
 /** day-one 默认配置 (policy.yaml 无 rate_counter 段时由调用方传这个) */
 export const DEFAULT_RATE_COUNTER_CONFIG: Readonly<RateCounterConfig> = {

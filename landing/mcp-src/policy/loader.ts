@@ -229,8 +229,7 @@ export function validate(raw: unknown): PolicyConfig {
       overrides,
       timeout_overrides: validateTimeoutOverrides(pid, p.timeout_overrides),
       // feat-059/#1: agent_role 不强校验枚举 (未知 role → 软过滤 no-op · forward-compat 自定义 role OQ4)
-      agent_role:
-        typeof p.agent_role === 'string' ? p.agent_role : undefined,
+      agent_role: typeof p.agent_role === 'string' ? p.agent_role : undefined,
       shadow_mode: p.shadow_mode,
       audit_severity: p.audit_severity as ProjectPolicy['audit_severity'],
       // feat-055/#1: per-project G9 rate counter · clamp 到 CONFIG_BOUNDS (越界 warn + use clamped)
