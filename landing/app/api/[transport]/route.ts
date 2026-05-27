@@ -54,6 +54,18 @@ import {
   type GrantContext,
 } from '../../../mcp-src/utils/grant-context';
 import {
+  resolveKeyScope,
+  KeyResolverError,
+  keyLast4,
+  type KeyScope,
+} from '../../../mcp-src/auth/key-resolver';
+import {
+  buildGrantFromScope,
+  mergeResolvedGrant,
+  KeyNotAcceptedError,
+  type ResolvedGrant,
+} from '../../../mcp-src/auth/grant-builder';
+import {
   getAvailableTools,
   getAccessControlWarnings,
   injectProjectId,
@@ -675,10 +687,13 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                   return result;
                 } catch (error) {
                   span.setStatus({ code: 2 });
+                  // feat-029/#3: 把 apiKey 传给 handleToolError · Neon API 401/403 自动 invalidate
+                  // 5min KV cache（运行期 revocation 检测 · 下次 fail-closed）
                   const errorResult = handleToolError(
                     error,
                     properties,
                     traceId,
+                    typedExtra.authInfo?.extra?.apiKey,
                   );
                   logger.warn('tool error response:', {
                     ...properties,
@@ -1145,6 +1160,8 @@ const fetchAccountDetails = async (
     const cached = await getApiKeys().get(accessToken);
     if (cached) {
       logger.info('API key cache hit', { accountId: cached.account.id });
+      // feat-029/#2: 历史 cache 可能缺 keyScope (本字段在 feat-029 ship 前不存在) ·
+      // 让 caller 自己兜底 re-resolve 一次 · 不在这里阻塞 cache hit 路径。
       return cached;
     }
   } catch (error) {
@@ -1161,10 +1178,15 @@ const fetchAccountDetails = async (
       context: { authMethod: auth.auth_method },
     });
 
+    // feat-029/#2: cache miss 顺手解析 key scope · 同期写进 cache · 避免后续每请求重复打 Neon API。
+    // resolveKeyScope 抛 KeyResolverError 在外层 catch 兜底成 null（fail-closed · withMcpAuth 401）。
+    const keyScope = await resolveKeyScope(neonClient, accessToken);
+
     const record: ApiKeyRecord = {
       apiKey: accessToken,
       authMethod: auth.auth_method,
       account,
+      keyScope,
     };
 
     // 4. Save to cache with TTL (non-blocking)
@@ -1178,6 +1200,8 @@ const fetchAccountDetails = async (
 
     logger.info('API key cache miss, verified and cached', {
       accountId: account.id,
+      keyType: keyScope.keyType,
+      last4: keyScope.last4,
     });
     return record;
   } catch (error) {
@@ -1185,6 +1209,17 @@ const fetchAccountDetails = async (
       response?: { status?: number; data?: unknown };
       message?: string;
     };
+    // feat-029/#3: 启动期 / 鉴权期 fail-closed audit · 区分 KeyResolverError 各 code 给运维定位。
+    if (error instanceof KeyResolverError) {
+      logger.error('API key scope resolve failed (feat-029 fail-closed)', {
+        code: error.code,
+        message: error.message,
+        httpStatus: error.httpStatus,
+        last4: keyLast4(accessToken),
+        outcome: 'reject_key_resolve_failed',
+      });
+      return null;
+    }
     logger.error('API key verification failed', {
       message: axiosError.message,
       status: axiosError.response?.status,
@@ -1306,6 +1341,55 @@ const verifyToken = async (
   });
   const urlGrant = resolveGrantFromSearchParams(searchParams);
 
+  // feat-029/#2-#3: 把已解析的 keyScope 翻译成 ResolvedGrant + 应用 policy gate
+  // (ALLOW_NON_PROJECT_KEY default false rejects personal/org · feat-029 §4)。
+  // 历史 cache 可能缺 keyScope（pre-feat-029 写入）· 缺则 re-resolve 一次（fail-closed if 失败）。
+  let keyScope: KeyScope | undefined = apiKeyRecord.keyScope;
+  if (!keyScope) {
+    try {
+      const neonClient = createNeonClient(bearerToken);
+      keyScope = await resolveKeyScope(neonClient, bearerToken);
+      logger.info('API key scope re-resolved for legacy cache record', {
+        accountId: apiKeyRecord.account.id,
+        keyType: keyScope.keyType,
+        last4: keyScope.last4,
+      });
+    } catch (error) {
+      if (error instanceof KeyResolverError) {
+        logger.error(
+          'API key scope re-resolve failed (feat-029 fail-closed)',
+          {
+            code: error.code,
+            message: error.message,
+            last4: keyLast4(bearerToken),
+            outcome: 'reject_key_resolve_failed',
+          },
+        );
+      } else {
+        logger.error('API key scope re-resolve unexpected error', { error });
+      }
+      return undefined; // fail-closed
+    }
+  }
+
+  let resolvedGrant: ResolvedGrant;
+  try {
+    resolvedGrant = buildGrantFromScope(keyScope);
+  } catch (error) {
+    if (error instanceof KeyNotAcceptedError) {
+      // feat-029/#3 audit event · key_type + last4 + outcome 全字段
+      logger.warn('mcp Server rejected non-project key (feat-029)', {
+        keyType: error.keyType,
+        last4: error.last4,
+        outcome: error.outcome,
+        reason: error.message,
+      });
+      return undefined; // fail-closed → withMcpAuth returns 401
+    }
+    throw error;
+  }
+  const grant = mergeResolvedGrant(resolvedGrant, urlGrant);
+
   return {
     token: bearerToken,
     scopes: ['*'], // API keys get all scopes
@@ -1314,7 +1398,7 @@ const verifyToken = async (
       account: apiKeyRecord.account,
       apiKey: bearerToken,
       readOnly,
-      grant: urlGrant,
+      grant,
       transport,
       userAgent,
     },

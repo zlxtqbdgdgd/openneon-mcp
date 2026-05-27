@@ -396,9 +396,35 @@ Required for remote server runtime:
 
 Optional:
 
-| Variable    | Description                                                                       |
-| ----------- | --------------------------------------------------------------------------------- |
-| `LOG_LEVEL` | Winston log level: `error`, `warn`, `info` (default), `debug`, `verbose`, `silly` |
+| Variable                        | Description                                                                                                                                                                                                                                                                                                                       |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LOG_LEVEL`                     | Winston log level: `error`, `warn`, `info` (default), `debug`, `verbose`, `silly`                                                                                                                                                                                                                                                 |
+| `ALLOW_NON_PROJECT_KEY`         | feat-029 · Set to `true` to opt-in accepting Personal or Organization API keys. Default `false` (= reject non-project-scoped keys at auth time, return 401). See **Why default reject Personal/Org Key** below.                                                                                                                   |
+| `PROJECT_SCOPE_ENFORCE_ENABLED` | feat-029 · Emergency escape hatch. Set to `false` to skip the project-scope reject gate entirely; key type is still recorded for audit but not enforced. Default `true`. Use only for incident recovery — leaves cross-project blast radius wide open for non-project keys.                                                       |
+
+### Why default reject Personal/Org Key (feat-029)
+
+The MCP Server defaults to **project-scoped API keys only**. When you configure a Personal or Organization key, the server returns 401 at the auth boundary unless you set `ALLOW_NON_PROJECT_KEY=true`.
+
+**Why**: a Personal/Org API key grants access to **every project** in your account / organization. If the key (or your agent session) is compromised, an attacker can read or destroy data in all of those projects. Three real-world incidents — Replit Agent dropping the SaaStr production DB, Cursor + PocketOS deleting a customer DB in 9 seconds — show that the **blast radius difference between "1 project" and "all projects"** is the single most impactful security boundary.
+
+A **Project-scoped key** is bound to one project. Even if leaked, an attacker can only see / damage **that one project** and cannot delete it.
+
+**When to use `ALLOW_NON_PROJECT_KEY=true`**:
+
+- Multi-project SRE / Ops agent that needs cross-project visibility (e.g. failover, billing audits).
+- Demo / training environments where convenience outweighs blast radius.
+- Migration / setup tooling that needs to create new projects (project-scoped keys cannot create projects).
+
+In all of these cases, weigh the convenience against running an agent with permission to delete any of your projects. The recommended default is to **create a Project-scoped key per project per agent** instead.
+
+**How to create a Project-scoped Key**:
+
+1. Open `https://console.neon.tech/app/projects/<project>/settings/api-keys`.
+2. Click "Create API Key".
+3. Use the returned `neon_project_<...>` token as `Authorization: Bearer ...` to the MCP Server.
+
+**Audit fields**: every server-side rejection logs `keyType` + `last4` + `outcome` (e.g. `outcome=reject_personal_key`) without ever recording the full API key. After feat-031 ships, these fields flow into OTel events for cross-component tracing.
 
 ## Testing Pyramid
 
