@@ -37,6 +37,7 @@ export type {
   BaselineProbeResult,
   HistoryProbe,
   HistoryProbeResult,
+  HistorySustainedMode,
 } from './types';
 export { DEFAULT_THRESHOLDS, resolveThresholds, __setThresholdsForTest } from './thresholds';
 export { detectHypopg } from './rule-missing-index';

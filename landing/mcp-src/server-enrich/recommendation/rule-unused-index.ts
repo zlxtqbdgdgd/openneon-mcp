@@ -9,6 +9,7 @@
  * 纯只读 catalog query · 不调 LLM (§3.3.0)。
  */
 import type { Recommendation, RuleContext, RuleEvaluator } from './types';
+import { quoteIdent } from './sql-ident';
 
 const RULE_VERSION = '1';
 
@@ -62,6 +63,9 @@ export const unusedIndexRule: RuleEvaluator = {
             const h = await ctx.history({
               signal: `index.idx_scan.${tableName}.${indexName}`,
               window: '30d',
+              // unused_index 要的是「idx_scan 持续为 0」· sustainedMode='zero' (#127 fix ·
+              // 此前默认 'high' 谓词方向相反 · 30d 全 0 时永远升不到 high)。
+              sustainedMode: 'zero',
             });
             if (h && h.sufficient && h.sustained) {
               confidence = 'high';
@@ -86,7 +90,8 @@ export const unusedIndexRule: RuleEvaluator = {
           severity: sizeMb >= 128 ? 'high' : 'medium',
           target: indexName,
           evidence,
-          suggested_action: `DROP INDEX CONCURRENTLY ${indexName}; -- 确认非约束依赖`,
+          // #127: 索引名走 quoteIdent · 含逗号/引号的名字也产出合法 SQL · 不破坏 CSV 列结构。
+          suggested_action: `DROP INDEX CONCURRENTLY ${quoteIdent(indexName)}; -- 确认非约束依赖`,
           confidence,
           rule_version: RULE_VERSION,
         });

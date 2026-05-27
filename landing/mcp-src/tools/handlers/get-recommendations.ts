@@ -110,7 +110,7 @@ function makeBaselineProbe(dimensions: Record<string, string>): BaselineProbe {
  * 判定 §11 留 calibration)。seam 整体不可用 (adapter 抛) → 返 null。
  */
 function makeHistoryProbe(dimensions: Record<string, string>): HistoryProbe {
-  return async ({ signal, window }) => {
+  return async ({ signal, window, sustainedMode = 'high' }) => {
     try {
       const res = await getMetricHistory({
         signal,
@@ -127,10 +127,18 @@ function makeHistoryProbe(dimensions: Record<string, string>): HistoryProbe {
           ? cov.actual_points / cov.expected_points
           : 0;
       const sufficient = ratio >= 0.8;
-      // sustained: 所有非空数据点都「满足条件」(value 持续 > 0)。day-one 简化判据 · §11 calibration。
+      // sustained: 所有非空数据点都「满足条件」· 方向 per-rule (#127 fix)。
+      //  - 'high': value 持续 > 0 (oversized_temp · 持续超 baseline)。
+      //  - 'zero': value 持续 <= 0 (unused_index · idx_scan 持续为 0)。
+      // 此前固定走 'high' · 导致 unused_index 历史 idx_scan 全为 0 时永远算不上 sustained,
+      // confidence 升不到 high。day-one 简化判据 · §11 calibration。
       const nonNull = points.filter(([, v]) => v != null);
+      const predicate =
+        sustainedMode === 'zero'
+          ? (v: unknown) => Number(v) <= 0
+          : (v: unknown) => Number(v) > 0;
       const sustained =
-        nonNull.length > 0 && nonNull.every(([, v]) => Number(v) > 0);
+        nonNull.length > 0 && nonNull.every(([, v]) => predicate(v));
       return {
         sufficient,
         sustained,

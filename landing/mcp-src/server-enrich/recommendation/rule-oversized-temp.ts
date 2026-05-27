@@ -47,6 +47,8 @@ export const oversizedTempRule: RuleEvaluator = {
           const h = await ctx.history({
             signal: 'pg_stat_database.temp_bytes',
             window: '1h',
+            // oversized_temp 要的是「持续超 baseline」· 'high' (默认 · #127 显式标注防回归)。
+            sustainedMode: 'high',
           });
           if (h && h.sufficient && !h.sustained) {
             return [];

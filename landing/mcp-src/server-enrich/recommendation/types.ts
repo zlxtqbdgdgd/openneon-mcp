@@ -87,12 +87,22 @@ export interface BaselineProbeResult {
 export type HistoryProbe = (input: {
   signal: string;
   window: string;
+  /**
+   * sustained 判定方向 (per-rule · §3 · #127 fix)。同一条 history 序列对不同规则语义相反:
+   *  - 'high' (默认): 所有数据点持续「高」(value > 0) —— oversized_temp 用 (1h 持续超 baseline)。
+   *  - 'zero':        所有数据点持续「为 0 / 低」(value <= 0) —— unused_index 用 (30d idx_scan 持续 0)。
+   * 缺省走 'high' 以兼容历史调用。
+   */
+  sustainedMode?: HistorySustainedMode;
 }) => Promise<HistoryProbeResult | null>;
+
+/** history sustained 判定方向 (见 HistoryProbe.sustainedMode)。 */
+export type HistorySustainedMode = 'high' | 'zero';
 
 export interface HistoryProbeResult {
   /** 是否覆盖足够 (coverage 达标)。 */
   sufficient: boolean;
-  /** window 内是否「持续满足条件」(如 30d idx_scan 持续 0 / 1h temp 持续超 baseline)。 */
+  /** window 内是否「持续满足条件」(按 sustainedMode 方向: 持续高 / 持续为 0)。 */
   sustained: boolean;
   /** window 天数 (evidence 用)。 */
   windowDays?: number;

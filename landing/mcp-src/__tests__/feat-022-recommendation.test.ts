@@ -142,8 +142,12 @@ describe('用例 1-3 · missing_index', () => {
       ...BASE_CTX,
       querySignature: 'q_abc123',
       hypopgAvailable: true,
+      // #127: tableColumnExists (pg_class+pg_attribute · attisdropped) 命中 = 列真实存在;
       // pg_index 查 (列已索引?) 返回空 = 未索引。
-      sql: makeSql([{ match: /pg_index/i, rows: [] }]),
+      sql: makeSql([
+        { match: /attisdropped/i, rows: [{ '?column?': 1 }] },
+        { match: /pg_index/i, rows: [] },
+      ]),
       explain: makeExplain(1781, 100), // ratio 17.8 > 10
     };
     const { recommendations } = await recommend({
@@ -162,7 +166,11 @@ describe('用例 1-3 · missing_index', () => {
       ...BASE_CTX,
       querySignature: 'q_abc123',
       hypopgAvailable: false,
-      sql: makeSql([{ match: /pg_index/i, rows: [] }]),
+      // #127: tableColumnExists 命中 = 列存在 · pg_index 空 = 未索引。
+      sql: makeSql([
+        { match: /attisdropped/i, rows: [{ '?column?': 1 }] },
+        { match: /pg_index/i, rows: [] },
+      ]),
       explain: async () => ({ total_cost: 1781, plan: seqScanPlan }),
     };
     const { recommendations } = await recommend({
@@ -174,13 +182,37 @@ describe('用例 1-3 · missing_index', () => {
     expect(recommendations[0].evidence.hypopg_cost_ratio).toBeUndefined();
   });
 
+  // #127 二阶注入防护: Filter 正则启发式解析出的 table/col 若在 catalog 中不存在 (正则误判 /
+  // 表达式而非裸列名) → tableColumnExists 返 false → 跳过该 hit (既防注入也不出无效推荐)。
+  it('1b · table/col 不存在 (catalog 查空) → 0 rec (跳过 · #127 注入防护)', async () => {
+    const ctx: RuleContext = {
+      ...BASE_CTX,
+      querySignature: 'q_abc123',
+      hypopgAvailable: true,
+      // attisdropped 路由返回空 = 列不存在 → 拒绝该 hit。
+      sql: makeSql([
+        { match: /attisdropped/i, rows: [] },
+        { match: /pg_index/i, rows: [] },
+      ]),
+      explain: makeExplain(1781, 100),
+    };
+    const { recommendations } = await recommend({
+      ctx,
+      types: ['missing_index'],
+    });
+    expect(recommendations).toHaveLength(0);
+  });
+
   it('3 · 列已索引 → 0 rec (跳过)', async () => {
     const ctx: RuleContext = {
       ...BASE_CTX,
       querySignature: 'q_abc123',
       hypopgAvailable: true,
-      // pg_index 查命中 = 列已索引。
-      sql: makeSql([{ match: /pg_index/i, rows: [{ '?column?': 1 }] }]),
+      // #127: tableColumnExists 命中 = 列存在 (确保走到 already-indexed 判定) · pg_index 命中 = 列已索引。
+      sql: makeSql([
+        { match: /attisdropped/i, rows: [{ '?column?': 1 }] },
+        { match: /pg_index/i, rows: [{ '?column?': 1 }] },
+      ]),
       explain: async () => ({ total_cost: 1781, plan: seqScanPlan }),
     };
     const { recommendations } = await recommend({
@@ -449,6 +481,7 @@ describe('用例 15 · 并发 5 规则', () => {
       querySignature: 'q_all',
       hypopgAvailable: false, // 降级路径
       sql: makeSql([
+        { match: /attisdropped/i, rows: [{ '?column?': 1 }] }, // #127 missing_index: 列存在
         { match: /pg_index/i, rows: [] }, // missing_index: 未索引
         {
           match: /pg_stat_user_indexes/i,

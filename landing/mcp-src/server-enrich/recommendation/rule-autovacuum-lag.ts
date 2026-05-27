@@ -9,6 +9,7 @@
  * dead_tup 低于阈值 → 0 rec (fixture 用例 11)。纯只读 catalog query。
  */
 import type { Recommendation, RuleContext, RuleEvaluator } from './types';
+import { quoteIdent } from './sql-ident';
 
 const RULE_VERSION = '1';
 
@@ -59,7 +60,8 @@ export const autovacuumLagRule: RuleEvaluator = {
             dead_ratio: deadRatio,
             threshold_hours: ctx.thresholds.autovacuum_lag_hours,
           },
-          suggested_action: `VACUUM ANALYZE ${tableName}; -- 或调 autovacuum_vacuum_scale_factor`,
+          // #127: 表名走 quoteIdent · 含逗号/引号的名字也产出合法 SQL · 不破坏 CSV 列结构。
+          suggested_action: `VACUUM ANALYZE ${quoteIdent(tableName)}; -- 或调 autovacuum_vacuum_scale_factor`,
           confidence: 'high',
           rule_version: RULE_VERSION,
         });

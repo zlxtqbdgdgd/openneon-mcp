@@ -29,6 +29,7 @@ import type {
   RuleEvaluator,
   RuleSqlClient,
 } from './types';
+import { quoteIdent } from './sql-ident';
 
 const RULE_VERSION = '1';
 
@@ -126,6 +127,39 @@ async function columnAlreadyIndexed(
 }
 
 /**
+ * 二阶注入防护 (#127 fix · §3.1)。table/filter_col 来自 EXPLAIN Filter 正则启发式解析 ·
+ * 即便正则限了字符集 · 也不能假定「Filter 首词永远是合法列名」。在拿去 hypopg_create_index
+ * 之前 · 先用参数化 catalog 查询确认 <table>.<col> 真实存在 (pg_class + pg_attribute · 排除
+ * dropped/system 列)。不存在 → 返回 false · 调用方拒绝该 hit · 走降级 (不拼接 · 消除注入面)。
+ */
+async function tableColumnExists(
+  sql: RuleSqlClient,
+  table: string,
+  col: string,
+): Promise<boolean> {
+  try {
+    const rows = await sql.query(
+      `
+      SELECT 1
+      FROM pg_class t
+      JOIN pg_attribute a
+        ON a.attrelid = t.oid
+      WHERE t.relname = $1
+        AND a.attname = $2
+        AND a.attnum > 0          -- 排除系统列 (ctid/xmin...)
+        AND NOT a.attisdropped    -- 排除已删列
+      LIMIT 1
+      `,
+      [table, col],
+    );
+    return rows.length > 0;
+  } catch {
+    // catalog 查询失败 → 保守拒绝 (宁可降级到 medium · 不冒注入/无效 DDL 风险)。
+    return false;
+  }
+}
+
+/**
  * 启动期 hypopg 可用性 detection (§3.1 · handler 启动期一次性 cache 结果 · 不在每条规则里重查)。
  * `SELECT extname FROM pg_extension WHERE extname='hypopg'` — 已 CREATE 的才算可用。失败/缺失 →
  * false (降级)。
@@ -157,9 +191,12 @@ async function hypopgCostRatio(
 ): Promise<number | null> {
   try {
     await ctx.sql.query('CREATE EXTENSION IF NOT EXISTS hypopg');
+    // 二阶注入防护 (#127): 不在 JS 侧字符串拼 DDL · 而是把 table/col 作为文本参数传给 Postgres ·
+    // 用 format(... %I ...) 让 PG 自己做 quote_ident (合法标识符加引号 · 非法字符无法逃逸成 DDL)。
+    // hypopg_create_index 接收 format() 产出的安全 DDL 文本。
     await ctx.sql.query(
-      `SELECT hypopg_create_index($1)`,
-      [`CREATE INDEX ON ${hit.table} (${hit.filter_col})`],
+      `SELECT hypopg_create_index(format('CREATE INDEX ON %I (%I)', $1, $2))`,
+      [hit.table, hit.filter_col],
     );
     // 重跑原 query 的 EXPLAIN (虚拟索引现已对 planner 可见)。
     let afterCost = beforeCost;
@@ -206,6 +243,13 @@ export const missingIndexRule: RuleEvaluator = {
 
     const recs: Recommendation[] = [];
     for (const hit of hits) {
+      // 二阶注入防护 (#127): table/filter_col 来自 EXPLAIN Filter 正则启发式 · 先用参数化 catalog
+      // 查询确认真实存在 · 不存在 (正则误判 / 表达式而非裸列名) → 拒绝该 hit · 既消除注入面 ·
+      // 也避免对不存在的对象出无效推荐。
+      if (!(await tableColumnExists(ctx.sql, hit.table, hit.filter_col))) {
+        continue;
+      }
+
       // step 3: 已索引列跳过 (0 推荐重复 · fixture 用例 3)。
       if (await columnAlreadyIndexed(ctx.sql, hit.table, hit.filter_col)) {
         continue;
@@ -240,7 +284,8 @@ export const missingIndexRule: RuleEvaluator = {
         severity,
         target: hit.table,
         evidence,
-        suggested_action: `CREATE INDEX CONCURRENTLY ON ${hit.table} (${hit.filter_col});`,
+        // #127: 标识符走 quoteIdent · 含特殊字符的对象名也产出合法 SQL (且写进 CSV 不破结构)。
+        suggested_action: `CREATE INDEX CONCURRENTLY ON ${quoteIdent(hit.table)} (${quoteIdent(hit.filter_col)});`,
         confidence,
         rule_version: RULE_VERSION,
       });
