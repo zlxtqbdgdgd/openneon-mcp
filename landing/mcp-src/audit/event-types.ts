@@ -1,10 +1,15 @@
 /**
- * audit/event-types.ts · feat-026/#1 · audit event 类型 (feat-031 OTel 集成预留)
+ * audit/event-types.ts · feat-026/#1 · audit event 类型 + feat-031 OTel 桥接
  *
  * 设计: https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-026-L2-mcp-server-confirm-token-gate.html (§4 audit event schema)
  *
- * L2a 期: 仅类型定义 + 经 winston logger 走 structured log。feat-031 ship 后 OTel exporter
- * 消费同一 event payload (token_id 是跨系统 join key · 详设 §3 解决场景)。
+ * feat-031 已 ship (`emitAuditEvent` 在 main · landing/mcp-src/observability/audit-emit.ts) ·
+ * 本文件把 feat-026 的 `confirm_token_*` event **桥接**到 feat-031 统一 audit sink (OTel span ·
+ * `target=openneon::audit`) —— token_id 作跨系统 join key (详设 §3 解决场景 · §4 audit schema)。
+ * 不再各自 implement sink (feat-031 §6 single source / §10.2.1 防重复实现)。
+ *
+ * 同时保留 winston structured log: 本机调试 / OTLP collector 不可达时的人读兜底
+ * (emitAuditEvent 的 OTel 路径是 fire-and-forget · collector 不可达自动 drop · 详 audit-emit.ts)。
  */
 import type { OpClass } from '../protection/destructive-detector';
 import type { ConfirmTokenSource } from '../policy/confirm-token-store';
@@ -12,8 +17,8 @@ import type { VerifyReason } from '../policy/confirm-token-issuer';
 import { logger } from '../utils/logger';
 import {
   emitAuditEvent,
-  type AuditEventType,
   type AuditOutcome,
+  type AuditSeverity,
 } from '../observability/audit-emit';
 
 export type ConfirmTokenEventType =
@@ -32,46 +37,72 @@ export type ConfirmTokenAuditEvent = {
 };
 
 /**
- * confirm_token event_type → feat-031 §3.2 (a) `openneon.audit.outcome`。
- * issued/verified = approved · rejected = rejected (collector 端按 outcome 分流)。
+ * feat-026 event_type → feat-031 AuditEvent.outcome 映射:
+ * - issued   = 颁发 (审批发生过 · 放行语义)        → 'allow'
+ * - verified = step 7 verify 通过 (高危 op 获批准)  → 'approved'
+ * - rejected = verify 失败 (防御命中 / 重放 / 过期)  → 'rejected'
  */
-function confirmTokenOutcome(eventType: ConfirmTokenEventType): AuditOutcome {
-  return eventType === 'confirm_token_rejected' ? 'rejected' : 'approved';
+const OUTCOME_BY_EVENT: Record<ConfirmTokenEventType, AuditOutcome> = {
+  confirm_token_issued: 'allow',
+  confirm_token_verified: 'approved',
+  confirm_token_rejected: 'rejected',
+};
+
+/** rejected = 防御命中 → high · issued/verified = 正常审批链 → medium (详设 §6 安全) */
+function severityFor(eventType: ConfirmTokenEventType): AuditSeverity {
+  return eventType === 'confirm_token_rejected' ? 'high' : 'medium';
 }
 
 /**
- * 落 audit event (feat-026 confirm_token)。
+ * 落 audit event · 双路:
+ * 1. feat-031 `emitAuditEvent` → OTel span (跨系统 join key = token_id · 主 audit sink)。
+ * 2. winston structured log (本机人读兜底 · info: issued/verified · warn: rejected)。
  *
- * **single source (feat-031 §6)**: 本函数是 feat-026 audit 的唯一出口 ·
- *   - winston structured log (本机可 grep · 紧急 unblock / OTEL_SDK_DISABLED 时仍可见)
- *   - **+ feat-031 `emitAuditEvent`** (OTel span · target='openneon::audit' · 出口到用户 OTLP collector)
+ * feat-026 event 字段 → feat-031 AuditEvent 字段:
+ * - event_type / token_id / op_class / principal → 同名直传
+ * - outcome → OUTCOME_BY_EVENT 映射 · severity → severityFor
+ * - source / ttl_seconds / reject_reason → 进 extra (feat-031 AuditEvent 无对应顶层字段 ·
+ *   extra map 不触发 PII redact assertion · 详 audit-emit.ts assertNoRawStatement)
  *
- * 两者共用同一 event payload (token_id 是跨系统 join key · 详设 §3 解决场景) · 调用方不直接
- * 调 emitAuditEvent / 不各自 implement exporter (§10.2.1 重复 + CI guard 防 ad-hoc)。
- * info level: issued/verified · warn level: rejected (异常 / 防御命中)。
+ * **source 必须透传** (详设 §4 audit schema): 'plan-mode-approval' 区分 L1-L3 人工审批路径 ·
+ * 'odd-pre-approved' 区分 L4 ODD 预审批路径。DBA 按 source 分类复盘 · 保住 token_id 跨系统
+ * join key 价值 (否则无法分辨某个 token 是人审还是 ODD 预批)。用 `openneon.audit.source`
+ * key 落进 extra · 与 audit namespace 一致 (extra 原样进 OTel attribute · 详 audit-emit.ts)。
+ *
+ * 不传任何全文 SQL (args_digest 已是 sha256 · 不在本 event 里 · 满足 feat-031 §6 PII redact)。
  */
 export function emitConfirmTokenAudit(event: ConfirmTokenAuditEvent): void {
+  const extra: Record<string, unknown> = {
+    'openneon.audit.source': event.source,
+    ttl_seconds: event.ttl_seconds,
+  };
+  if (event.reject_reason !== undefined) {
+    extra.reject_reason = event.reject_reason;
+  }
+  try {
+    emitAuditEvent({
+      event_type: event.event_type,
+      outcome: OUTCOME_BY_EVENT[event.event_type],
+      severity: severityFor(event.event_type),
+      op_class: event.op_class,
+      principal: event.principal,
+      token_id: event.token_id,
+      extra,
+    });
+  } catch (err) {
+    // emitAuditEvent 仅在 PII redact 违规时抛 (本 event 不含全文字段 · 不应触发) ·
+    // 兜底防御: audit 失败绝不阻塞 confirm-token gate (fail-safety · 详 audit-emit.ts §11 OQ1)。
+    logger.error('audit · confirm_token OTel emit failed (feat-026):', {
+      err,
+      event_type: event.event_type,
+      token_id: event.token_id,
+    });
+  }
+
+  // winston 兜底 (本机人读 · OTel collector 不可达时仍有 structured log)
   if (event.event_type === 'confirm_token_rejected') {
     logger.warn('audit · confirm_token_rejected (feat-026):', event);
   } else {
     logger.info(`audit · ${event.event_type} (feat-026):`, event);
   }
-  // feat-031: 同 payload 出 OTel (best-effort · 不阻塞 · 不抛 · 详 audit-emit.ts)
-  // op_class 是必填四件套之一 · 防调用方 (松类型 / runtime) 传进 undefined 漏字段 →
-  // 兜 'OTHER' (OpClass fail-closed bucket) 保证 emitAuditEvent required 字段不缺。
-  emitAuditEvent({
-    event_type: event.event_type as AuditEventType,
-    outcome: confirmTokenOutcome(event.event_type),
-    op_class: event.op_class ?? 'OTHER',
-    principal: event.principal,
-    token_id: event.token_id,
-    severity: event.event_type === 'confirm_token_rejected' ? 'high' : 'low',
-    extra: {
-      'openneon.audit.token_source': event.source,
-      'openneon.audit.ttl_seconds': event.ttl_seconds,
-      ...(event.reject_reason
-        ? { 'openneon.audit.reject_reason': event.reject_reason }
-        : {}),
-    },
-  });
 }
