@@ -45,7 +45,9 @@ export type AuditEventType =
   // feat-024/#3 T11 search_samples · 脱敏样本检索 (filter + hits + sensitive_redact_count_total 进 extra)
   | 'search_samples_invoked'
   // feat-022 T7: agent 调 get_neondb_recommendations 拿到 enriched 推荐 (DBA 复盘审计)
-  | 'recommendation_classified';
+  | 'recommendation_classified'
+  // feat-023/#2 T10 search_plans · 主动巡检 (filter + hits + duration_ms + backend 进 extra)
+  | 'search_plans_invoked';
 
 export type AuditOutcome =
   | 'allow'

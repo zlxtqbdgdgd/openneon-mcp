@@ -45,6 +45,7 @@ import {
   getNeondbQueryPerformanceInputSchema,
   getNeondbQuerySamplesInputSchema,
   getNeondbRecommendationsInputSchema,
+  searchPlansInputSchema,
 } from './toolsSchema';
 
 type NeonToolDefinition = {
@@ -787,6 +788,38 @@ export const NEON_TOOLS = [
     readOnlySafe: true,
     annotations: {
       title: 'Get Neon DB Recommendations (feat-022 · T7 recommendation rule set)',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    } satisfies ToolAnnotations,
+  },
+  // feat-023/#2 get_neondb_search_plans · T10 主动巡检 plan history. 查 plan-store (on-demand T3
+  // hook + background pg_stat_statements collector 填充) · 不重跑 EXPLAIN · 跨时间窗 + pattern filter
+  // 找退化 plan (Seq Scan / high cost) · 跟 feat-022 T7 联动出治理推荐。详设 §3/§4/§12:
+  // https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-023-L2b-mcp-tool-t10-search-plans.html
+  {
+    name: 'get_neondb_search_plans' as const,
+    scope: 'querying',
+    category: 'optional',
+    description: `Search historical query execution plans — the T10 proactive-inspection tool. Use this to find plan-quality problems across the whole project without re-running EXPLAIN per query.
+
+    <use_case>
+      Use for proactive inspection ("which queries ran a Seq Scan in the last 7 days?", "find plans with cost > 10000")
+      and for tracking a single query's plan over time (pass signature_list + depth='full' to see a plan regress from
+      Index Scan to Seq Scan). Pair each hit with T7 recommendations to produce an index-tuning candidate list.
+    </use_case>
+
+    <important_notes>
+      Reads a server-side plan history store populated by T3 (on-demand) and a background pg_stat_statements collector —
+      it does NOT execute any SQL. Plans contain table/column/filter structure but NO bound parameter values (EXPLAIN default).
+      If the store is empty (cold start), run T3 first or wait for the background collector. depth='shallow' returns a
+      one-line summary per hit; depth='full' returns the (summarized) plan_json.
+    </important_notes>`,
+    inputSchema: searchPlansInputSchema,
+    readOnlySafe: true,
+    annotations: {
+      title: 'Search Neon DB Plans (feat-023 · T10 proactive plan history)',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,

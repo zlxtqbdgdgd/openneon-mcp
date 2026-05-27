@@ -62,6 +62,8 @@ export const DEPTH_SUPPORTING_TOOLS: ReadonlySet<string> = new Set<string>([
   'get_neondb_query_performance',
   // feat-024/#3 (L2b): T11 query samples · shallow = 脱敏摘要行 / full = 完整脱敏 QuerySample
   'get_neondb_query_samples',
+  // feat-023/#2 (L2b): T10 search_plans · shallow = plan_summary 摘要 / full = 完整 plan_json
+  'get_neondb_search_plans',
 ]);
 
 /**
