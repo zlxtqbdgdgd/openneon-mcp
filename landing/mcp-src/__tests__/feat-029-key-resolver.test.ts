@@ -455,8 +455,8 @@ describe('用例 8: grant 注入 feat-056 G1 stage · 跨 project deny', () => {
   });
 });
 
-// 用例 7（运行期 revocation · handleToolError invalidate cache）的测试在 #105 commit · 单独 file
-// landing/mcp-src/__tests__/feat-029-runtime-revocation.test.ts
+// 用例 7（运行期 revocation · handleToolError invalidate cache）的测试在 #105 commit ·
+// 单独文件 landing/mcp-src/__tests__/feat-029-runtime-revocation.test.ts
 
 describe('用例 5: key 缺失 (= bearerToken undefined → verifyToken 直接拒)', () => {
   // 这一路由层兜底·resolveKeyScope 永远不会被调到

@@ -687,10 +687,13 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                   return result;
                 } catch (error) {
                   span.setStatus({ code: 2 });
+                  // feat-029/#3: 把 apiKey 传给 handleToolError · Neon API 401/403 自动 invalidate
+                  // 5min KV cache（运行期 revocation 检测 · 下次 fail-closed）
                   const errorResult = handleToolError(
                     error,
                     properties,
                     traceId,
+                    typedExtra.authInfo?.extra?.apiKey,
                   );
                   logger.warn('tool error response:', {
                     ...properties,
