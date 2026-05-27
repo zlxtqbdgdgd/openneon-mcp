@@ -18,9 +18,14 @@ const ALL_OPS: readonly OpClass[] = [
   'DELETE_UPDATE_BULK',
   'DROP_TABLE_OR_INDEX',
   'DROP_REPLICATION_SLOT',
+  // feat-028/#109 长锁
+  'VACUUM_FULL_LOCK',
+  'CLUSTER_LOCK',
   'DROP_DATABASE_OR_TRUNCATE',
   'DROP_USER_OR_REVOKE',
   'CROSS_PROJECT',
+  // feat-028/#108 fail-closed bucket
+  'OTHER',
 ];
 
 // 3 层 hard-deny(任何 L 不可禁 · ADR-0007)· 给 agent 列出便于自省

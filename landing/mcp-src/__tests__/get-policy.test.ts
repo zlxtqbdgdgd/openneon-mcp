@@ -17,12 +17,13 @@ describe('handleGetPolicy (feat-057 · advisory)', () => {
     });
   });
 
-  it('返回 advisory 清单: autonomy_level + ops(11) + overrides + hard_deny + disclaimer', () => {
+  it('返回 advisory 清单: autonomy_level + ops(14 = day-one 11 + feat-028 加 VACUUM_FULL_LOCK / CLUSTER_LOCK / OTHER) + overrides + hard_deny + disclaimer', () => {
     const a = handleGetPolicy({ projectId: 'rapid-art-12345' });
     expect(a.autonomy_level).toBe('L2b');
     expect(a.advisory).toBe(true);
     expect(a.source).toBe('configured');
-    expect(a.ops).toHaveLength(11);
+    // day-one 11 类 + feat-028 加 3 (VACUUM_FULL_LOCK / CLUSTER_LOCK / OTHER) = 14
+    expect(a.ops).toHaveLength(14);
     expect(a.overrides).toEqual([
       { pattern: 'DROP TABLE production_*', effective_level: 'L1' },
     ]);

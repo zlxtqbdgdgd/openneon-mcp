@@ -43,9 +43,14 @@ const RISK_BY_OP: Partial<Record<OpClass, PlanRisk>> = {
   DROP_TABLE_OR_INDEX: 'high',
   DELETE_UPDATE_BULK: 'high',
   DROP_REPLICATION_SLOT: 'high',
+  // feat-028/#109 长锁 · 阻塞 SELECT 期间用户感知极强 · high
+  VACUUM_FULL_LOCK: 'high',
+  CLUSTER_LOCK: 'high',
   CREATE_INDEX_CONCURRENTLY: 'medium',
   DDL_ADD_COLUMN: 'medium',
   CREATE_OR_RESTORE_BRANCH: 'low',
+  // feat-028/#108 fail-closed bucket · parse 失败 / 未识别 stmt · 按 high 处理 (保守)
+  OTHER: 'high',
 };
 
 // op-class → 可逆性 (server 事实 · 不含投机)
@@ -54,9 +59,14 @@ const REVERSIBILITY_BY_OP: Partial<Record<OpClass, string>> = {
   DROP_TABLE_OR_INDEX: 'DROP 不可逆 (除非有备份 / 可从分支恢复)',
   DELETE_UPDATE_BULK: '数据变更不可逆 (除非事务回滚 / 从分支恢复)',
   DROP_REPLICATION_SLOT: '删 replication slot 不可逆 (需重建)',
+  VACUUM_FULL_LOCK:
+    'VACUUM FULL 取 ACCESS EXCLUSIVE LOCK · 阻塞读写 · 重写表文件 · 完成不可中途回滚 · 建议低峰执行',
+  CLUSTER_LOCK:
+    'CLUSTER 取 ACCESS EXCLUSIVE LOCK · 阻塞读写 · 按 index 顺序重写表 · 完成不可中途回滚',
   CREATE_INDEX_CONCURRENTLY: '可 DROP INDEX 回滚 (建索引本身不改数据)',
   DDL_ADD_COLUMN: 'ADD COLUMN 可 DROP COLUMN 回滚 (新列数据丢失)',
   CREATE_OR_RESTORE_BRANCH: '分支操作不影响源 · 可删分支回滚',
+  OTHER: '解析未识别 / fail-closed · 可逆性未知 · 按高危处理',
 };
 
 /** 从 SQL 提取受影响对象 (启发式 · best-effort · 详设校准点)。 */
@@ -90,6 +100,12 @@ function statementProperties(sql: string, opClass: OpClass): string[] {
   }
   if (opClass === 'ALTER_TABLE_BIG_LOCK') {
     props.push('ALTER TABLE 默认取 ACCESS EXCLUSIVE 锁 · 等锁期间阻塞该表读写');
+  }
+  if (opClass === 'VACUUM_FULL_LOCK') {
+    props.push('VACUUM FULL 取 ACCESS EXCLUSIVE 锁 · 阻塞 SELECT/INSERT/UPDATE/DELETE · 大表期间业务停摆');
+  }
+  if (opClass === 'CLUSTER_LOCK') {
+    props.push('CLUSTER 取 ACCESS EXCLUSIVE 锁 · 阻塞 SELECT/INSERT/UPDATE/DELETE · 按 index 顺序重写表');
   }
   if (opClass === 'DELETE_UPDATE_BULK' && !/\bWHERE\b/i.test(sql)) {
     props.push('无 WHERE 子句：影响全表行');
