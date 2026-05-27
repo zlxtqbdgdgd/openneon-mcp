@@ -57,10 +57,12 @@ export function emitConfirmTokenAudit(event: ConfirmTokenAuditEvent): void {
     logger.info(`audit · ${event.event_type} (feat-026):`, event);
   }
   // feat-031: 同 payload 出 OTel (best-effort · 不阻塞 · 不抛 · 详 audit-emit.ts)
+  // op_class 是必填四件套之一 · 防调用方 (松类型 / runtime) 传进 undefined 漏字段 →
+  // 兜 'OTHER' (OpClass fail-closed bucket) 保证 emitAuditEvent required 字段不缺。
   emitAuditEvent({
     event_type: event.event_type as AuditEventType,
     outcome: confirmTokenOutcome(event.event_type),
-    op_class: event.op_class,
+    op_class: event.op_class ?? 'OTHER',
     principal: event.principal,
     token_id: event.token_id,
     severity: event.event_type === 'confirm_token_rejected' ? 'high' : 'low',

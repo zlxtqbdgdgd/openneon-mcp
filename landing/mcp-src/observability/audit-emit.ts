@@ -55,7 +55,7 @@ export type AuditEvent = {
   event_type: AuditEventType;
   outcome: AuditOutcome;
   op_class?: string;
-  /** 'human:<id>' | 'system:odd-mrc' | 'agent:<key-last-4>' */
+  /** 'human:<id>' | 'system:<component>' (如 system:odd-mrc/system:fail-closed) | 'agent:<key-last-4>' */
   principal?: string;
   severity?: AuditSeverity;
   token_id?: string;
@@ -68,12 +68,12 @@ export type AuditEvent = {
   agent_attempted_value?: unknown;
   /** feat-060 claim_override: server JWT 绑定的真实值 */
   bound_value?: unknown;
-  /** USR (feat-008-011 L2b ship 后填 · L2a optional) */
+  /** USR (feat-008-011 L2b ship 后填 · L2a optional) · 全部出 openneon.usr.* namespace */
   tenant_id?: string;
   timeline_id?: string;
   endpoint_id?: string;
   shard_id?: string;
-  /** project_id (feat-029 跨 project deny · audit join key) */
+  /** project_id (feat-029 跨 project deny · audit join key) · USR 身份字段 → openneon.usr.project_id */
   project_id?: string;
   /** 其他 ad-hoc attribute (调用方按需) · 不进入 redact assertion 范围 */
   extra?: Record<string, unknown>;
@@ -143,8 +143,10 @@ function toOtelAttributes(event: AuditEvent): Record<string, unknown> {
     attrs['db.statement.sha256'] = event.db_statement_sha256;
   }
   if (event.db_user !== undefined) attrs['db.user'] = event.db_user;
+  // project_id 跟 tenant/timeline/endpoint/shard 同属 USR 身份字段 → openneon.usr.*
+  // namespace (跟 neon 内核侧 compute_tools audit_otel.rs 统一 · 详 docs/audit-otel-schema.md)。
   if (event.project_id !== undefined)
-    attrs['openneon.audit.project_id'] = event.project_id;
+    attrs['openneon.usr.project_id'] = event.project_id;
   if (event.agent_attempted_value !== undefined)
     attrs['openneon.audit.agent_attempted_value'] = stringify(
       event.agent_attempted_value,

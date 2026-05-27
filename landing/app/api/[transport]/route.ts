@@ -146,10 +146,12 @@ function createDeferred<T>(): Deferred<T> {
 // orchestrator 按 §8.2 护栏 reason 关键字映射到 feat-031 §3.2 (a) 13 类之一。
 // 命中不了 G1/G4/G9 关键字的 deny (matrix deny 等) → 归 g4_destructive_deny (destructive 类的兜底)。
 function denyVerdictToEventType(reason: string): AuditEventType {
-  if (reason.includes('G1') || reason.includes('跨 project')) {
+  // 用单词边界匹配 guard 编号 · 避免裸 includes('G1') 误命中 G10/G14 等
+  // (现存 guard 编号 G1/G3/G4/G9/G10/G14 · reason 串形如 "(G1 hard-deny)" / "(G9 · ...)")。
+  if (/\bG1\b/.test(reason) || reason.includes('跨 project')) {
     return 'g1_cross_project_deny';
   }
-  if (reason.includes('G9') || reason.includes('速率')) {
+  if (/\bG9\b/.test(reason) || reason.includes('速率')) {
     return 'g9_rate_limit_deny';
   }
   // G4 hard-deny + matrix deny + confirm-token fail-closed deny 等 → destructive 兜底
@@ -693,13 +695,14 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                         failClosed: approval.failClosed,
                       });
                       // feat-031: DBA 拒批 / fail-closed (plan_mode_rejected · §3.2 a)
-                      emitAuditEvent({
-                        event_type: 'plan_mode_rejected',
-                        outcome: 'rejected',
-                        op_class: opClass,
-                        principal: approval.failClosed
-                          ? 'system:fail-closed'
-                          : `human:${account?.id ?? 'unknown'}`,
+                      // principal 是 elicitation 的人工审批者 (human responder) · 不是 agent
+                      // 账号 (account.id 是 API key 持有者 / LLM agent · OWASP LLM06)。MCP
+                      // elicitation 协议不回传 responder 身份 (ElicitResultLike 只有
+                      // action/content) → 填 human:unknown 占位 (design §3.2 a
+                      // human:<elicitation-responder-id> · L2b 接通真实 responder id 时再填)。
+                      principal: approval.failClosed
+                        ? 'system:fail-closed'
+                        : 'human:unknown',
                         severity: 'high',
                         project_id: effectiveProjectId,
                         db_statement_sha256: sqlForClassify
@@ -725,12 +728,15 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                       opClass,
                       reason: approval.reason,
                     });
-                    // feat-031: DBA 批准 (plan_mode_approved · principal=human:<dba-id> · §3.2 a)
+                    // feat-031: DBA 批准 (plan_mode_approved · principal=human responder · §3.2 a)
+                    // 同 plan_mode_rejected: principal 是人工审批者 · 非 agent 账号 (account.id)。
+                    // MCP elicitation 不回传 responder 身份 → human:unknown 占位
+                    // (design §3.2 a human:<elicitation-responder-id> · L2b 接通后填真实 id)。
                     emitAuditEvent({
                       event_type: 'plan_mode_approved',
                       outcome: 'approved',
                       op_class: opClass,
-                      principal: `human:${account?.id ?? 'unknown'}`,
+                      principal: 'human:unknown',
                       severity: 'medium',
                       project_id: effectiveProjectId,
                       db_statement_sha256: sqlForClassify
@@ -742,10 +748,14 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                     // 短 TTL · single-use) · 注入 ctx 重跑 pipeline · planModeStage 看到
                     // token 后 skip elicitation · confirmTokenStage (step 7) verify + audit
                     // (token_id 是跨系统 join key · 详设 §3 调用链)。
+                    // confirm token 是这次人工批准的产物 · principal 跟 plan_mode_approved
+                    // 一致 = 人工审批者 (非 agent account.id) · MCP elicitation 不回传
+                    // responder 身份 → human:unknown 占位 (L2b 接通后填真实 id)。
+                    // verify 阶段 (confirm-token.ts) 会读回此 principal emit confirm_token_verified。
                     const tokenSnapshot = issueConfirmToken({
                       op_class: opClass,
                       args: sqlForClassify ?? '',
-                      principal: `human:${account?.id ?? 'unknown'}`,
+                      principal: 'human:unknown',
                       source: 'plan-mode-approval',
                     });
                     emitConfirmTokenAudit({
@@ -753,7 +763,7 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                       token_id: tokenSnapshot.id,
                       source: tokenSnapshot.source,
                       op_class: opClass,
-                      principal: `human:${account?.id ?? 'unknown'}`,
+                      principal: 'human:unknown',
                       ttl_seconds: 300,
                     });
                     const verdict2 = runPipeline({
@@ -1522,9 +1532,12 @@ const verifyToken = async (
         reason: error.message,
       });
       // feat-031: 鉴权期非项目级 key fail-closed deny (g1_cross_project_deny · §3.2 a)
+      // 补必填四件套的 op_class:此 deny 由 G1 跨 project 判定触发 → CROSS_PROJECT
+      // (OpClass enum · 非 SQL 内容判 · 跟 pipeline G1 stage 同语义)。
       emitAuditEvent({
         event_type: 'g1_cross_project_deny',
         outcome: 'deny',
+        op_class: 'CROSS_PROJECT',
         principal: `agent:${error.last4 ?? 'unknown'}`,
         severity: 'high',
         key_type:
