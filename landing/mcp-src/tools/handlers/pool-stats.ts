@@ -11,6 +11,7 @@
  */
 import {
   fetchPgcatMetrics,
+  PgcatFetchError,
   type PoolStats,
   type FetchStatus,
 } from '../../utils/pgcat-fetcher';
@@ -31,8 +32,8 @@ export type PoolStatsRow = Omit<PoolStats, 'captured_at'> & {
 
 export type GetPoolStatsResult = {
   pools: PoolStatsRow[];
-  /** fetch 分类 · agent / audit 用 */
-  fetchStatus: FetchStatus | 'ok';
+  /** fetch 分类 · agent / audit 用 (FetchStatus 已含 'ok')*/
+  fetchStatus: FetchStatus;
   cacheHit: boolean;
   stale: boolean;
 };
@@ -89,11 +90,15 @@ export async function handleGetPoolStats(
   try {
     result = await fetchPgcatMetrics(url);
   } catch (err) {
-    // fetch 彻底失败 (无 stale 可降级) → audit + rethrow friendly
+    // fetch 彻底失败 (无 stale 可降级) → audit + rethrow friendly。
+    // 按错误真实分类上报 fetchStatus (不再硬编码 'timeout'):
+    // PgcatFetchError 自带 classifyError 算出的 status (timeout / http_5xx / http_4xx / parse_error)。
+    const fetchStatus: FetchStatus =
+      err instanceof PgcatFetchError ? err.fetchStatus : 'timeout';
     emitPoolStatsAudit(input, {
       poolCount: 0,
       clWaitingTotal: 0,
-      fetchStatus: 'timeout',
+      fetchStatus,
       cacheHit: false,
       durationMs: Date.now() - start,
     });
