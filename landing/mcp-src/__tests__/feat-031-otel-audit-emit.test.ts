@@ -5,12 +5,13 @@
  * 不用 nock/msw (避免新装一个 dev dep) · 拦截 span 出口足以验证 attribute schema。
  */
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
-import { trace, type TracerProvider } from '@opentelemetry/api';
+import { trace } from '@opentelemetry/api';
 import {
   BasicTracerProvider,
   InMemorySpanExporter,
   SimpleSpanProcessor,
   type ReadableSpan,
+  type Tracer,
 } from '@opentelemetry/sdk-trace-base';
 import { promises as fsPromises, existsSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
@@ -187,15 +188,15 @@ describe('feat-031 · fail-safety (§11 OQ1)', () => {
     // simulate OTel SDK 损坏: 临时替换 suiteProvider.getTracer 返回一个会抛的 tracer。
     // setGlobalTracerProvider 第二次是 no-op · 所以改 provider instance 自己。
     const original = suiteProvider.getTracer.bind(suiteProvider);
-    suiteProvider.getTracer = () =>
-      ({
-        startSpan() {
-          throw new Error('tracer broken (simulated collector / SDK 故障)');
-        },
-        startActiveSpan() {
-          throw new Error('not used');
-        },
-      }) as unknown as ReturnType<TracerProvider['getTracer']>;
+    const brokenTracer = {
+      startSpan() {
+        throw new Error('tracer broken (simulated collector / SDK 故障)');
+      },
+      startActiveSpan() {
+        throw new Error('not used');
+      },
+    } as unknown as Tracer;
+    suiteProvider.getTracer = () => brokenTracer;
     try {
       // 不抛 (fail-safety) · 即使 OTel layer 完全坏
       expect(() =>
