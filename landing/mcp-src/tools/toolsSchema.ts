@@ -1168,3 +1168,44 @@ export const findNeondbInstancesInputSchema = z.object({
     ),
   format: outputFormatField,
 });
+
+// feat-024/#3 · T11 get_neondb_query_samples · 脱敏 query 执行样本检索。
+// store 内 100% 脱敏 (server-side 强制脱敏 boundary · OWASP LLM02) · agent 永远拿不到 raw param。
+export const getNeondbQuerySamplesInputSchema = z.object({
+  projectId: z
+    .string()
+    .describe('The Neon project ID to search obfuscated query samples for (isolation boundary).'),
+  signature: z
+    .string()
+    .optional()
+    .describe('Restrict to a single query signature (investigate one query\'s samples over time).'),
+  time_range: z
+    .union([
+      z.enum(['last 1h', 'last 24h']),
+      z.object({
+        from_ms: z.number().describe('Window start · epoch milliseconds.'),
+        to_ms: z.number().describe('Window end · epoch milliseconds.'),
+      }),
+    ])
+    .optional()
+    .describe(
+      "Time window: a relative enum ('last 1h' / 'last 24h') or a custom { from_ms, to_ms } epoch-ms range. Omit to search all retained history.",
+    ),
+  duration_min_ms: z
+    .number()
+    .optional()
+    .describe('Only return samples whose execution duration is at least this many milliseconds.'),
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe('Max samples to return. Default 50 · hard cap 200. Sorted by captured_at DESC (newest first).'),
+  depth: z
+    .enum(['shallow', 'full'])
+    .optional()
+    .describe(
+      "Progressive disclosure (feat-007). 'shallow' (default) returns an obfuscated summary row per sample; 'full' returns the full (still-obfuscated) sample. ALL output is server-side obfuscated — never contains raw parameter values.",
+    ),
+  format: outputFormatField,
+});

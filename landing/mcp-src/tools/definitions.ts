@@ -43,6 +43,7 @@ import {
   getNeondbCallingServicesInputSchema,
   getNeondbHealthSignalsInputSchema,
   getNeondbQueryPerformanceInputSchema,
+  getNeondbQuerySamplesInputSchema,
 } from './toolsSchema';
 
 type NeonToolDefinition = {
@@ -722,6 +723,37 @@ export const NEON_TOOLS = [
     readOnlySafe: true,
     annotations: {
       title: 'Get Neon DB Query Performance (feat-021 · T5 slow-query ranking)',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    } satisfies ToolAnnotations,
+  },
+  // feat-024/#3 get_neondb_query_samples · T11 脱敏 query 执行样本检索。store 内 100% 脱敏
+  // (server-side 强制脱敏 boundary · OWASP LLM02) · agent 永远拿不到 raw param value。
+  // tool 名不带 _obfuscated 后缀 (§11 OQ9)。详设 §3/§4/§12:
+  // https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-024-L2b-mcp-tool-t11-search-samples-obfuscated.html
+  {
+    name: 'get_neondb_query_samples' as const,
+    scope: 'querying',
+    category: 'optional',
+    description: `Search recent query execution samples (duration + the query that ran) — the T11 sample finder. Use to investigate "what does this slow query actually look like / how slow is it" without ever seeing real user data.
+
+    <use_case>
+      Use to investigate a specific query's behavior over time (pass signature + time_range + duration_min_ms): returns
+      execution duration plus the query text. Pair with T10 search_plans to correlate slow samples with plan regressions.
+    </use_case>
+
+    <important_notes>
+      OWASP LLM02 GUARANTEE: every sample is server-side OBFUSCATED before it is stored — you will see "WHERE id=$1",
+      never "WHERE id=12345 AND email='alice@acme.com'". There is no option to retrieve raw parameter values; obfuscation
+      happens at the store's write boundary and cannot be bypassed. Requires the auto_explain extension to be enabled
+      (see README); if no samples are collected yet, this returns empty.
+    </important_notes>`,
+    inputSchema: getNeondbQuerySamplesInputSchema,
+    readOnlySafe: true,
+    annotations: {
+      title: 'Get Neon DB Query Samples (feat-024 · T11 server-side obfuscated)',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
