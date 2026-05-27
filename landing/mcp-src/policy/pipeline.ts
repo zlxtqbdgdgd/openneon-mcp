@@ -61,6 +61,7 @@ export type EnforcementCtx = {
   confirmToken?: ConfirmTokenSnapshot;
   // feat-055/#1: per-project G9 rate counter 配置 (来自 resolvePolicy().rate_counter · loader 已 clamp
   // 到 CONFIG_BOUNDS)· 缺省 → DEFAULT_RATE_COUNTER_CONFIG (day-one 5/5min/0.8 口径)。
+  // TODO(feat-056): 从 resolvePolicy().rate_counter 注入 per-project 配置 · 接线前此字段恒为 undefined。
   rateCounterConfig?: RateCounterConfig;
 };
 
@@ -102,6 +103,9 @@ const g1CrossProjectStage: Stage = (ctx) => {
 const g9RateLimitStage: Stage = (ctx) => {
   if (!isRateLimitedOp(ctx.opClass)) return null; // 只读/建索引/分支 不计
   const projectId = ctx.grant?.projectId ?? ctx.projectId ?? 'global';
+  // TODO(feat-056): 从 resolvePolicy().rate_counter 注入 per-project 配置。
+  // 在 feat-056 接线前 ctx.rateCounterConfig 永远是 undefined · 这里恒走 DEFAULT_RATE_COUNTER_CONFIG
+  // (day-one 5/5min/0.8 口径)· per-project / policy.yaml 可调能力此前不生效。
   const config = ctx.rateCounterConfig ?? DEFAULT_RATE_COUNTER_CONFIG;
   const verdict = recordAndCheckRateLimit({
     projectId,
