@@ -50,6 +50,8 @@ import { handleGetQueryPerformance } from './handlers/query-performance';
 import { handleSearchSamples } from './handlers/search-samples';
 // feat-022 T7 recommendations · server-enrich 5 类规则集
 import { handleGetRecommendations } from './handlers/get-recommendations';
+// feat-023/#2 T10 search_plans · 查 plan-store (on-demand T3 hook + background collector 填充)
+import { handleSearchPlans } from './handlers/search-plans';
 // feat-006 #2 day-one ship · token economy地基 · CSV default output
 import { formatToolResponse } from '../server/response-formatter';
 
@@ -2001,6 +2003,37 @@ You MUST follow these steps:
     return { content: [{ type: 'text', text }] };
   },
 
+  // feat-023/#2 T10 get_neondb_search_plans · 主动巡检 plan history。查 plan-store · 不重跑 EXPLAIN ·
+  // 5 filter AND + sort captured_at DESC + limit cap 200 + feat-031 audit emit (handler 内做)。
+  // CSV (feat-006 默认) 渲染 result.rows · depth=full 追加完整 plan_json JSON 信封 (progressive disclosure)。
+  get_neondb_search_plans: async ({ params }) => {
+    const result = await handleSearchPlans({
+      projectId: params.projectId,
+      pattern: params.pattern,
+      time_range: params.time_range,
+      cost_min: params.cost_min,
+      has_seq_scan: params.has_seq_scan,
+      signature_list: params.signature_list,
+      limit: params.limit,
+      depth: params.depth,
+    });
+    if (params.format === 'json') {
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      };
+    }
+    // CSV/TSV (token 经济): shallow 摘要表格 · depth=full 追加完整 plan_json (progressive disclosure)。
+    const table = formatToolResponse(
+      result.rows as unknown as Record<string, unknown>[],
+      { format: params.format },
+    );
+    const text =
+      result.depth === 'full' && result.full
+        ? `${table}\n${JSON.stringify({ plans: result.full }, null, 2)}`
+        : table;
+    return { content: [{ type: 'text', text }] };
+  },
+
   // feat-022 T7 get_neondb_recommendations · server-enrich 5 类确定性规则集。并发跑 5 规则 +
   // severity 排序 + feat-031 audit。上游 explain_sql_statement 经注入 runner 调 (gate 在
   // handleExplainPlans · 避免 handlers/get-recommendations.ts ↔ tools.ts 循环依赖 · 同
@@ -2076,4 +2109,10 @@ You MUST follow these steps:
       ],
     };
   },
+=======
+        ? `${table}\n${JSON.stringify({ plans: result.full }, null, 2)}`
+        : table;
+    return { content: [{ type: 'text', text }] };
+  },
+>>>>>>> 36d927f (feat(feat-023): T10 search_plans · plan-store 子层 + 双 collector + tool handler)
 } satisfies ToolHandlers;

@@ -17,9 +17,19 @@
  * 摘要 (< 2K token · 防 agent 在巨大嵌套 plan JSON 里幻觉读数);depth=full 返回 raw EXPLAIN JSON。
  *
  * 设计: https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-019-L2-mcp-tool-t3-explain-plans.html (§3 §4 §6)
+ *
+ * feat-023/#1 (L2b): on-demand collector hook —— 成功 EXPLAIN 后 **non-blocking** 把 plan 摘要写
+ * plan-store (source='on_demand' · pad-on-fetch · 零额外开销)。写失败 log warn **不抛**,
+ * 不影响 T3 返回 (fail-safety · 跟 feat-031 audit 同源 · 详设 §3 on-demand path + §8 回滚)。
  */
 import { classifySql, type OpClass } from '../../protection/destructive-detector';
 import { DEFAULT_DEPTH, isValidDepth, type DepthLevel } from '../../config/depth';
+import {
+  getPlanStore,
+  computeSignature,
+  queryTextSha256,
+  summarizePlan,
+} from '../../server-enrich/plan-store';
 
 export type ExplainPlansInput = {
   sql: string;
@@ -172,8 +182,49 @@ export function explainAnnotationFor(opClass: OpClass): ExplainAnnotation {
 }
 
 /**
+ * feat-023/#1 on-demand collector hook: 把成功 EXPLAIN 的 plan 摘要写 plan-store
+ * (source='on_demand')。**non-blocking · 写失败仅 log warn 不抛** —— 任何异常都吞掉,
+ * 绝不影响 T3 返回 (详设 §3 on-demand path · fail-safety)。
+ */
+function writeOnDemandPlan(
+  projectId: string,
+  sql: string,
+  plan: unknown,
+): void {
+  // fire-and-forget · 包一层 try 防同步构造抛 (如 getPlanStore() 在 redis backend 即 throw)。
+  try {
+    const summary = summarizePlan(plan);
+    void getPlanStore()
+      .writePlan({
+        signature: computeSignature(sql),
+        query_text_sha256: queryTextSha256(sql),
+        plan_json: summary.plan_json,
+        captured_at: Date.now(),
+        source: 'on_demand',
+        cost_total: summary.cost_total,
+        has_seq_scan: summary.has_seq_scan,
+        has_nested_loop_big: summary.has_nested_loop_big,
+        projectId,
+      })
+      .catch((err) => {
+        console.warn(
+          '[explain-plans] on-demand plan-store write failed (non-blocking · T3 unaffected):',
+          err,
+        );
+      });
+  } catch (err) {
+    console.warn(
+      '[explain-plans] on-demand plan-store write skipped (non-blocking · T3 unaffected):',
+      err,
+    );
+  }
+}
+
+/**
  * T3 explain wrapper: classifyOp(内层 sql) → gate analyze → 调上游 (注入的 runExplain) →
  * 按 depth 结构化返回 (shallow=signals 摘要 / full=raw plan)。
+ *
+ * feat-023/#1: 解析出 plan 后顺手 non-blocking 写 plan-store (on-demand collector)。
  */
 export async function handleExplainPlans(
   args: ExplainPlansInput,
@@ -192,6 +243,9 @@ export async function handleExplainPlans(
   } catch {
     plan = text; // 解析失败 → 原文 (depth=full 透传 · shallow 下 parsePlanSignals 返回空 signals)
   }
+
+  // feat-023/#1 on-demand collector: 顺手写 plan-store (non-blocking · 失败不影响 T3 返回)。
+  writeOnDemandPlan(args.projectId, args.sql, plan);
 
   const base = {
     op_class: opClass,

@@ -358,6 +358,32 @@ ALTER SYSTEM SET auto_explain.log_format = 'json';
 
 相关环境变量见 [Environment Variables](#environment-variables) 的 `SAMPLES_STORE_*` / `OBFUSCATOR_MODE` / `AUTO_EXPLAIN_COLLECTOR_*` 项。
 
+- **`get_neondb_search_plans`** (T10 · feat-023): Searches historical query execution plans across a project for proactive inspection. Reads a server-side plan history store populated by T3 (on-demand) and a background `pg_stat_statements` collector — it never re-runs EXPLAIN. Filter by `pattern` (glob on the plan JSON, e.g. `*Seq Scan*`), `time_range` (`last 1h`/`last 24h`/`last 7d` or a custom `{ from_ms, to_ms }`), `cost_min`, `has_seq_scan`, and `signature_list`. Returns a CSV summary (`signature, captured_at, source, cost_total, has_seq_scan, plan_summary`); `depth='full'` returns the full (summarized) plan JSON. Plans expose table/column/filter structure but NO bound parameter values (EXPLAIN default).
+
+### T10 search_plans · 主动巡检场景 (feat-023)
+
+T10 把诊断从"等用户报慢"升级到"周一上班主动巡检"。运维 agent (feat-059 `ops` role toolset) 定期跑一次:
+
+```
+agent → get_neondb_search_plans({
+  projectId: "rapid-art-12345",
+  pattern: "*Seq Scan*",
+  time_range: "last 7d",
+  cost_min: 10000,
+  limit: 20
+})
+→ 返 12 个持续 7 天的 high-cost Seq Scan plan (CSV)
+→ 对每个 signature 调 T7 recommendations → missing_index 推荐
+→ DBA review 治理清单 → 进 plan mode → CREATE INDEX CONCURRENTLY
+```
+
+数据底座 (plan-store) 由两个 collector 填充:
+
+- **on-demand**: 每次调 T3 `get_neondb_explain_plans` 顺手把 plan 摘要写 store (零额外开销 · 写失败不影响 T3)。
+- **background**: 周期 (默认 5 min) 从 `pg_stat_statements` 拉 top-N 慢 query · 跑 `EXPLAIN (FORMAT JSON, ANALYZE false)` · 写 store。需要 `pg_stat_statements` extension (Neon 默认启用);缺失时后台采集跳过 · on-demand 仍工作。
+
+相关环境变量见 [Environment Variables](#environment-variables) 的 `PLAN_STORE_*` / `PLAN_BG_COLLECTOR_*` 项。
+
 **Neon Auth:**
 
 - **`provision_neon_auth`**: Provisions Neon Auth for a Neon project. It allows developers to easily set up authentication infrastructure by creating an integration with an Auth provider.
@@ -484,6 +510,11 @@ Optional:
 | `OBFUSCATOR_MODE`               | feat-024 · T11 obfuscation strength: `strict` (default · replaces all numeric + string literals) or `moderate` (keeps numeric + short enum-like strings · for schemas with no sensitive data). **MUST be `strict` in production** — `NODE_ENV=production` with a non-strict value logs an error at startup (OWASP LLM02).         |
 | `AUTO_EXPLAIN_COLLECTOR_ENABLED`| feat-024 · Set to `false` to disable the background auto_explain sample collector (T11 then returns empty). Default `true`.                                                                                                                                                                                                       |
 | `AUTO_EXPLAIN_COLLECTOR_INTERVAL_MS` | feat-024 · auto_explain collector interval in ms. Default `300000` (5 min).                                                                                                                                                                                                                                                 |
+| `PLAN_STORE_BACKEND`            | feat-023 · T10 plan history store backend: `memory` (default) or `redis` (L3+ multi-worker stub · not yet implemented).                                                                                                                                                                                                          |
+| `PLAN_STORE_TTL_MS`             | feat-023 · Plan record TTL in ms before eviction. Default `86400000` (24h).                                                                                                                                                                                                                                                      |
+| `PLAN_BG_COLLECTOR_ENABLED`     | feat-023 · Set to `false` to disable the background `pg_stat_statements` plan collector (store then populated only by on-demand T3). Default `true`.                                                                                                                                                                              |
+| `PLAN_BG_COLLECTOR_INTERVAL_MS` | feat-023 · Background collector interval in ms. Default `300000` (5 min).                                                                                                                                                                                                                                                        |
+| `PLAN_BG_COLLECTOR_TOP_N`       | feat-023 · `pg_stat_statements` top-N slow queries collected per round. Default `50`.                                                                                                                                                                                                                                            |
 
 ### Why default reject Personal/Org Key (feat-029)
 

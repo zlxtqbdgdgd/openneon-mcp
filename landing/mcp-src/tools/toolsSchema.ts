@@ -1210,6 +1210,56 @@ export const getNeondbQuerySamplesInputSchema = z.object({
   format: outputFormatField,
 });
 
+// feat-023/#2 · T10 get_neondb_search_plans · 主动巡检 plan history (查 plan-store · 不重跑 EXPLAIN)
+export const searchPlansInputSchema = z.object({
+  projectId: z
+    .string()
+    .describe('The Neon project ID to search collected plans for (isolation boundary).'),
+  pattern: z
+    .string()
+    .optional()
+    .describe(
+      'Glob/substring matched against the plan JSON (case-insensitive · e.g. "*Seq Scan*" finds plans containing a Seq Scan node).',
+    ),
+  time_range: z
+    .union([
+      z.enum(['last 1h', 'last 24h', 'last 7d']),
+      z.object({
+        from_ms: z.number().describe('Window start · epoch milliseconds.'),
+        to_ms: z.number().describe('Window end · epoch milliseconds.'),
+      }),
+    ])
+    .optional()
+    .describe(
+      "Time window: a relative enum ('last 1h' / 'last 24h' / 'last 7d') or a custom { from_ms, to_ms } epoch-ms range. Omit to search all retained history.",
+    ),
+  cost_min: z
+    .number()
+    .optional()
+    .describe('Only return plans whose root Total Cost is at least this value.'),
+  has_seq_scan: z
+    .boolean()
+    .optional()
+    .describe('Filter on whether the plan contains a Seq Scan node.'),
+  signature_list: z
+    .array(z.string())
+    .optional()
+    .describe('Restrict to these query signatures (track a query\'s plan evolution over time).'),
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe('Max plans to return. Default 50 · hard cap 200. Sorted by captured_at DESC (newest first).'),
+  depth: z
+    .enum(['shallow', 'full'])
+    .optional()
+    .describe(
+      "Progressive disclosure (feat-007). 'shallow' (default · token economy) returns a one-line plan_summary per hit; 'full' returns the full (summarized) plan_json for plan-evolution analysis.",
+    ),
+  format: outputFormatField,
+});
+
 // feat-022 T7 get_neondb_recommendations input schema · server-enrich 5 类规则集 (确定性 if-else)
 // detail design: features/feat-022-L2b-mcp-server-enrich-recommendation-rule-set.html (§4)
 export const getNeondbRecommendationsInputSchema = z.object({
@@ -1252,6 +1302,9 @@ export const getNeondbRecommendationsInputSchema = z.object({
     .optional()
     .describe(
       'Optional subset of recommendation types to run. Default: all 5 types.',
+=======
+      "Progressive disclosure (feat-007). 'shallow' (default · token economy) returns a one-line plan_summary per hit; 'full' returns the full (summarized) plan_json for plan-evolution analysis.",
+>>>>>>> 36d927f (feat(feat-023): T10 search_plans · plan-store 子层 + 双 collector + tool handler)
     ),
   format: outputFormatField,
 });
