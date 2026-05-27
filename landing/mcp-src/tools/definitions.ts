@@ -44,6 +44,7 @@ import {
   getNeondbHealthSignalsInputSchema,
   getNeondbQueryPerformanceInputSchema,
   getNeondbQuerySamplesInputSchema,
+  getNeondbRecommendationsInputSchema,
 } from './toolsSchema';
 
 type NeonToolDefinition = {
@@ -754,6 +755,38 @@ export const NEON_TOOLS = [
     readOnlySafe: true,
     annotations: {
       title: 'Get Neon DB Query Samples (feat-024 · T11 server-side obfuscated)',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    } satisfies ToolAnnotations,
+  },
+  // feat-022 get_neondb_recommendations · T7 推荐规则集。server-enrich 5 类确定性 if-else 规则
+  // (missing_index / unused_index / oversized_temp / autovacuum_lag / inefficient_join) · 不调 LLM
+  // (§3.3.0)。诊断链 T4 → T5 → T3 → T7 → plan mode。详设:
+  // https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-022-L2b-mcp-server-enrich-recommendation-rule-set.html
+  {
+    name: 'get_neondb_recommendations' as const,
+    scope: 'querying',
+    category: 'optional',
+    description: `Get server-computed database recommendations — the T7 advisor. Prefer this over reasoning "should I add an index?" yourself.
+
+    <use_case>
+      Use after T3 shows a Seq Scan (or on a routine optimization sweep): returns enriched, deterministic recommendations
+      (missing_index / unused_index / oversized_temp / autovacuum_lag / inefficient_join) — each with evidence + a ready-to-run
+      SQL template + confidence — so you go straight to plan mode instead of guessing table/column names.
+    </use_case>
+
+    <important_notes>
+      These are deterministic rules (no LLM / no ML), so the same DB state always yields the same recommendations. Output is
+      sorted by severity. missing_index uses the hypopg extension to compare costs when available (confidence=high); when hypopg
+      is absent it degrades to confidence=medium (still recommended, no cost-diff evidence). suggested_action is a TEMPLATE — it
+      is NEVER executed by this tool; run it via plan mode after review.
+    </important_notes>`,
+    inputSchema: getNeondbRecommendationsInputSchema,
+    readOnlySafe: true,
+    annotations: {
+      title: 'Get Neon DB Recommendations (feat-022 · T7 recommendation rule set)',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,

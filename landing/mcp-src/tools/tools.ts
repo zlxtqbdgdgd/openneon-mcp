@@ -48,6 +48,8 @@ import {
 import { handleGetQueryPerformance } from './handlers/query-performance';
 // feat-024/#3 T11 query samples · 查 samples-store (auto_explain collector 强制脱敏后填充)
 import { handleSearchSamples } from './handlers/search-samples';
+// feat-022 T7 recommendations · server-enrich 5 类规则集
+import { handleGetRecommendations } from './handlers/get-recommendations';
 // feat-006 #2 day-one ship · token economy地基 · CSV default output
 import { formatToolResponse } from '../server/response-formatter';
 
@@ -1997,5 +1999,81 @@ You MUST follow these steps:
         ? `${table}\n${JSON.stringify({ samples: result.full }, null, 2)}`
         : table;
     return { content: [{ type: 'text', text }] };
+  },
+
+  // feat-022 T7 get_neondb_recommendations · server-enrich 5 类确定性规则集。并发跑 5 规则 +
+  // severity 排序 + feat-031 audit。上游 explain_sql_statement 经注入 runner 调 (gate 在
+  // handleExplainPlans · 避免 handlers/get-recommendations.ts ↔ tools.ts 循环依赖 · 同
+  // get_neondb_explain_plans 模式)。
+  get_neondb_recommendations: async ({ params }, neonClient, extra) => {
+    const result = await handleGetRecommendations(
+      {
+        projectId: params.projectId,
+        branchId: params.branchId,
+        databaseName: params.databaseName,
+        computeId: params.computeId,
+        scope: params.scope,
+        query_signature: params.query_signature,
+        recommendation_types: params.recommendation_types,
+      },
+      neonClient,
+      extra,
+      // ExplainSqlRunnerFactory: 绑定 sql/projectId/branchId → 上游 explain_sql_statement runner。
+      (base) =>
+        (analyze) =>
+          handleExplainSqlStatement(
+            {
+              params: {
+                sql: base.sql,
+                databaseName: base.databaseName,
+                projectId: base.projectId,
+                branchId: base.branchId,
+                analyze,
+              },
+            },
+            neonClient,
+            extra,
+          ),
+    );
+    // JSON: 整对象直出 (evidence 保留嵌套)。CSV/TSV (feat-006 默认 token 经济 · §5 < 5K token):
+    // 每条 recommendation 拍平成 1 行 · evidence 折成 'k=v·k=v' 单列 evidence_summary (csv-stringify
+    // 不能渲染对象单元格)。
+    if (params.format === 'json') {
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      };
+    }
+    const flatRows = result.recommendations.map((r) => ({
+      type: r.type,
+      severity: r.severity,
+      target: r.target,
+      evidence_summary: Object.entries(r.evidence)
+        .map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+        .join('·'),
+      suggested_action: r.suggested_action,
+      confidence: r.confidence,
+      rule_version: r.rule_version,
+    }));
+    const header = JSON.stringify(
+      {
+        hypopg_available: result.hypopg_available,
+        history_seam_available: result.history_seam_available,
+        types_returned: result.types_returned,
+        duration_ms: result.duration_ms,
+      },
+      null,
+      2,
+    );
+    return {
+      content: [
+        {
+          type: 'text',
+          text:
+            flatRows.length === 0
+              ? `${header}\n(no recommendations)`
+              : `${header}\n${formatToolResponse(flatRows, { format: params.format })}`,
+        },
+      ],
+    };
   },
 } satisfies ToolHandlers;

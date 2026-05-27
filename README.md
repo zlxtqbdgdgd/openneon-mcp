@@ -376,6 +376,54 @@ ALTER SYSTEM SET auto_explain.log_format = 'json';
 - **`list_docs_resources`**: Lists all available Neon documentation pages by fetching the index from `https://neon.com/docs/llms.txt`. Returns page URLs and titles that can be fetched individually using the `get_doc_resource` tool.
 - **`get_doc_resource`**: Fetches a specific Neon documentation page as markdown content. Use the `list_docs_resources` tool first to discover available page slugs, then pass the slug to this tool.
 
+## Enabling the `hypopg` extension (for `get_neondb_recommendations` · feat-022)
+
+The T7 `get_neondb_recommendations` tool's **`missing_index`** rule uses the
+[`hypopg`](https://github.com/HypoPG/hypopg) PostgreSQL extension (BSD-3) to create a *hypothetical*
+(virtual) index, re-run `EXPLAIN`, and compare the plan cost — recommending an index only when the
+estimated cost improvement clears a configurable ratio (default 10×). With `hypopg` the recommendation
+is emitted at `confidence=high` and carries an `hypopg_cost_ratio` evidence field.
+
+`hypopg` is a **marketplace extension on Neon** (not installed by default). To enable it, connect to
+your database (Neon Console → SQL Editor, or any client) and run:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS hypopg;
+```
+
+The tool detects `hypopg` automatically at runtime (`SELECT 1 FROM pg_extension WHERE extname = 'hypopg'`).
+
+**Graceful degradation (no setup required):** when `hypopg` is *not* available, the `missing_index` rule
+still works — it emits the recommendation at `confidence=medium` without cost-diff evidence, and the
+other four rules (`unused_index` / `oversized_temp` / `autovacuum_lag` / `inefficient_join`) are
+unaffected. Virtual-index operations are strictly session-local (`hypopg_reset()` runs in a `finally`),
+so they never affect other sessions.
+
+> Audit note (feat-022/#1): on a self-built local PostgreSQL 17.5 cluster the `hypopg` *binary* is
+> absent (so `CREATE EXTENSION hypopg` fails with a missing control file) — that is expected for a
+> non-Neon build and exercises the degradation path. Neon's managed compute images ship the `hypopg`
+> binary, so `CREATE EXTENSION hypopg` is the only step there. Free vs. paid plan differences on Neon
+> Cloud are pending verification.
+
+## Recommendation thresholds (`policy.yaml` · feat-022)
+
+The T7 rule thresholds are tunable via a `recommendation_thresholds` block in `~/.openneon/policy.yaml`
+(all keys optional · missing keys fall back to hardcoded defaults · thresholds are **not** exposed to
+the agent):
+
+```yaml
+recommendation_thresholds:
+  autovacuum_lag_hours: 24          # last_autovacuum older than this counts as lag
+  autovacuum_dead_tuple_min: 10000  # n_dead_tup above this to recommend VACUUM
+  unused_index_min_bytes: 1048576   # only flag indexes larger than 1 MB
+  missing_index_cost_ratio: 10      # hypopg cost ratio above this → confidence=high
+  inefficient_join_outer_rows: 10000 # nested-loop outer rows above this → inefficient
+```
+
+Each rule can also be individually disabled via an env flag (default all on), e.g.
+`T7_MISSING_INDEX_ENABLED=false` (others: `T7_UNUSED_INDEX_ENABLED`, `T7_OVERSIZED_TEMP_ENABLED`,
+`T7_AUTOVACUUM_LAG_ENABLED`, `T7_INEFFICIENT_JOIN_ENABLED`).
+
 ## Migrations
 
 Migrations are a way to manage changes to your database schema over time. With the Neon MCP server, LLMs are empowered to do migrations safely with separate "Start" (`prepare_database_migration`) and "Commit" (`complete_database_migration`) commands.

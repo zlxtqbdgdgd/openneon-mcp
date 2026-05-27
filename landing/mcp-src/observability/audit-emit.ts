@@ -42,7 +42,9 @@ export type AuditEventType =
   | 'ddl_executed'
   | 'compute_audit_log_record'
   // feat-024/#3 T11 search_samples · 脱敏样本检索 (filter + hits + sensitive_redact_count_total 进 extra)
-  | 'search_samples_invoked';
+  | 'search_samples_invoked'
+  // feat-022 T7: agent 调 get_neondb_recommendations 拿到 enriched 推荐 (DBA 复盘审计)
+  | 'recommendation_classified';
 
 export type AuditOutcome =
   | 'allow'

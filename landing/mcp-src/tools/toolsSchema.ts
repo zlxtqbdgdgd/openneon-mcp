@@ -1209,3 +1209,49 @@ export const getNeondbQuerySamplesInputSchema = z.object({
     ),
   format: outputFormatField,
 });
+
+// feat-022 T7 get_neondb_recommendations input schema · server-enrich 5 类规则集 (确定性 if-else)
+// detail design: features/feat-022-L2b-mcp-server-enrich-recommendation-rule-set.html (§4)
+export const getNeondbRecommendationsInputSchema = z.object({
+  projectId: z.string().describe('The ID of the Neon project to query.'),
+  branchId: z
+    .string()
+    .optional()
+    .describe(
+      'An optional ID of the branch. If not provided the default branch is used.',
+    ),
+  databaseName: z.string().optional().describe(DATABASE_NAME_DESCRIPTION),
+  computeId: z
+    .string()
+    .optional()
+    .describe(
+      'The ID of the compute/endpoint. If not provided, the read-write compute associated with the branch will be used.',
+    ),
+  scope: z
+    .enum(['all', 'recent_slow_queries', 'all_indexes', 'all_tables'])
+    .optional()
+    .describe(
+      "Optional scope hint for which recommendation surfaces to scan. Default 'all'.",
+    ),
+  query_signature: z
+    .string()
+    .optional()
+    .describe(
+      'Optional pg_stat_statements queryid to scope query-bound rules (missing_index / inefficient_join) to a single query. When provided, those rules EXPLAIN that query and look for a seq scan / inefficient nested loop.',
+    ),
+  recommendation_types: z
+    .array(
+      z.enum([
+        'missing_index',
+        'unused_index',
+        'oversized_temp',
+        'autovacuum_lag',
+        'inefficient_join',
+      ]),
+    )
+    .optional()
+    .describe(
+      'Optional subset of recommendation types to run. Default: all 5 types.',
+    ),
+  format: outputFormatField,
+});
