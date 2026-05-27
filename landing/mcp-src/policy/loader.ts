@@ -19,6 +19,11 @@ import {
   isValidPgTimeoutValue,
   type TimeoutSpec,
 } from './stages/timeout-injection';
+import {
+  CONFIG_BOUNDS,
+  DEFAULT_RATE_COUNTER_CONFIG,
+  type RateCounterConfig,
+} from './rate-limiter';
 
 const POLICY_PATH = join(homedir(), '.openneon', 'policy.yaml');
 const VALID_LEVELS: ReadonlySet<string> = new Set([
@@ -41,6 +46,8 @@ export type ProjectPolicy = {
   agent_role?: string;
   shadow_mode?: unknown; // {enabled, days_remaining, pass_threshold} | boolean · 详见 feat-056 §4.4(#78 用)
   audit_severity?: 'info' | 'medium' | 'high';
+  // feat-055/#1: per-project G9 rate counter (已 clamp 到 CONFIG_BOUNDS · undefined = 用 day-one defaults)
+  rate_counter?: RateCounterConfig;
 };
 
 export type PolicyConfig = {
@@ -58,6 +65,8 @@ export type ResolvedPolicy = {
   // feat-059/#1: per-project agent_role (undefined = 未配 · tools/list 不做 role 软过滤)
   agent_role?: string;
   shadow_mode?: unknown;
+  // feat-055/#1: per-project G9 rate counter (恒有值 · 未配 project 落 DEFAULT_RATE_COUNTER_CONFIG)
+  rate_counter: RateCounterConfig;
   source: 'configured' | 'defaults';
 };
 
@@ -113,6 +122,73 @@ function validateTimeoutOverrides(
   return result;
 }
 
+/** clamp 一个数到 [min, max] · 越界返回 clamp 后值 + 标记 (给 warn log 用) */
+function clampNumber(
+  value: number,
+  bounds: { min: number; max: number },
+): { value: number; clamped: boolean } {
+  if (value < bounds.min) return { value: bounds.min, clamped: true };
+  if (value > bounds.max) return { value: bounds.max, clamped: true };
+  return { value, clamped: false };
+}
+
+/**
+ * 校验 + clamp rate_counter (feat-055/#1 · §3.3 + CONFIG_BOUNDS)。
+ *
+ * **ADR-0007 内涵延伸**: window_ms / max_units / warn_ratio / weights[op] 用户可调 · 但都有
+ * 编译期上下界 (CONFIG_BOUNDS)· 越界 → clamp + warn log。防 prompt injection 写文件改
+ * max_units=999999 把 G9 关掉。缺段 / 非数 → 落 DEFAULT_RATE_COUNTER_CONFIG (不报错 · §4.5 兼容)。
+ */
+function validateRateCounter(pid: string, raw: unknown): RateCounterConfig {
+  if (!raw || typeof raw !== 'object') {
+    return { ...DEFAULT_RATE_COUNTER_CONFIG };
+  }
+  const rc = raw as Record<string, unknown>;
+  const result: RateCounterConfig = { ...DEFAULT_RATE_COUNTER_CONFIG };
+
+  if (typeof rc.window_ms === 'number') {
+    const c = clampNumber(rc.window_ms, CONFIG_BOUNDS.windowMs);
+    if (c.clamped)
+      logger.warn(
+        `project ${pid} rate_counter.window_ms=${rc.window_ms} 越界 · clamp 到 ${c.value} (CONFIG_BOUNDS · ADR-0007)`,
+      );
+    result.windowMs = c.value;
+  }
+  if (typeof rc.max_units === 'number') {
+    const c = clampNumber(rc.max_units, CONFIG_BOUNDS.maxUnits);
+    if (c.clamped)
+      logger.warn(
+        `project ${pid} rate_counter.max_units=${rc.max_units} 越界 · clamp 到 ${c.value} (CONFIG_BOUNDS · ADR-0007)`,
+      );
+    result.maxUnits = c.value;
+  }
+  if (typeof rc.warn_ratio === 'number') {
+    const c = clampNumber(rc.warn_ratio, CONFIG_BOUNDS.warnRatio);
+    if (c.clamped)
+      logger.warn(
+        `project ${pid} rate_counter.warn_ratio=${rc.warn_ratio} 越界 · clamp 到 ${c.value} (CONFIG_BOUNDS · ADR-0007)`,
+      );
+    result.warnRatio = c.value;
+  }
+  if (rc.weights && typeof rc.weights === 'object') {
+    const weights: Partial<Record<OpClass, number>> = {};
+    for (const [op, wRaw] of Object.entries(
+      rc.weights as Record<string, unknown>,
+    )) {
+      if (typeof wRaw !== 'number') continue; // 非数忽略 (forward-compat · 不报错)
+      const c = clampNumber(wRaw, CONFIG_BOUNDS.weight);
+      if (c.clamped)
+        logger.warn(
+          `project ${pid} rate_counter.weights.${op}=${wRaw} 越界 · clamp 到 ${c.value} (CONFIG_BOUNDS · ADR-0007)`,
+        );
+      // op-class 名不强校验枚举 (未知 key 无害 · 永不匹配真实 op-class · 同 timeout_overrides 风格)
+      weights[op as OpClass] = c.value;
+    }
+    if (Object.keys(weights).length > 0) result.weights = weights;
+  }
+  return result;
+}
+
 /** 校验 + 规整 js-yaml load 结果 → PolicyConfig · 非法抛错(调用方 fail-safe) */
 export function validate(raw: unknown): PolicyConfig {
   if (!raw || typeof raw !== 'object') {
@@ -157,6 +233,8 @@ export function validate(raw: unknown): PolicyConfig {
         typeof p.agent_role === 'string' ? p.agent_role : undefined,
       shadow_mode: p.shadow_mode,
       audit_severity: p.audit_severity as ProjectPolicy['audit_severity'],
+      // feat-055/#1: per-project G9 rate counter · clamp 到 CONFIG_BOUNDS (越界 warn + use clamped)
+      rate_counter: validateRateCounter(pid, p.rate_counter),
     };
   }
   return {
@@ -244,6 +322,8 @@ export function resolvePolicy(projectId?: string): ResolvedPolicy {
       timeout_overrides: p.timeout_overrides,
       agent_role: p.agent_role,
       shadow_mode: p.shadow_mode,
+      // feat-055/#1: 已 clamp 的 per-project rate counter (validate 时落了 defaults 兜底 · 恒有值)
+      rate_counter: p.rate_counter ?? { ...DEFAULT_RATE_COUNTER_CONFIG },
       source: 'configured',
     };
   }
@@ -253,6 +333,8 @@ export function resolvePolicy(projectId?: string): ResolvedPolicy {
     overrides: {},
     timeout_overrides: {},
     shadow_mode: current.defaults.shadow_mode,
+    // feat-055/#1: 未配 project → day-one defaults (5/5min/0.8 · §4.5 兼容)
+    rate_counter: { ...DEFAULT_RATE_COUNTER_CONFIG },
     source: 'defaults',
   };
 }

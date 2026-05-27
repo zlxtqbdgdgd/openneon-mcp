@@ -30,7 +30,8 @@ const FALLBACK_ROTATE_BYTES = 100 * 1024 * 1024; // 100 MB
 export type AuditEventType =
   | 'g1_cross_project_deny'
   | 'g4_destructive_deny'
-  | 'g9_rate_limit_deny'
+  | 'g9_rate_limit_warned'
+  | 'g9_rate_limit_exceeded'
   | 'plan_mode_required'
   | 'plan_mode_approved'
   | 'plan_mode_rejected'
