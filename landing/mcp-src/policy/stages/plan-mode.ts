@@ -114,9 +114,18 @@ export function buildPlanPayload(ctx: EnforcementCtx): PlanPayload {
 /**
  * plan mode stage (near-pure): 矩阵判定需 plan → 返回 require_plan + payload (non-terminal ·
  * orchestrator 接管 elicitation)。否则 null (只读 / allow / 已 deny 终止 不到这)。
+ *
+ * feat-026/#1: 若 ctx.confirmToken.source === 'odd-pre-approved' (L4 路径 · ODD/MRC 自动颁发 ·
+ *   L2a stub throw 不可达 · feat-049/051 ship 后才接通) → skip elicitation · 返 null 放行 step 7
+ *   verify token + audit (详设 §3 L4 调用链)。
+ * feat-026/#1: 若 ctx.confirmToken.source === 'plan-mode-approval' (orchestrator 在前一轮 approve
+ *   后已颁发 + 重跑 pipeline) → 也 skip elicitation (避免二次弹窗) · step 7 verify。
  */
 export const planModeStage: Stage = (ctx) => {
   if (!matrixRequiresPlan(ctx.opClass, ctx.autonomyLevel)) return null;
+  // feat-026/#1: 已有 token → skip elicitation (L4 odd-pre-approved 或 L1-L3 plan-mode-approval
+  // 重跑路径) · 放行到 step 7 (confirmTokenStage) verify。
+  if (ctx.confirmToken) return null;
   return {
     action: 'require_plan',
     plan: buildPlanPayload(ctx),
