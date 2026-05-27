@@ -1,0 +1,40 @@
+name: Diag · pg_stat_statements
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Linux, X64, openneon-dev]
+    steps:
+      - name: probe pg_install layout
+        run: |
+          set +e
+          echo "=== 1. v17 extension dir ==="
+          ls -la /home/z1/liqiang/zlxtqbdgdgd/openneon/pg_install/v17/share/postgresql/extension/ 2>&1 | head -20
+          echo ""
+          echo "=== 2. pg_stat_statements files anywhere under new fork ==="
+          find /home/z1/liqiang/zlxtqbdgdgd/openneon/pg_install -name "pg_stat_statements*" 2>/dev/null | head -20
+          echo ""
+          echo "=== 3. pg_stat_statements files under old src/neon ==="
+          find /home/z1/liqiang/src/neon/pg_install -name "pg_stat_statements*" 2>/dev/null | head -20
+          echo ""
+          echo "=== 4. compute 实际 process ==="
+          ps -ef | grep -E "postgres.*55432" | grep -v grep | head -3
+          echo ""
+          echo "=== 5. PG version + binary ==="
+          /home/z1/liqiang/zlxtqbdgdgd/openneon/pg_install/v17/bin/psql --version 2>&1 || echo "v17 psql not present"
+          /home/z1/liqiang/src/neon/pg_install/v16/bin/psql --version 2>&1 || echo "v16 psql not present"
+          echo ""
+          echo "=== 6. neon-env.sh content ==="
+          cat /home/z1/liqiang/neon-env.sh 2>&1 | head -30
+          echo ""
+          echo "=== 7. neon_local endpoint list ==="
+          source /home/z1/liqiang/neon-env.sh 2>&1
+          cd /home/z1/liqiang/zlxtqbdgdgd/openneon 2>&1 && ./target/debug/neon_local endpoint list 2>&1 | head -10 || echo "endpoint list failed"
+          echo ""
+          echo "=== 8. compute postgresql.conf shared_preload_libraries ==="
+          find /home/z1/liqiang -path "*.neon/endpoints*postgresql.conf" 2>/dev/null | head -3 | while read f; do
+            echo "--- $f ---"
+            grep -E "shared_preload|pg_stat" "$f" 2>&1 | head -5
+          done
