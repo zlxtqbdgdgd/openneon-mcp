@@ -33,8 +33,10 @@ function grep(pattern: string, paths: string[], excludes: string[] = []): string
 
 afterEach(() => {
   vi.restoreAllMocks();
-  delete process.env.NODE_ENV;
-  delete process.env.OBFUSCATOR_MODE;
+  // 现代 @types/node 把 NODE_ENV 标 readonly · 用 bracket 索引 (process.env 索引签名是
+  // string | undefined · 可赋可 delete) 绕过 typedef · 不改运行期语义。
+  delete (process.env as Record<string, string | undefined>)['NODE_ENV'];
+  delete (process.env as Record<string, string | undefined>)['OBFUSCATOR_MODE'];
 });
 
 describe('feat-024/#2 · CI grep guard 1 · raw_param 不泄露到 production code', () => {
@@ -45,6 +47,7 @@ describe('feat-024/#2 · CI grep guard 1 · raw_param 不泄露到 production co
       [
         'server-enrich/samples-store/raw-sample.ts', // internal · 唯一允许定义 raw_params 的地方
         'server-enrich/samples-store/auto-explain-collector.ts', // 只读 raw-sample 的 collector (注释/字段引用)
+        'server-enrich/samples-store/obfuscator.ts', // 唯一 raw → obfuscated 转换通路 (§3 三层防御) · 读 raw.raw_params.length 推 params_obfuscated 长度
       ],
     );
     expect(hits).toEqual([]);
@@ -53,17 +56,29 @@ describe('feat-024/#2 · CI grep guard 1 · raw_param 不泄露到 production co
 
 describe('feat-024/#2 · CI grep guard 2 · 无 obfuscate opt-out 绕过', () => {
   it('全 mcp-src 0 hit: obfuscate=false / skipObfuscate / OBFUSCATOR_MODE 硬编码 moderate', () => {
-    const hits = grep(
-      'obfuscate[^a-zA-Z]*=[^=]*false|skipObfuscate|OBFUSCATOR_MODE[^!]*=[^=]*.moderate.',
-      ['server-enrich/samples-store', 'tools/handlers/search-samples.ts'],
-    );
-    expect(hits).toEqual([]);
+    // 3 个独立 pattern · 分别跑避免 ERE alternation 误配:
+    //  a) obfuscate 后跟 `=` (赋值) + false (skip)
+    //  b) skipObfuscate 标识符
+    //  c) OBFUSCATOR_MODE 单 `=` 赋值 'moderate' (排除 `===` 比较)
+    // c 用 `[^=]=[^=]` 锁定单 `=` (前后非 `=`) · 防误配 `OBFUSCATOR_MODE === 'moderate'` 这类比较表达式。
+    const patterns = [
+      'obfuscate[^a-zA-Z]*=[[:space:]]*false',
+      'skipObfuscate',
+      "OBFUSCATOR_MODE[[:space:]]*=[[:space:]]*['\"]moderate['\"]",
+    ];
+    const allHits: string[] = [];
+    for (const p of patterns) {
+      allHits.push(
+        ...grep(p, ['server-enrich/samples-store', 'tools/handlers/search-samples.ts']),
+      );
+    }
+    expect(allHits).toEqual([]);
   });
 });
 
 describe('feat-024/#2 · CI grep guard 3 · production OBFUSCATOR_MODE check', () => {
   it('NODE_ENV=production + OBFUSCATOR_MODE=moderate → log error + warn (不 throw)', () => {
-    process.env.NODE_ENV = 'production';
+    (process.env as Record<string, string | undefined>)['NODE_ENV'] = 'production';
     process.env.OBFUSCATOR_MODE = 'moderate';
     const error = vi.fn();
     const warn = vi.fn();
@@ -74,7 +89,7 @@ describe('feat-024/#2 · CI grep guard 3 · production OBFUSCATOR_MODE check', (
   });
 
   it('NODE_ENV=production + OBFUSCATOR_MODE=strict → 不报警', () => {
-    process.env.NODE_ENV = 'production';
+    (process.env as Record<string, string | undefined>)['NODE_ENV'] = 'production';
     process.env.OBFUSCATOR_MODE = 'strict';
     const error = vi.fn();
     const warn = vi.fn();

@@ -23,9 +23,18 @@
  * identifier/keyword/operator 这类**已知非 PII** 类,其余 (字面量) 一律替换。
  */
 
+import { createHash } from 'node:crypto';
 import type { RawSample } from './raw-sample';
 import type { QuerySample } from './types';
-import { computeSignature } from '../plan-store/signature';
+
+/**
+ * sha256(text) 前 16 hex · 跟 plan-store / T3 / T7 signature 同源 (详设 §4 QuerySample.signature)。
+ * plan-store seam 尚未上 (feat-023 L3+) · 这里就近内联一个稳定的 16-hex 实现避免跨 seam 提前耦合;
+ * 未来 plan-store seam 上线后,若两边对齐到同一 helper,直接换 import 不影响 store 内既有 signature。
+ */
+function computeSignature(text: string): string {
+  return createHash('sha256').update(text).digest('hex').slice(0, 16);
+}
 
 export type ObfuscatorMode = 'strict' | 'moderate';
 
