@@ -105,8 +105,10 @@ function readTopN(): number {
  * 为某 projectId 启 background collector (幂等 · 已启则复用)。
  * PLAN_BG_COLLECTOR_ENABLED=false → no-op (返 null · §8 回滚: 退化为仅 on-demand)。
  *
- * 注: collector 是 per-project 的 · mcp 主进程/请求路径在已知 projectId + 拿到 SqlRunner 时调它启动
- * (本子层不绑定具体启动时机 · 由上层 wire-up 决定 · 见 PR 说明的假设标注)。
+ * 注: collector 是 per-project 的 · projectId + SqlRunner 只有进到 tool 调用才齐全 · 故由上层
+ * wire-up 在带 project 上下文的只读路径惰性启动。**实际调用点**: tools.ts 的 get_neondb_explain_plans
+ * handler (见 ensurePlanCollectorForProject) —— 首次对某 project 调 explain 即启动 · 之后复用。
+ * 这样默认配置 (PLAN_BG_COLLECTOR_ENABLED 未设 → true) 下 collector 真会跑 · 与 README "5min 自动采集" 一致。
  */
 export function ensureBackgroundCollector(
   projectId: string,

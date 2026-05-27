@@ -87,11 +87,32 @@ export async function runCollectorOnce(
     if (queryText.trim() === '') continue;
     // 每条之间让出事件循环 · 不阻塞主线程 (§5)。
     await new Promise<void>((resolve) => setImmediate(resolve));
+
+    // pg_stat_statements 的 query 已被 PG 参数化成含 `$1`/`$2` 占位符的形态。对含 `$N` 的 query
+    // 直接 `EXPLAIN <q>` 会报 `ERROR: there is no parameter $1` —— 这是参数化 query 收不到 plan 的根因。
+    // 修 (别静默吞): 含 `$N` 时走 PG16+ 的 `EXPLAIN (GENERIC_PLAN)` (为占位符生成通用计划 · 不需绑值) ·
+    // GENERIC_PLAN 不能与 ANALYZE 同用 (本就不 ANALYZE · 无冲突)。
+    const hasParamPlaceholder = /\$\d+/.test(queryText);
+    const explainPrefix = hasParamPlaceholder
+      ? 'EXPLAIN (GENERIC_PLAN, FORMAT JSON)'
+      : 'EXPLAIN (FORMAT JSON, ANALYZE false)';
     try {
-      // EXPLAIN (FORMAT JSON, ANALYZE false) · 纯估算 · 不执行 query。
-      const explainRows = await opts.runSql(
-        `EXPLAIN (FORMAT JSON, ANALYZE false) ${queryText}`,
-      );
+      // 纯估算 · 不执行 query。
+      let explainRows: Array<Record<string, unknown>>;
+      try {
+        explainRows = await opts.runSql(`${explainPrefix} ${queryText}`);
+      } catch (explainErr) {
+        if (hasParamPlaceholder) {
+          // GENERIC_PLAN 失败大概率是 PG < 16 (不支持该选项)。不静默吞 · 显式 warn 说明该参数化
+          // query 在当前 PG 版本下收不到 background plan (升级到 PG16+ 或靠 on-demand T3 覆盖)。
+          warn(
+            `[plan-store bg-collector] parameterized query ($N) skipped · EXPLAIN (GENERIC_PLAN) failed (likely PG<16 · upgrade to PG16+ for background plans on parameterized queries · on-demand T3 still covers it)`,
+            explainErr,
+          );
+          continue;
+        }
+        throw explainErr;
+      }
       // EXPLAIN 输出在第一行第一列 (列名因 driver 而异 · 取第一个值)。
       const planRaw = explainRows[0]
         ? Object.values(explainRows[0])[0]

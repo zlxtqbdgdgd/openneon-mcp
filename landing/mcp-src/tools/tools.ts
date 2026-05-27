@@ -52,6 +52,11 @@ import { handleSearchSamples } from './handlers/search-samples';
 import { handleGetRecommendations } from './handlers/get-recommendations';
 // feat-023/#2 T10 search_plans · 查 plan-store (on-demand T3 hook + background collector 填充)
 import { handleSearchPlans } from './handlers/search-plans';
+// feat-023/#1 background collector lifecycle · per-project 惰性启动 (PLAN_BG_COLLECTOR_ENABLED gate)
+import {
+  ensureBackgroundCollector,
+  type SqlRunner,
+} from '../server-enrich/plan-store';
 // feat-006 #2 day-one ship · token economy地基 · CSV default output
 import { formatToolResponse } from '../server/response-formatter';
 
@@ -85,6 +90,47 @@ async function handleDeleteProject(
     throw new Error(`Failed to delete project: ${response.statusText}`);
   }
   return response.data;
+}
+
+/**
+ * feat-023/#1: 为某 project 惰性启动 background plan collector (幂等 · PLAN_BG_COLLECTOR_ENABLED gate)。
+ *
+ * collector 需要一个绑定 project/connection 的 SqlRunner + projectId,这两者只有进到 tool 调用
+ * (拿到 neonClient + projectId) 才齐全 —— 所以在 explain_plans 这类带 project 上下文的只读路径上
+ * 首次调用时启动一次 (ensureBackgroundCollector 内部按 projectId 去重 · 已启则复用同一句柄)。
+ * 这样默认配置 (PLAN_BG_COLLECTOR_ENABLED 未设 → 默认 true) 下 collector 真的会跑,
+ * 与 README "5min 自动采集" 描述一致。SqlRunner 每轮采集时按需开/释放连接 (collector 5min 一轮 · 开销可忽略)。
+ * 启动失败/配置关闭都 fail-safe: 仅 on-demand 写入 · 不影响 explain 主流程。
+ */
+function ensurePlanCollectorForProject(
+  projectId: string,
+  databaseName: string | undefined,
+  branchId: string | undefined,
+  neonClient: Api<unknown>,
+  extra: ToolHandlerExtraParams,
+): void {
+  try {
+    const runSql: SqlRunner = async (sql, params) => {
+      const connectionString = await handleGetConnectionString(
+        { projectId, branchId, databaseName },
+        neonClient,
+        extra,
+      );
+      const client = await createSqlClient(connectionString.uri);
+      try {
+        return await client.query(sql, params);
+      } finally {
+        await client.release();
+      }
+    };
+    ensureBackgroundCollector(projectId, runSql);
+  } catch (err) {
+    // fail-safe: collector 启动出问题不影响调用方主流程 (退化为仅 on-demand 写入)。
+    console.warn(
+      '[plan-store] background collector 惰性启动失败 (non-blocking · on-demand 仍工作):',
+      err,
+    );
+  }
 }
 
 async function handleRunSql(
@@ -1571,6 +1617,14 @@ You MUST follow these steps:
   // classifyOp(内层 sql) → DML/DDL 强制 analyze=false (纯 EXPLAIN 估算 · 不执行)。上游调用经注入,
   // 避免 handlers/explain-plans.ts ↔ tools.ts 循环依赖。
   get_neondb_explain_plans: async ({ params }, neonClient, extra) => {
+    // feat-023/#1: 借这条带 project 上下文的只读路径惰性启动 background collector (幂等 · gate 内判)。
+    ensurePlanCollectorForProject(
+      params.projectId,
+      params.databaseName,
+      params.branchId,
+      neonClient,
+      extra,
+    );
     const result = await handleExplainPlans(
       {
         sql: params.sql,
