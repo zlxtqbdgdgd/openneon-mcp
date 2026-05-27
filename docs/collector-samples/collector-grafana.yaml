@@ -1,0 +1,48 @@
+# feat-031 · OTel collector 示例 (Grafana 栈)
+# audit 事件 (target=openneon::audit) → Loki (作为 log) · 普通 trace → Tempo
+#
+# 用法: otelcol-contrib --config collector-grafana.yaml
+# 需设 LOKI_ENDPOINT (如 http://loki:3100/otlp) / TEMPO_ENDPOINT (如 http://tempo:4317)。
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+  filter/audit:
+    error_mode: ignore
+    traces:
+      span:
+        - 'attributes["target"] != "openneon::audit"'
+  filter/trace:
+    error_mode: ignore
+    traces:
+      span:
+        - 'attributes["target"] == "openneon::audit"'
+
+exporters:
+  # audit span 转成 Loki log line (按 openneon.audit.event_type 做 label)
+  otlphttp/loki:
+    endpoint: ${env:LOKI_ENDPOINT}
+  otlp/tempo:
+    endpoint: ${env:TEMPO_ENDPOINT}
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    traces/audit:
+      receivers: [otlp]
+      processors: [filter/audit, batch]
+      exporters: [otlphttp/loki]
+    traces/normal:
+      receivers: [otlp]
+      processors: [filter/trace, batch]
+      exporters: [otlp/tempo]

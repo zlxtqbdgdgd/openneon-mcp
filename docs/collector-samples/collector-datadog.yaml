@@ -1,0 +1,54 @@
+# feat-031 · OTel collector 示例 (Datadog)
+# audit 事件 (target=openneon::audit) → Datadog Logs · 普通 trace → Datadog APM
+#
+# 用法: otelcol-contrib --config collector-datadog.yaml
+# 需设环境变量 DD_API_KEY / DD_SITE (如 datadoghq.com)。
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+  # audit 路由: 只保留 target=openneon::audit 的 span
+  filter/audit:
+    error_mode: ignore
+    traces:
+      span:
+        - 'attributes["target"] != "openneon::audit"'
+  # trace 路由: 排除 audit span
+  filter/trace:
+    error_mode: ignore
+    traces:
+      span:
+        - 'attributes["target"] == "openneon::audit"'
+
+exporters:
+  datadog/audit:
+    api:
+      key: ${env:DD_API_KEY}
+      site: ${env:DD_SITE}
+    traces:
+      # audit span 也以 trace 形式入 Datadog · 用 openneon.audit.* facet 检索
+      span_name_as_resource_name: true
+  datadog/trace:
+    api:
+      key: ${env:DD_API_KEY}
+      site: ${env:DD_SITE}
+
+service:
+  pipelines:
+    traces/audit:
+      receivers: [otlp]
+      processors: [filter/audit, batch]
+      exporters: [datadog/audit]
+    traces/normal:
+      receivers: [otlp]
+      processors: [filter/trace, batch]
+      exporters: [datadog/trace]

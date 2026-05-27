@@ -426,6 +426,45 @@ In all of these cases, weigh the convenience against running an agent with permi
 
 **Audit fields**: every server-side rejection logs `keyType` + `last4` + `outcome` (e.g. `outcome=reject_personal_key`) without ever recording the full API key. After feat-031 ships, these fields flow into OTel events for cross-component tracing.
 
+## Audit log OTel export (feat-031)
+
+The MCP Server exports every **destructive op, privilege-escalation attempt, and high-risk call** as an OpenTelemetry span to **your own** OTLP collector, using a single shared `openneon.audit.*` attribute schema across both the MCP Server and the Neon kernel components. A DBA can then run one query in Datadog / Grafana / Honeycomb to see "what the agent did over the weekend, what got blocked, and what was approved".
+
+All audit emission goes through a single API — `emitAuditEvent()` in `mcp-src/observability/audit-emit.ts` — so feat-026 (confirm token), feat-027 (plan mode), feat-029 (G1 cross-project deny), and feat-060 (claim override) never re-implement an exporter. A CI guard (`mcp-src/__tests__/feat-031-ci-guard.test.ts`) forbids ad-hoc `console.log("audit...")` emission.
+
+### Event types
+
+`openneon.audit.event_type` is one of 13 values: `g1_cross_project_deny`, `g4_destructive_deny`, `g9_rate_limit_deny`, `plan_mode_required`, `plan_mode_approved`, `plan_mode_rejected`, `confirm_token_issued`, `confirm_token_verified`, `confirm_token_rejected`, `claim_override`, `destructive_classified`, `ddl_executed`, `compute_audit_log_record`. Required attributes: `event_type`, `op_class`, `principal`, `outcome`.
+
+### PII redaction
+
+- **SQL text is never recorded in full** — only `db.statement.sha256`. `emitAuditEvent()` throws if a caller passes a raw-statement field (`db_statement` / `sql` / `sql_text`).
+- **Tokens / API keys / JWTs are never recorded in full** — only `token_id` / `last_4`.
+
+This makes audit logs safe to share: they contain attack traces (attempted privilege escalation, prompt-injected SQL) but no PII or credentials (OWASP LLM02).
+
+### Fail-safety
+
+OTLP collector unreachability **never blocks a tool call** (best-effort, fire-and-forget via `BatchSpanProcessor`). Set `OTEL_EXPORTER_LOCAL_FALLBACK_PATH` to also append events to a local JSONL file (100 MB rotate) so audit is not lost when the collector is down. A fail-closed path (`OTEL_REQUIRE_EXPORT`) for finance / compliance use cases is deferred to L3+.
+
+### Environment variables
+
+| Variable                            | Default                    | Description                                                                                  |
+| ----------------------------------- | -------------------------- | -------------------------------------------------------------------------------------------- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`       | `http://localhost:4318`    | Your collector's OTLP/HTTP endpoint (`/v1/traces` is appended automatically)                 |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`| (derived)                  | Traces-signal endpoint override                                                              |
+| `OTEL_SDK_DISABLED`                 | `false`                    | Set `true` to fully disable the OTel exporter (audit still goes to the winston log)          |
+| `OTEL_DEPLOYMENT_ENV`               | `NODE_ENV`                 | `deployment.environment` resource attribute                                                  |
+| `OTEL_EXPORTER_LOCAL_FALLBACK_PATH` | (disabled)                 | When set, append audit events to a local JSONL file as a fallback (100 MB rotate)            |
+
+### Collector deployment
+
+See [`docs/audit-otel-deployment.md`](docs/audit-otel-deployment.md) for the audit-vs-trace routing model and three ready-to-run collector configs (`docs/collector-samples/`):
+
+- [`collector-datadog.yaml`](docs/collector-samples/collector-datadog.yaml) — audit → Datadog Logs, trace → Datadog APM
+- [`collector-grafana.yaml`](docs/collector-samples/collector-grafana.yaml) — audit → Loki, trace → Tempo
+- [`collector-honeycomb.yaml`](docs/collector-samples/collector-honeycomb.yaml) — audit + trace → separate Honeycomb datasets
+
 ## Testing Pyramid
 
 All tests run from `landing/`.

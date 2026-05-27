@@ -30,6 +30,11 @@ import {
 } from '../../../mcp-src/policy/stages/plan-mode';
 import { issueConfirmToken } from '../../../mcp-src/policy/confirm-token-issuer';
 import { emitConfirmTokenAudit } from '../../../mcp-src/audit/event-types';
+import {
+  emitAuditEvent,
+  sha256Hex,
+  type AuditEventType,
+} from '../../../mcp-src/observability/audit-emit';
 import { resolvePolicy, applyOverrides } from '../../../mcp-src/policy/loader';
 import {
   getDocResource,
@@ -134,6 +139,23 @@ function createDeferred<T>(): Deferred<T> {
     reject = rej;
   });
   return { promise, resolve, reject };
+}
+
+// feat-031: pipeline deny verdict → `openneon.audit.event_type`。
+// Verdict 不直接携带 event_type (pipeline.ts 是策略权威 · 不耦合 audit taxonomy)，
+// orchestrator 按 §8.2 护栏 reason 关键字映射到 feat-031 §3.2 (a) 13 类之一。
+// 命中不了 G1/G4/G9 关键字的 deny (matrix deny 等) → 归 g4_destructive_deny (destructive 类的兜底)。
+function denyVerdictToEventType(reason: string): AuditEventType {
+  // 用单词边界匹配 guard 编号 · 避免裸 includes('G1') 误命中 G10/G14 等
+  // (现存 guard 编号 G1/G3/G4/G9/G10/G14 · reason 串形如 "(G1 hard-deny)" / "(G9 · ...)")。
+  if (/\bG1\b/.test(reason) || reason.includes('跨 project')) {
+    return 'g1_cross_project_deny';
+  }
+  if (/\bG9\b/.test(reason) || reason.includes('速率')) {
+    return 'g9_rate_limit_deny';
+  }
+  // G4 hard-deny + matrix deny + confirm-token fail-closed deny 等 → destructive 兜底
+  return 'g4_destructive_deny';
 }
 
 // Carries the authenticated caller's identity fingerprint from post-auth into
@@ -588,6 +610,19 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                       opClass,
                       reason: verdict.reason,
                     });
+                    // feat-031: deny 落 audit (G1/G4/G9 越权拦截 · §3.2 a · OWASP LLM02 攻击痕迹)
+                    emitAuditEvent({
+                      event_type: denyVerdictToEventType(verdict.reason),
+                      outcome: 'deny',
+                      op_class: opClass,
+                      principal: `agent:${account?.id ?? 'unknown'}`,
+                      severity: verdict.audit_severity === 'high' ? 'high' : 'medium',
+                      project_id: effectiveProjectId,
+                      db_statement_sha256: sqlForClassify
+                        ? sha256Hex(sqlForClassify)
+                        : undefined,
+                      extra: { 'openneon.audit.deny_reason': verdict.reason },
+                    });
                     return {
                       content: [
                         {
@@ -622,6 +657,18 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                       opClass,
                       clientCaps: server.server.getClientCapabilities() ?? null,
                     });
+                    // feat-031: 弹 plan 给人 (plan_mode_required · §3.2 a)
+                    emitAuditEvent({
+                      event_type: 'plan_mode_required',
+                      outcome: 'deny',
+                      op_class: opClass,
+                      principal: `agent:${account?.id ?? 'unknown'}`,
+                      severity: 'medium',
+                      project_id: effectiveProjectId,
+                      db_statement_sha256: sqlForClassify
+                        ? sha256Hex(sqlForClassify)
+                        : undefined,
+                    });
                     const elicit = async (
                       message: string,
                       requestedSchema: Record<string, unknown>,
@@ -647,6 +694,29 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                         reason: approval.reason,
                         failClosed: approval.failClosed,
                       });
+                      // feat-031: DBA 拒批 / fail-closed (plan_mode_rejected · §3.2 a)
+                      // principal 是 elicitation 的人工审批者 (human responder) · 不是 agent
+                      // 账号 (account.id 是 API key 持有者 / LLM agent · OWASP LLM06)。MCP
+                      // elicitation 协议不回传 responder 身份 (ElicitResultLike 只有
+                      // action/content) → 填 human:unknown 占位 (design §3.2 a
+                      // human:<elicitation-responder-id> · L2b 接通真实 responder id 时再填)。
+                      emitAuditEvent({
+                        event_type: 'plan_mode_rejected',
+                        outcome: 'deny',
+                        op_class: opClass,
+                        principal: approval.failClosed
+                          ? 'system:fail-closed'
+                          : 'human:unknown',
+                        severity: 'high',
+                        project_id: effectiveProjectId,
+                        db_statement_sha256: sqlForClassify
+                          ? sha256Hex(sqlForClassify)
+                          : undefined,
+                        extra: {
+                          'openneon.audit.reject_reason': approval.reason,
+                          'openneon.audit.fail_closed': approval.failClosed,
+                        },
+                      });
                       return {
                         content: [
                           {
@@ -662,14 +732,34 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                       opClass,
                       reason: approval.reason,
                     });
+                    // feat-031: DBA 批准 (plan_mode_approved · principal=human responder · §3.2 a)
+                    // 同 plan_mode_rejected: principal 是人工审批者 · 非 agent 账号 (account.id)。
+                    // MCP elicitation 不回传 responder 身份 → human:unknown 占位
+                    // (design §3.2 a human:<elicitation-responder-id> · L2b 接通后填真实 id)。
+                    emitAuditEvent({
+                      event_type: 'plan_mode_approved',
+                      outcome: 'approved',
+                      op_class: opClass,
+                      principal: 'human:unknown',
+                      severity: 'medium',
+                      project_id: effectiveProjectId,
+                      db_statement_sha256: sqlForClassify
+                        ? sha256Hex(sqlForClassify)
+                        : undefined,
+                      extra: { 'openneon.audit.approve_reason': approval.reason },
+                    });
                     // feat-026/#1: approve 后 server 颁发 ConfirmToken (audit artifact ·
                     // 短 TTL · single-use) · 注入 ctx 重跑 pipeline · planModeStage 看到
                     // token 后 skip elicitation · confirmTokenStage (step 7) verify + audit
                     // (token_id 是跨系统 join key · 详设 §3 调用链)。
+                    // confirm token 是这次人工批准的产物 · principal 跟 plan_mode_approved
+                    // 一致 = 人工审批者 (非 agent account.id) · MCP elicitation 不回传
+                    // responder 身份 → human:unknown 占位 (L2b 接通后填真实 id)。
+                    // verify 阶段 (confirm-token.ts) 会读回此 principal emit confirm_token_verified。
                     const tokenSnapshot = issueConfirmToken({
                       op_class: opClass,
                       args: sqlForClassify ?? '',
-                      principal: `human:${account?.id ?? 'unknown'}`,
+                      principal: 'human:unknown',
                       source: 'plan-mode-approval',
                     });
                     emitConfirmTokenAudit({
@@ -677,7 +767,7 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                       token_id: tokenSnapshot.id,
                       source: tokenSnapshot.source,
                       op_class: opClass,
-                      principal: `human:${account?.id ?? 'unknown'}`,
+                      principal: 'human:unknown',
                       ttl_seconds: 300,
                     });
                     const verdict2 = runPipeline({
@@ -689,6 +779,19 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                         ...properties,
                         opClass,
                         reason: verdict2.reason,
+                      });
+                      // feat-031: 批准后重跑 pipeline 仍 deny (token verify 失败等 · §3.2 a)
+                      emitAuditEvent({
+                        event_type: denyVerdictToEventType(verdict2.reason),
+                        outcome: 'deny',
+                        op_class: opClass,
+                        principal: `agent:${account?.id ?? 'unknown'}`,
+                        severity: 'high',
+                        project_id: effectiveProjectId,
+                        db_statement_sha256: sqlForClassify
+                          ? sha256Hex(sqlForClassify)
+                          : undefined,
+                        extra: { 'openneon.audit.deny_reason': verdict2.reason },
                       });
                       return {
                         content: [
@@ -1431,6 +1534,24 @@ const verifyToken = async (
         last4: error.last4,
         outcome: error.outcome,
         reason: error.message,
+      });
+      // feat-031: 鉴权期非项目级 key fail-closed deny (g1_cross_project_deny · §3.2 a)
+      // 补必填四件套的 op_class:此 deny 由 G1 跨 project 判定触发 → CROSS_PROJECT
+      // (OpClass enum · 非 SQL 内容判 · 跟 pipeline G1 stage 同语义)。
+      emitAuditEvent({
+        event_type: 'g1_cross_project_deny',
+        outcome: 'deny',
+        op_class: 'CROSS_PROJECT',
+        principal: `agent:${error.last4 ?? 'unknown'}`,
+        severity: 'high',
+        key_type:
+          error.keyType === 'personal' ||
+          error.keyType === 'org' ||
+          error.keyType === 'project-scoped'
+            ? error.keyType
+            : undefined,
+        last_4: error.last4,
+        extra: { 'openneon.audit.deny_reason': error.message },
       });
       return undefined; // fail-closed → withMcpAuth returns 401
     }

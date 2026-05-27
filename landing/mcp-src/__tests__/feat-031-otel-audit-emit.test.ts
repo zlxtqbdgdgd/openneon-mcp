@@ -99,7 +99,8 @@ describe('feat-031 · emitAuditEvent · happy paths', () => {
     expect(s.attributes['openneon.audit.severity']).toBe('high');
     expect(s.attributes['openneon.audit.key_type']).toBe('project-scoped');
     expect(s.attributes['openneon.audit.last_4']).toBe('a1b2');
-    expect(s.attributes['openneon.audit.project_id']).toBe('project-x');
+    // project_id 属 USR 身份字段 → openneon.usr.* namespace (跟 neon 内核侧统一)
+    expect(s.attributes['openneon.usr.project_id']).toBe('project-x');
   });
 
   it('3. claim_override · attempted=999/bound=42 · outcome=override', () => {
