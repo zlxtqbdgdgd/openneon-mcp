@@ -30,6 +30,11 @@ import {
 } from '../../../mcp-src/policy/stages/plan-mode';
 import { issueConfirmToken } from '../../../mcp-src/policy/confirm-token-issuer';
 import { emitConfirmTokenAudit } from '../../../mcp-src/audit/event-types';
+import {
+  emitAuditEvent,
+  sha256Hex,
+  type AuditEventType,
+} from '../../../mcp-src/observability/audit-emit';
 import { resolvePolicy, applyOverrides } from '../../../mcp-src/policy/loader';
 import {
   getDocResource,
@@ -134,6 +139,21 @@ function createDeferred<T>(): Deferred<T> {
     reject = rej;
   });
   return { promise, resolve, reject };
+}
+
+// feat-031: pipeline deny verdict → `openneon.audit.event_type`。
+// Verdict 不直接携带 event_type (pipeline.ts 是策略权威 · 不耦合 audit taxonomy)，
+// orchestrator 按 §8.2 护栏 reason 关键字映射到 feat-031 §3.2 (a) 13 类之一。
+// 命中不了 G1/G4/G9 关键字的 deny (matrix deny 等) → 归 g4_destructive_deny (destructive 类的兜底)。
+function denyVerdictToEventType(reason: string): AuditEventType {
+  if (reason.includes('G1') || reason.includes('跨 project')) {
+    return 'g1_cross_project_deny';
+  }
+  if (reason.includes('G9') || reason.includes('速率')) {
+    return 'g9_rate_limit_deny';
+  }
+  // G4 hard-deny + matrix deny + confirm-token fail-closed deny 等 → destructive 兜底
+  return 'g4_destructive_deny';
 }
 
 // Carries the authenticated caller's identity fingerprint from post-auth into
@@ -588,6 +608,19 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                       opClass,
                       reason: verdict.reason,
                     });
+                    // feat-031: deny 落 audit (G1/G4/G9 越权拦截 · §3.2 a · OWASP LLM02 攻击痕迹)
+                    emitAuditEvent({
+                      event_type: denyVerdictToEventType(verdict.reason),
+                      outcome: 'deny',
+                      op_class: opClass,
+                      principal: `agent:${account?.id ?? 'unknown'}`,
+                      severity: verdict.audit_severity === 'high' ? 'high' : 'medium',
+                      project_id: effectiveProjectId,
+                      db_statement_sha256: sqlForClassify
+                        ? sha256Hex(sqlForClassify)
+                        : undefined,
+                      extra: { 'openneon.audit.deny_reason': verdict.reason },
+                    });
                     return {
                       content: [
                         {
@@ -622,6 +655,18 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                       opClass,
                       clientCaps: server.server.getClientCapabilities() ?? null,
                     });
+                    // feat-031: 弹 plan 给人 (plan_mode_required · §3.2 a)
+                    emitAuditEvent({
+                      event_type: 'plan_mode_required',
+                      outcome: 'deny',
+                      op_class: opClass,
+                      principal: `agent:${account?.id ?? 'unknown'}`,
+                      severity: 'medium',
+                      project_id: effectiveProjectId,
+                      db_statement_sha256: sqlForClassify
+                        ? sha256Hex(sqlForClassify)
+                        : undefined,
+                    });
                     const elicit = async (
                       message: string,
                       requestedSchema: Record<string, unknown>,
@@ -647,6 +692,24 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                         reason: approval.reason,
                         failClosed: approval.failClosed,
                       });
+                      // feat-031: DBA 拒批 / fail-closed (plan_mode_rejected · §3.2 a)
+                      emitAuditEvent({
+                        event_type: 'plan_mode_rejected',
+                        outcome: 'rejected',
+                        op_class: opClass,
+                        principal: approval.failClosed
+                          ? 'system:fail-closed'
+                          : `human:${account?.id ?? 'unknown'}`,
+                        severity: 'high',
+                        project_id: effectiveProjectId,
+                        db_statement_sha256: sqlForClassify
+                          ? sha256Hex(sqlForClassify)
+                          : undefined,
+                        extra: {
+                          'openneon.audit.reject_reason': approval.reason,
+                          'openneon.audit.fail_closed': approval.failClosed,
+                        },
+                      });
                       return {
                         content: [
                           {
@@ -661,6 +724,19 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                       ...properties,
                       opClass,
                       reason: approval.reason,
+                    });
+                    // feat-031: DBA 批准 (plan_mode_approved · principal=human:<dba-id> · §3.2 a)
+                    emitAuditEvent({
+                      event_type: 'plan_mode_approved',
+                      outcome: 'approved',
+                      op_class: opClass,
+                      principal: `human:${account?.id ?? 'unknown'}`,
+                      severity: 'medium',
+                      project_id: effectiveProjectId,
+                      db_statement_sha256: sqlForClassify
+                        ? sha256Hex(sqlForClassify)
+                        : undefined,
+                      extra: { 'openneon.audit.approve_reason': approval.reason },
                     });
                     // feat-026/#1: approve 后 server 颁发 ConfirmToken (audit artifact ·
                     // 短 TTL · single-use) · 注入 ctx 重跑 pipeline · planModeStage 看到
@@ -689,6 +765,19 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                         ...properties,
                         opClass,
                         reason: verdict2.reason,
+                      });
+                      // feat-031: 批准后重跑 pipeline 仍 deny (token verify 失败等 · §3.2 a)
+                      emitAuditEvent({
+                        event_type: denyVerdictToEventType(verdict2.reason),
+                        outcome: 'deny',
+                        op_class: opClass,
+                        principal: `agent:${account?.id ?? 'unknown'}`,
+                        severity: 'high',
+                        project_id: effectiveProjectId,
+                        db_statement_sha256: sqlForClassify
+                          ? sha256Hex(sqlForClassify)
+                          : undefined,
+                        extra: { 'openneon.audit.deny_reason': verdict2.reason },
                       });
                       return {
                         content: [
@@ -1431,6 +1520,21 @@ const verifyToken = async (
         last4: error.last4,
         outcome: error.outcome,
         reason: error.message,
+      });
+      // feat-031: 鉴权期非项目级 key fail-closed deny (g1_cross_project_deny · §3.2 a)
+      emitAuditEvent({
+        event_type: 'g1_cross_project_deny',
+        outcome: 'deny',
+        principal: `agent:${error.last4 ?? 'unknown'}`,
+        severity: 'high',
+        key_type:
+          error.keyType === 'personal' ||
+          error.keyType === 'org' ||
+          error.keyType === 'project-scoped'
+            ? error.keyType
+            : undefined,
+        last_4: error.last4,
+        extra: { 'openneon.audit.deny_reason': error.message },
       });
       return undefined; // fail-closed → withMcpAuth returns 401
     }
