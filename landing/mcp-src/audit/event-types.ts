@@ -61,13 +61,21 @@ function severityFor(eventType: ConfirmTokenEventType): AuditSeverity {
  * feat-026 event 字段 → feat-031 AuditEvent 字段:
  * - event_type / token_id / op_class / principal → 同名直传
  * - outcome → OUTCOME_BY_EVENT 映射 · severity → severityFor
- * - ttl_seconds / reject_reason → 进 extra (feat-031 AuditEvent 无对应顶层字段 ·
+ * - source / ttl_seconds / reject_reason → 进 extra (feat-031 AuditEvent 无对应顶层字段 ·
  *   extra map 不触发 PII redact assertion · 详 audit-emit.ts assertNoRawStatement)
+ *
+ * **source 必须透传** (详设 §4 audit schema): 'plan-mode-approval' 区分 L1-L3 人工审批路径 ·
+ * 'odd-pre-approved' 区分 L4 ODD 预审批路径。DBA 按 source 分类复盘 · 保住 token_id 跨系统
+ * join key 价值 (否则无法分辨某个 token 是人审还是 ODD 预批)。用 `openneon.audit.source`
+ * key 落进 extra · 与 audit namespace 一致 (extra 原样进 OTel attribute · 详 audit-emit.ts)。
  *
  * 不传任何全文 SQL (args_digest 已是 sha256 · 不在本 event 里 · 满足 feat-031 §6 PII redact)。
  */
 export function emitConfirmTokenAudit(event: ConfirmTokenAuditEvent): void {
-  const extra: Record<string, unknown> = { ttl_seconds: event.ttl_seconds };
+  const extra: Record<string, unknown> = {
+    'openneon.audit.source': event.source,
+    ttl_seconds: event.ttl_seconds,
+  };
   if (event.reject_reason !== undefined) {
     extra.reject_reason = event.reject_reason;
   }
