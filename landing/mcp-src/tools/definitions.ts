@@ -46,6 +46,7 @@ import {
   getNeondbQuerySamplesInputSchema,
   getNeondbRecommendationsInputSchema,
   searchPlansInputSchema,
+  getNeondbPoolStatsInputSchema,
 } from './toolsSchema';
 
 type NeonToolDefinition = {
@@ -701,6 +702,41 @@ export const NEON_TOOLS = [
       destructiveHint: false,
       idempotentHint: true,
       openWorldHint: false,
+    } satisfies ToolAnnotations,
+  },
+  // feat-025 get_neondb_pool_stats · T12 connection-pool snapshot. Pulls a user-deployed pgcat /
+  // PgBouncer /metrics endpoint (Prometheus format) — Neon-only +1, no Datadog DBM counterpart.
+  // Complements T4 (T4 = pg_stat_activity view · T12 = proxy pool queue view). 详设:
+  // https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-025-L2b-mcp-tool-t12-pool-stats.html
+  {
+    name: 'get_neondb_pool_stats' as const,
+    scope: 'querying',
+    category: 'optional',
+    description: `Get a connection-pool snapshot from pgcat / PgBouncer — the T12 pool view. Complements T4 health_signals.
+
+    <use_case>
+      Use when diagnosing "connection refused / timeout" while T4 conn_saturation looks low: T4 reads PostgreSQL
+      pg_stat_activity (backend count), but clients can be stuck WAITING in the pooler queue. T12 surfaces
+      cl_waiting + max_wait_ms so you see pool saturation that PG-side metrics miss. High cl_waiting + high max_wait_ms
+      = the pool is full → recommend raising pool size / max_client_conn.
+    </use_case>
+
+    <important_notes>
+      External component: requires a user-deployed pgcat or PgBouncer (+pgbouncer_exporter) exposing a Prometheus
+      /metrics endpoint, configured via PGCAT_METRICS_URL (per-project / per-endpoint overrides supported). If the
+      endpoint is unreachable you get a friendly error (configure PGCAT_METRICS_URL) or, when a recent snapshot is
+      cached, a stale=true row — NEVER treat stale=true data as live. snapshot only (no history · use your Grafana/Datadog
+      for trends). An EMPTY result is valid (pooler running but no pools reported).
+    </important_notes>`,
+    inputSchema: getNeondbPoolStatsInputSchema,
+    readOnlySafe: true,
+    annotations: {
+      title: 'Get Neon DB Pool Stats (feat-025 · T12 pgcat/PgBouncer pool snapshot)',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      // 外部网络调用 (pgcat/PgBouncer /metrics endpoint) · 诚实标 openWorldHint=true
+      openWorldHint: true,
     } satisfies ToolAnnotations,
   },
   // feat-021 get_neondb_query_performance · T5 slow-query ranking. Cumulative top-N from

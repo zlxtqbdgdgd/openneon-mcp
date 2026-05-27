@@ -1094,6 +1094,20 @@ export const getNeondbHealthSignalsInputSchema = z.object({
   format: outputFormatField,
 });
 
+// feat-025 T12 get_neondb_pool_stats input schema · pgcat / PgBouncer 连接池 snapshot
+// detail design: features/feat-025-L2b-mcp-tool-t12-pool-stats.html
+export const getNeondbPoolStatsInputSchema = z.object({
+  projectId: z.string().describe('The ID of the Neon project to query.'),
+  endpoint_id: z
+    .string()
+    .optional()
+    .describe(
+      'Optional endpoint/compute ID. Selects the metrics URL via PGCAT_METRICS_URL_<project>_<endpoint> ' +
+        '> PGCAT_METRICS_URL_<project> > PGCAT_METRICS_URL. If omitted, the per-project / global URL is used.',
+    ),
+  format: outputFormatField,
+});
+
 // feat-021 T5 get_neondb_query_performance input schema · 慢 query 累积排名 + 派生画像
 // detail design: features/feat-021-L2-mcp-tool-t5-query-performance.html
 export const getNeondbQueryPerformanceInputSchema = z.object({
