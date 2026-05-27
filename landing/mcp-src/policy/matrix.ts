@@ -74,6 +74,24 @@ const MATRIX: Record<
     'require_plan',
     'require_plan',
   ],
+  // feat-028/#109 长锁 (VACUUM FULL / CLUSTER · ACCESS EXCLUSIVE LOCK · 阻塞 SELECT)
+  // L1 deny · L2a/L2b/L3/L4 require_plan (走 plan mode 显式审批 + 注入 lock_timeout 兜底)
+  // **联动**: design 仓 features/overview.html §8.1 + feat-056 §4 矩阵 需加 2 行 · 留 follow-up
+  // (习惯 9 跨文档联动同 commit · 此处分支单仓改 · landing party 同步 design 仓)
+  VACUUM_FULL_LOCK: [
+    'deny',
+    'require_plan',
+    'require_plan',
+    'require_plan',
+    'require_plan',
+  ],
+  CLUSTER_LOCK: [
+    'deny',
+    'require_plan',
+    'require_plan',
+    'require_plan',
+    'require_plan',
+  ],
   // hard-deny 行 (G4/G1 stage 已先 terminal 拦 · 此处冗余安全地板)
   DROP_DATABASE_OR_TRUNCATE: ['deny', 'deny', 'deny', 'deny', 'deny'],
   DROP_USER_OR_REVOKE: ['deny', 'deny', 'deny', 'deny', 'deny'],

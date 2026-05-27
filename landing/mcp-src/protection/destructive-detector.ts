@@ -36,6 +36,9 @@ export type OpClass =
   | 'DELETE_UPDATE_BULK'
   | 'DROP_TABLE_OR_INDEX'
   | 'DROP_REPLICATION_SLOT'
+  // —— 长锁 (feat-028/#109 · ACCESS EXCLUSIVE LOCK · 阻塞 SELECT · 需 plan mode + lock_timeout 兜底) ——
+  | 'VACUUM_FULL_LOCK' //         VACUUM FULL · 重写表文件 · 阻塞读写
+  | 'CLUSTER_LOCK' //             CLUSTER table · 按 index 重写表 · 阻塞读写
   // —— 以下命中 hard-deny (任何 autonomy_level 都 deny · ADR-0007) ——
   | 'DROP_DATABASE_OR_TRUNCATE'
   | 'DROP_USER_OR_REVOKE'
@@ -256,6 +259,10 @@ export function classifySqlRegex(sql: string): OpClass {
   if (/\bDROP\s+(TABLE|INDEX|MATERIALIZED\s+VIEW|VIEW|SCHEMA)\b/.test(s)) {
     return 'DROP_TABLE_OR_INDEX';
   }
+  // feat-028/#109 长锁 (regex backend 也 catch · 不退化 feat-028 关掉时安全位)
+  if (/\bVACUUM\s+FULL\b/.test(s)) return 'VACUUM_FULL_LOCK';
+  // CLUSTER 关键字 · 避免误判 pg_cluster / pg_stat_* 等
+  if (/\bCLUSTER\b/.test(s) && !/\bPG_/.test(s)) return 'CLUSTER_LOCK';
   if (/\bCREATE\s+INDEX\s+CONCURRENTLY\b/.test(s)) {
     return 'CREATE_INDEX_CONCURRENTLY';
   }

@@ -156,10 +156,22 @@ function classifyStmt(stmt: Record<string, unknown>): OpClass {
       return 'DROP_TABLE_OR_INDEX';
     }
 
-    // —— VACUUM / CLUSTER · #108 暂归 OTHER (fail-closed) · #109 细分 VACUUM_FULL_LOCK / CLUSTER_LOCK ——
-    case 'VacuumStmt':
+    // —— 长锁 (#109 · ACCESS EXCLUSIVE LOCK · 阻塞 SELECT) ——
+    case 'VacuumStmt': {
+      // VACUUM 默认非长锁 · 只有带 FULL 才 ACCESS EXCLUSIVE → 长锁 op-class
+      const options = (node.options ?? []) as Array<{
+        DefElem?: { defname?: string };
+      }>;
+      const hasFull = options.some(
+        (o) => o.DefElem?.defname?.toLowerCase() === 'full',
+      );
+      // 普通 VACUUM 不长锁 → OTHER (按 fail-closed 走 require_plan · 不放行)
+      // 注: 普通 VACUUM 不算"危险"但 day-one 也没明确归类 · 走 OTHER 保守 · 后续可细分 MAINTENANCE
+      return hasFull ? 'VACUUM_FULL_LOCK' : 'OTHER';
+    }
     case 'ClusterStmt':
-      return 'OTHER';
+      // CLUSTER (USING idx / refresh existing) 都取 ACCESS EXCLUSIVE LOCK
+      return 'CLUSTER_LOCK';
 
     // —— CREATE INDEX (concurrently 区分) ——
     case 'IndexStmt': {
@@ -277,6 +289,8 @@ function scanFuncCalls(obj: unknown): OpClass | null {
 const PRIORITY: OpClass[] = [
   'READ_ONLY',
   'OTHER',
+  'CLUSTER_LOCK',
+  'VACUUM_FULL_LOCK',
   'CREATE_OR_RESTORE_BRANCH',
   'DDL_ADD_COLUMN',
   'CREATE_INDEX_CONCURRENTLY',

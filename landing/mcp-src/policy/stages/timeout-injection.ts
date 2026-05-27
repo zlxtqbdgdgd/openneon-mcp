@@ -39,6 +39,10 @@ export const DEFAULT_TIMEOUTS: Partial<Record<OpClass, TimeoutSpec>> = {
   DELETE_UPDATE_BULK: { lock_timeout: '30s', statement_timeout: '5min' },
   DROP_TABLE_OR_INDEX: { lock_timeout: '30s', statement_timeout: '5min' },
   CREATE_INDEX_CONCURRENTLY: { lock_timeout: '30s' }, // ← statement_timeout 豁免 (长跑)
+  // feat-028/#109 长锁 · lock_timeout 30s 兜底 (拿不到锁就放弃 · 防卡死阻塞业务)
+  // statement_timeout 豁免: 表重写可跑几十分钟 · 跟 CREATE INDEX CONCURRENTLY 同理
+  VACUUM_FULL_LOCK: { lock_timeout: '30s' },
+  CLUSTER_LOCK: { lock_timeout: '30s' },
 };
 
 /**

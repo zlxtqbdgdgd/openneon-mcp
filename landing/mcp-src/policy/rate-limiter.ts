@@ -17,6 +17,9 @@ const RATE_LIMITED_OPS: ReadonlySet<OpClass> = new Set<OpClass>([
   'DROP_REPLICATION_SLOT',
   'DELETE_UPDATE_BULK',
   'ALTER_TABLE_BIG_LOCK',
+  // feat-028/#109 长锁 (ACCESS EXCLUSIVE LOCK · 阻 SELECT · 跟其他写一样计速率)
+  'VACUUM_FULL_LOCK',
+  'CLUSTER_LOCK',
   // 以下虽被 G4 hard-deny 先拦(走不到 G9)· 列出保持语义完整
   'DROP_DATABASE_OR_TRUNCATE',
   'DROP_USER_OR_REVOKE',

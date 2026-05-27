@@ -59,13 +59,13 @@ describe('feat-028 §7.1 · 4 类绕过攻击向量', () => {
   }
 });
 
-// ───────── §7.2 · 2 长锁 op-class (4 用例 · #109 单独 commit · 当前归 OTHER fail-closed) ─────────
-describe('feat-028 §7.2 · VACUUM / CLUSTER · #108 临时归 OTHER (#109 细分 VACUUM_FULL_LOCK / CLUSTER_LOCK)', () => {
+// ───────── §7.2 · 2 长锁 op-class (4 用例 · #109) ─────────
+describe('feat-028 §7.2 · 长锁 (VACUUM FULL / CLUSTER · #109)', () => {
   const cases: Array<[string, string, OpClass]> = [
-    ['11-pre. VACUUM FULL (#108: OTHER · #109 → VACUUM_FULL_LOCK)', 'VACUUM FULL sales', 'OTHER'],
-    ['12-pre. VACUUM 不带 FULL', 'VACUUM sales', 'OTHER'],
-    ['13-pre. CLUSTER USING (#108: OTHER · #109 → CLUSTER_LOCK)', 'CLUSTER sales USING idx_x', 'OTHER'],
-    ['14-pre. CLUSTER 无 USING', 'CLUSTER sales', 'OTHER'],
+    ['11. VACUUM FULL', 'VACUUM FULL sales', 'VACUUM_FULL_LOCK'],
+    ['12. VACUUM 不带 FULL (普通 vacuum 不长锁)', 'VACUUM sales', 'OTHER'],
+    ['13. CLUSTER USING', 'CLUSTER sales USING idx_x', 'CLUSTER_LOCK'],
+    ['14. CLUSTER 无 USING (refresh existing)', 'CLUSTER sales', 'CLUSTER_LOCK'],
   ];
   for (const [name, sql, expected] of cases) {
     it(`${name} → ${expected}`, () => {
@@ -139,6 +139,14 @@ describe('feat-028 · classifyOp tool 入口', () => {
       'DROP_TABLE_OR_INDEX',
     );
   });
+
+  it('VACUUM FULL 在 run_sql_transaction · classifyOp 仍返 VACUUM_FULL_LOCK (§11 OQ8 双层防御)', () => {
+    // PG 自带拒 VACUUM 在 transaction block 内 · classifyOp 不依赖那层 · 仍返长锁分类
+    // 走 matrix → require_plan 路径 (双层防御 · classify 在 PG 执行前先拦)
+    expect(classifyOp('run_sql_transaction', 'VACUUM FULL sales')).toBe(
+      'VACUUM_FULL_LOCK',
+    );
+  });
 });
 
 // ───────── feat-058 联动: isDestructiveSql 在 commented DROP 上仍标 destructive (#109 验证) ─────────
@@ -151,6 +159,9 @@ describe('feat-028/#109 · feat-058 dynamic annotation 联动 (isDestructiveSql)
   });
   it('isDestructiveSql("SELECT * FROM x") → false', () => {
     expect(isDestructiveSql('SELECT * FROM x')).toBe(false);
+  });
+  it('isDestructiveSql("CLUSTER x USING idx") → true (#109 长锁也算 destructive)', () => {
+    expect(isDestructiveSql('CLUSTER x USING idx')).toBe(true);
   });
   it('isDestructiveSql parse-failed SQL → true (OTHER fail-closed · 防漏标 destructive)', () => {
     expect(isDestructiveSql('DROP TABL')).toBe(true);
@@ -196,6 +207,15 @@ describe('feat-028 · LRU 缓存 cap 10000 + audit event', () => {
     });
   });
 
+  it('VACUUM_FULL_LOCK / CLUSTER_LOCK 出现在 audit event (#109)', () => {
+    const events: ClassifyOpAuditEvent[] = [];
+    setClassifyOpAuditEmitter((e) => events.push(e));
+    classifyOp('run_sql', 'VACUUM FULL sales');
+    classifyOp('run_sql', 'CLUSTER sales USING idx');
+    setClassifyOpAuditEmitter(() => {});
+    expect(events[0].op_class).toBe('VACUUM_FULL_LOCK');
+    expect(events[1].op_class).toBe('CLUSTER_LOCK');
+  });
 });
 
 // ───────── backend 默认 + classifySql 直接入口 (feat-019 / feat-058 复用) ─────────
@@ -207,6 +227,7 @@ describe('feat-028 · backend 默认 + classifySql 入口', () => {
   it('classifySql 不走 cache · 直接给 SQL 内容分类 (feat-019/feat-058 复用)', () => {
     expect(classifySql('SELECT * FROM x')).toBe('READ_ONLY');
     expect(classifySql('DROP /* xxx */ TABLE x')).toBe('DROP_TABLE_OR_INDEX');
+    expect(classifySql('VACUUM FULL sales')).toBe('VACUUM_FULL_LOCK');
   });
 });
 
@@ -218,6 +239,11 @@ describe('feat-028 · regex backend 回滚通路 (PARSER_BACKEND=regex)', () => 
   });
   afterEach(() => {
     delete process.env.PARSER_BACKEND;
+  });
+
+  it('regex backend 也 catch VACUUM FULL / CLUSTER (#109 不退化 · 关掉 feat-028 仍有长锁识别)', () => {
+    expect(classifyOp('run_sql', 'VACUUM FULL sales')).toBe('VACUUM_FULL_LOCK');
+    expect(classifyOp('run_sql', 'CLUSTER sales USING idx')).toBe('CLUSTER_LOCK');
   });
 
   it('regex backend 会被块注释绕过 (已知局限 · 故默认 pg-parser)', () => {
