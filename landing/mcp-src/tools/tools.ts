@@ -2163,10 +2163,4 @@ You MUST follow these steps:
       ],
     };
   },
-=======
-        ? `${table}\n${JSON.stringify({ plans: result.full }, null, 2)}`
-        : table;
-    return { content: [{ type: 'text', text }] };
-  },
->>>>>>> 36d927f (feat(feat-023): T10 search_plans · plan-store 子层 + 双 collector + tool handler)
 } satisfies ToolHandlers;

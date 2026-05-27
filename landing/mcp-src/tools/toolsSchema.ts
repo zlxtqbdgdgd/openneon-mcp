@@ -1302,9 +1302,6 @@ export const getNeondbRecommendationsInputSchema = z.object({
     .optional()
     .describe(
       'Optional subset of recommendation types to run. Default: all 5 types.',
-=======
-      "Progressive disclosure (feat-007). 'shallow' (default · token economy) returns a one-line plan_summary per hit; 'full' returns the full (summarized) plan_json for plan-evolution analysis.",
->>>>>>> 36d927f (feat(feat-023): T10 search_plans · plan-store 子层 + 双 collector + tool handler)
     ),
   format: outputFormatField,
 });
