@@ -40,7 +40,9 @@ export type AuditEventType =
   | 'claim_override'
   | 'destructive_classified'
   | 'ddl_executed'
-  | 'compute_audit_log_record';
+  | 'compute_audit_log_record'
+  // feat-024/#3 T11 search_samples · 脱敏样本检索 (filter + hits + sensitive_redact_count_total 进 extra)
+  | 'search_samples_invoked';
 
 export type AuditOutcome =
   | 'allow'

@@ -327,6 +327,36 @@ Notes:
 - **`explain_sql_statement`**: Provides detailed execution plans for SQL queries to help identify performance bottlenecks.
 - **`prepare_query_tuning`**: Analyzes query performance and suggests optimizations, like index creation. Creates a temporary branch for safely testing these optimizations.
 - **`complete_query_tuning`**: Finalizes query tuning by either applying optimizations to the main branch or discarding them. Cleans up the temporary tuning branch.
+- **`get_neondb_query_samples`** (T11 · feat-024): Searches recent query execution samples (duration + the query that ran) for a project. **Every sample is server-side obfuscated before it is stored** — you see `WHERE id=$1`, never `WHERE id=12345 AND email='alice@acme.com'`. Filter by `signature`, `time_range` (`last 1h`/`last 24h` or a custom `{ from_ms, to_ms }`), and `duration_min_ms`. Returns a CSV summary (`signature, captured_at, duration_ms, query_obfuscated, params_obfuscated`); `depth='full'` returns the full (still-obfuscated) sample. Requires the `auto_explain` extension (see below).
+
+### T11 query_samples · auto_explain 启用 + OWASP LLM02 server-side 脱敏保证 (feat-024)
+
+T11 让 agent 拿"执行慢的 query 长啥样",但**参数值永远脱敏**。脱敏是 server-side 强制边界,agent 没有任何手段绕过 —— 三层防御:
+
+1. **编译期 CI grep guard**:`raw_params` / `obfuscate=false` / `skipObfuscate` 在 production code 0 命中 (CI fail PR)。
+2. **编译期 TypeScript brand type**:`RawSample.__brand='raw'` vs `QuerySample.__brand='obfuscated'`;samples-store 写入端口签名仅 `writeSample(sample: QuerySample)`,raw 传不进来 (ts compile error)。
+3. **运行期唯一通路**:`obfuscate(raw): QuerySample` 是 `RawSample → QuerySample` 的唯一转换函数;store 内的 `QuerySample` 必定脱敏过 → store 内永远 0 raw param。
+
+`OBFUSCATOR_MODE=strict` (默认) 替换所有 numeric + string 字面量;production 不可关闭 (`NODE_ENV=production` + 非 strict 会在启动期 log error)。
+
+#### 启用 auto_explain (用户操作 · 需重启 compute)
+
+auto_explain 不是 Neon 默认开启的扩展,需要用户在 project 上配置后重启 compute:
+
+```sql
+-- 1. 加入 shared_preload_libraries (需重启 compute 生效)
+ALTER SYSTEM SET shared_preload_libraries = 'auto_explain';
+-- 2. 配置慢 query 阈值 + JSON 格式 (collector 解析 log_format='json')
+ALTER SYSTEM SET auto_explain.log_min_duration = '1s';
+ALTER SYSTEM SET auto_explain.log_format = 'json';
+-- 3. 重启 compute (Neon: 通过 endpoint stop+start / neon_local restart)
+```
+
+启用后,后台 collector (默认 5 min 周期) 取 auto_explain log → 解析 → **强制脱敏** → 写 samples-store。未启用时 collector 跳过,T11 返空。
+
+> ⚠ **collector 取 log 路径在 Neon 上的具体形态待 audit (issue #116)**。本期 collector 把"取 raw log"抽象成注入式 `LogSource`,并按标准 PostgreSQL `auto_explain` JSON log 形态实现 parser。实测确定 Neon 的取 log 路径 (tail log file / Datadog log shipper / Console log API) 后,只换 `LogSource` 实现,parser + 脱敏 + 写入链路不动。
+
+相关环境变量见 [Environment Variables](#environment-variables) 的 `SAMPLES_STORE_*` / `OBFUSCATOR_MODE` / `AUTO_EXPLAIN_COLLECTOR_*` 项。
 
 **Neon Auth:**
 
@@ -401,6 +431,11 @@ Optional:
 | `LOG_LEVEL`                     | Winston log level: `error`, `warn`, `info` (default), `debug`, `verbose`, `silly`                                                                                                                                                                                                                                                 |
 | `ALLOW_NON_PROJECT_KEY`         | feat-029 · Set to `true` to opt-in accepting Personal or Organization API keys. Default `false` (= reject non-project-scoped keys at auth time, return 401). See **Why default reject Personal/Org Key** below.                                                                                                                   |
 | `PROJECT_SCOPE_ENFORCE_ENABLED` | feat-029 · Emergency escape hatch. Set to `false` to skip the project-scope reject gate entirely; key type is still recorded for audit but not enforced. Default `true`. Use only for incident recovery — leaves cross-project blast radius wide open for non-project keys.                                                       |
+| `SAMPLES_STORE_BACKEND`         | feat-024 · T11 query sample store backend: `memory` (default) or `redis` (L3+ multi-worker stub · not yet implemented).                                                                                                                                                                                                          |
+| `SAMPLES_STORE_TTL_MS`          | feat-024 · Sample record TTL in ms before eviction. Default `86400000` (24h).                                                                                                                                                                                                                                                    |
+| `OBFUSCATOR_MODE`               | feat-024 · T11 obfuscation strength: `strict` (default · replaces all numeric + string literals) or `moderate` (keeps numeric + short enum-like strings · for schemas with no sensitive data). **MUST be `strict` in production** — `NODE_ENV=production` with a non-strict value logs an error at startup (OWASP LLM02).         |
+| `AUTO_EXPLAIN_COLLECTOR_ENABLED`| feat-024 · Set to `false` to disable the background auto_explain sample collector (T11 then returns empty). Default `true`.                                                                                                                                                                                                       |
+| `AUTO_EXPLAIN_COLLECTOR_INTERVAL_MS` | feat-024 · auto_explain collector interval in ms. Default `300000` (5 min).                                                                                                                                                                                                                                                 |
 
 ### Why default reject Personal/Org Key (feat-029)
 

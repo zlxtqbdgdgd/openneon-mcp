@@ -26,6 +26,7 @@ const CUSTOMER_SERVICE: readonly string[] = [
 const DATA_ANALYST: readonly string[] = [
   ...CUSTOMER_SERVICE,
   'get_neondb_explain_plans', // T3 · op-class-aware explain (feat-019)
+  'get_neondb_query_samples', // T11 · 脱敏样本检索 (feat-024 · 客服 role 不含 · 减敏感数据接触面)
   'explain_sql_statement', // 上游 explain
   'list_slow_queries',
   'describe_table_schema',

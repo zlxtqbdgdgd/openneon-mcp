@@ -46,6 +46,8 @@ import {
   flattenSignalRow,
 } from './handlers/health-signals';
 import { handleGetQueryPerformance } from './handlers/query-performance';
+// feat-024/#3 T11 query samples · 查 samples-store (auto_explain collector 强制脱敏后填充)
+import { handleSearchSamples } from './handlers/search-samples';
 // feat-006 #2 day-one ship · token economy地基 · CSV default output
 import { formatToolResponse } from '../server/response-formatter';
 
@@ -1967,5 +1969,33 @@ You MUST follow these steps:
         },
       ],
     };
+  },
+
+  // feat-024/#3 T11 get_neondb_query_samples · 脱敏 query 执行样本检索。store 内 100% 脱敏 ·
+  // 3 filter + sort captured_at DESC + limit cap 200 + feat-031 audit emit (handler 内做)。
+  // CSV (feat-006 默认) 渲染 result.rows · depth=full 追加完整 (仍脱敏) QuerySample JSON 信封。
+  get_neondb_query_samples: async ({ params }) => {
+    const result = await handleSearchSamples({
+      projectId: params.projectId,
+      signature: params.signature,
+      time_range: params.time_range,
+      duration_min_ms: params.duration_min_ms,
+      limit: params.limit,
+      depth: params.depth,
+    });
+    if (params.format === 'json') {
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      };
+    }
+    const table = formatToolResponse(
+      result.rows as unknown as Record<string, unknown>[],
+      { format: params.format },
+    );
+    const text =
+      result.depth === 'full' && result.full
+        ? `${table}\n${JSON.stringify({ samples: result.full }, null, 2)}`
+        : table;
+    return { content: [{ type: 'text', text }] };
   },
 } satisfies ToolHandlers;
