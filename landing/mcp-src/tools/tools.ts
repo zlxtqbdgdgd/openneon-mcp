@@ -57,6 +57,8 @@ import {
   ensureBackgroundCollector,
   type SqlRunner,
 } from '../server-enrich/plan-store';
+// feat-025 T12 get_neondb_pool_stats · pgcat / PgBouncer 连接池 snapshot (External-component)
+import { handleGetPoolStats } from './handlers/pool-stats';
 // feat-006 #2 day-one ship · token economy地基 · CSV default output
 import { formatToolResponse } from '../server/response-formatter';
 
@@ -1981,6 +1983,31 @@ You MUST follow these steps:
           text: formatToolResponse(result.map(flattenSignalRow), {
             format: params.format,
           }),
+        },
+      ],
+    };
+  },
+
+  // feat-025 T12 get_neondb_pool_stats · 拉用户自部署 pgcat / PgBouncer 的 /metrics endpoint
+  // (Prometheus 格式) · parse → PoolStats[] · 10s TTL cache + stale fallback。Neon 独有 +1 ·
+  // 跟 T4 health_signals conn_saturation 互补 (T4 看 pg_stat_activity · T12 看 proxy 池队列)。
+  get_neondb_pool_stats: async ({ params }) => {
+    const result = await handleGetPoolStats({
+      projectId: params.projectId,
+      endpoint_id: params.endpoint_id,
+    });
+    // JSON: 整对象直出 (含 fetchStatus/cacheHit/stale 元信息)。CSV/TSV (feat-006 默认 token 经济):
+    // 只渲染 pools 表格 (详设 §4 CSV header · 每行一个 pool · 末列 stale 给 agent 看降级)。
+    if (params.format === 'json') {
+      return {
+        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      };
+    }
+    return {
+      content: [
+        {
+          type: 'text',
+          text: formatToolResponse(result.pools, { format: params.format }),
         },
       ],
     };

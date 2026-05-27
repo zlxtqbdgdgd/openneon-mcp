@@ -515,6 +515,36 @@ Optional:
 | `PLAN_BG_COLLECTOR_ENABLED`     | feat-023 · Set to `false` to disable the background `pg_stat_statements` plan collector (store then populated only by on-demand T3). Default `true`.                                                                                                                                                                              |
 | `PLAN_BG_COLLECTOR_INTERVAL_MS` | feat-023 · Background collector interval in ms. Default `300000` (5 min).                                                                                                                                                                                                                                                        |
 | `PLAN_BG_COLLECTOR_TOP_N`       | feat-023 · `pg_stat_statements` top-N slow queries collected per round. Default `50`.                                                                                                                                                                                                                                            |
+| `PGCAT_METRICS_URL`             | feat-025 · Global default pgcat / PgBouncer Prometheus `/metrics` URL for the `get_neondb_pool_stats` (T12) tool. Override per-project with `PGCAT_METRICS_URL_<project>` or per-endpoint with `PGCAT_METRICS_URL_<project>_<endpoint>` (non-alphanumeric chars in the IDs normalized to `_`). Unset = T12 returns a friendly "configure PGCAT_METRICS_URL" error. See **PgBouncer / pgcat pool stats (feat-025 · T12)** below.        |
+| `POOL_STATS_TIMEOUT_MS`         | feat-025 · HTTP fetch timeout for the pgcat/PgBouncer `/metrics` endpoint. Default `5000` (5s).                                                                                                                                                                                                                                  |
+| `POOL_STATS_CACHE_TTL_MS`       | feat-025 · TTL for the per-URL pool-stats cache (suppresses agents hammering pgcat). Default `10000` (10s). Set `0` to disable caching (always fetch · emergency).                                                                                                                                                              |
+
+### PgBouncer / pgcat pool stats (feat-025 · T12)
+
+The `get_neondb_pool_stats` (T12) tool gives the agent a **connection-pool view** that PostgreSQL-side metrics miss: a client can be stuck WAITING in the pooler queue while `pg_stat_activity` shows few active backends. T12 surfaces `cl_waiting` + `max_wait_ms` so the agent sees pool saturation — complementing T4 `get_neondb_health_signals` (`conn_saturation`).
+
+**Runtime form — External component.** T12 does **not** ship a pooler. It reads a Prometheus `/metrics` endpoint exposed by a connection pooler **you deploy** (it does not depend on Neon Cloud's proprietary proxy/pgcat layer). Two supported namespaces:
+
+- **pgcat** ([postgresml/pgcat](https://github.com/postgresml/pgcat)) — exposes `pgcat_pool_*` metrics natively. Enable its Prometheus exporter and point `PGCAT_METRICS_URL` at it.
+- **PgBouncer** ([SHOW POOLS](https://www.pgbouncer.org/usage.html#show-pools)) — does not expose Prometheus by default; run a `pgbouncer_exporter` sidecar that surfaces `pgbouncer_pools_*` metrics (T12 maps both namespaces to the same output schema; PgBouncer `maxwait_us` µs is converted to ms).
+
+**Configure:**
+
+```bash
+# global default
+export PGCAT_METRICS_URL=http://localhost:9930/metrics
+# per-project override (project_id with '-' normalized to '_')
+export PGCAT_METRICS_URL_rapid_art_12345=http://internal-pgcat:9930/metrics
+# per-endpoint override (most specific wins)
+export PGCAT_METRICS_URL_rapid_art_12345_ep_abc=http://ep-abc-pgcat:9930/metrics
+# optional tuning
+export POOL_STATS_TIMEOUT_MS=5000
+export POOL_STATS_CACHE_TTL_MS=10000
+```
+
+**Enable pgcat for `neon_local`:** run pgcat in front of your local Neon proxy, configure a pool for the `neondb` database, turn on its Prometheus exporter (`[general] prometheus_metrics_port`), and set `PGCAT_METRICS_URL=http://localhost:<port>/metrics`.
+
+**Output (CSV default · feat-006):** one row per pool — `endpoint_id, pool_name, pool_mode, role, cl_active, cl_waiting, sv_active, sv_idle, sv_used, max_wait_ms, total_xact_count, captured_at, stale`. When the endpoint is briefly unreachable but a recent snapshot is cached, T12 returns the cached row with `stale=true` (and logs a warning) — **never treat `stale=true` data as live**. With no cache and an unreachable endpoint, T12 returns a friendly error asking you to configure `PGCAT_METRICS_URL`. T12 is read-only (only `GET /metrics`) and snapshot-only (no history — use your Grafana / Datadog for trends).
 
 ### Why default reject Personal/Org Key (feat-029)
 
