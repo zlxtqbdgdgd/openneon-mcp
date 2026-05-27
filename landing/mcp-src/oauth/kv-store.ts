@@ -163,6 +163,12 @@ export type ApiKeyRecord = {
   apiKey: string;
   authMethod: AuthDetailsResponse['auth_method'];
   account: AuthContext['extra']['account'];
+  /**
+   * feat-029/#2: 解析得到的 key scope（key_type + project_ids + last4） · 跟 account 同期解析、
+   * 同期缓存（5min TTL）· caller route.ts 从这里读 grant 注入 EnforcementCtx 给 feat-056 G1 stage。
+   * 历史 cache 记录可能缺 keyScope（undefined）· caller 必须兜底 re-resolve 一次。
+   */
+  keyScope?: import('../auth/key-resolver').KeyScope;
 };
 
 export const getApiKeys = createLazyKeyv<ApiKeyRecord>('api_keys', 'API keys');
