@@ -115,7 +115,7 @@ jobs:
       - name: Provision sales fixture (real Neon)
         # source neon-env.sh adds dev-server psql to PATH (per maintainer 2026-05-27)
         run: |
-          source ~/neon-env.sh
+          source /home/z1/liqiang/neon-env.sh
           bash scripts/l1-sales-fixture/setup.sh
 
       - name: E2e chain checks (real Neon · feat-061 steps 0/B/C/D + listing)
@@ -129,7 +129,7 @@ jobs:
       - name: Teardown fixture + stop server (always)
         if: always()
         run: |
-          source ~/neon-env.sh
+          source /home/z1/liqiang/neon-env.sh
           bash scripts/l1-sales-fixture/teardown.sh || true
           PID=$(cat .run-logs/ci-start.pid 2>/dev/null || echo '')
           [ -n "$PID" ] && kill "$PID" 2>/dev/null || true
