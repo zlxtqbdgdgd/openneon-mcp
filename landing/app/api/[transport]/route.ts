@@ -1,5 +1,8 @@
 // Initialize Sentry (must be first import)
 import '../../../mcp-src/sentry/instrument';
+// Initialize OTel (feat-031 · audit event OTLP HTTP exporter · honors OTEL_SDK_DISABLED)
+import { initOtel } from '../../../mcp-src/observability/otel-init';
+initOtel();
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
