@@ -1675,7 +1675,7 @@ export const NEON_TOOLS = [
   {
     name: 'get_neondb_trace' as const,
     scope: 'querying',
-    category: 'core',
+    category: 'optional',
     description: `Fetch one full Neon trace (all spans · OTel-compatible) by W3C trace_id.
 
     <use_case>
@@ -1708,7 +1708,7 @@ export const NEON_TOOLS = [
   {
     name: 'search_neondb_traces' as const,
     scope: 'querying',
-    category: 'core',
+    category: 'optional',
     description: `Search Neon trace summaries · filter by min_latency_ms / component / endpoint_id / time_range.
 
     <use_case>

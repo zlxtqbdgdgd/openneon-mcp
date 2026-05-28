@@ -62,7 +62,7 @@ describe('/api/list-tools endpoint', () => {
   it('returns 40 tools when include=all (full listing opt-in · backward-compat for clients wanting upstream tools)', async () => {
     const body = await callListTools({ include: 'all' });
     expect(body.categoryInclude).toBe('all');
-    expect(body.tools).toHaveLength(43); // 31 upstream + 4 day-one (T1/T2/T6/T8) + feat-057 get_policy + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 pool_stats
+    expect(body.tools).toHaveLength(45); // 31 upstream + 4 day-one (T1/T2/T6/T8) + feat-057 get_policy + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 pool_stats + feat-066/#2 trace 读 (get/search trace)
   });
 
   it('filters by scopes when category param is present (with include=all to isolate grant filter)', async () => {
@@ -95,7 +95,7 @@ describe('/api/list-tools endpoint', () => {
   it('filters to readOnlySafe tools with readonly=true (with include=all)', async () => {
     const body = await callListTools({ readonly: 'true', include: 'all' });
     expect(body.readOnly).toBe(true);
-    expect(body.tools).toHaveLength(31); // 19 upstream + 4 day-one (T1/T2/T6/T8) + feat-057 get_policy + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 · all readOnlySafe
+    expect(body.tools).toHaveLength(33); // 19 upstream + 4 day-one (T1/T2/T6/T8) + feat-057 get_policy + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-066/#2 trace 读 (get/search trace · readOnlySafe) · all readOnlySafe
     for (const tool of body.tools) {
       expect(tool.readOnlySafe).toBe(true);
     }
@@ -110,7 +110,7 @@ describe('/api/list-tools endpoint', () => {
     const res = await GET(req);
     const body = (await res.json()) as ListToolsResponse;
     expect(body.readOnly).toBe(true);
-    expect(body.tools).toHaveLength(31); // 19 upstream + 4 day-one (T1/T2/T6/T8) + feat-057 + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 · readOnlySafe
+    expect(body.tools).toHaveLength(33); // 19 upstream + 4 day-one (T1/T2/T6/T8) + feat-057 + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-066/#2 trace 读 (readOnlySafe) · readOnlySafe
   });
 
   it('readonly query param takes precedence over x-read-only header (with include=all)', async () => {
@@ -123,7 +123,7 @@ describe('/api/list-tools endpoint', () => {
     const res = await GET(req);
     const body = (await res.json()) as ListToolsResponse;
     expect(body.readOnly).toBe(false);
-    expect(body.tools).toHaveLength(43); // 31 upstream + 4 day-one (T1/T2/T6/T8) + feat-057 get_policy + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 pool_stats
+    expect(body.tools).toHaveLength(45); // 31 upstream + 4 day-one (T1/T2/T6/T8) + feat-057 get_policy + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 pool_stats + feat-066/#2 trace 读 (get/search trace)
   });
 
   it('include=core explicit returns the same as default (4 day-one core tools · full · sales 4-step 完整)', async () => {

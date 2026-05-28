@@ -16,8 +16,8 @@ import {
 } from '../config/categories';
 
 describe('NEON_TOOLS definitions', () => {
-  it('has 43 tools (31 upstream + 4 day-one T1/T2/T6/T8 + feat-057 policy + feat-019 T3 + feat-020 T4 + feat-021 T5 + feat-022 T7 + feat-023 T10 + feat-024 T11 + feat-025 T12)', () => {
-    expect(NEON_TOOLS).toHaveLength(43);
+  it('has 45 tools (31 upstream + 4 day-one T1/T2/T6/T8 + feat-057 policy + feat-019 T3 + feat-020 T4 + feat-021 T5 + feat-022 T7 + feat-023 T10 + feat-024 T11 + feat-025 T12 + feat-066/#2 trace 读 get/search)', () => {
+    expect(NEON_TOOLS).toHaveLength(45);
   });
 
   it('every tool has a name, scope (or null), and readOnlySafe flag', () => {
