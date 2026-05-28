@@ -64,6 +64,9 @@ export type AuditEventType =
   | 'replication_slot_inactive_warn'
   | 'replication_slot_inactive_critical'
   | 'replication_slot_monitor_cron_summary'
+  // feat-043 follow-up (#177): PG < 16 endpoint cron skip 首次 emit warn · per endpoint per process lifecycle 一次
+  // 防 silent skip · 让用户察觉 slot monitor 在某 endpoint 不工作 (PG 14/15 不支持 pg_replication_slots.inactive_since 字段)
+  | 'replication_slot_monitor_pg_version_unsupported'
   // feat-068 动态探针 (#143 · audit 事件流) · attach 路径全生命周期 + 三层限流 + post-condition
   | 'probe_attached'
   | 'probe_detached'
