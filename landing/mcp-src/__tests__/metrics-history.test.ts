@@ -134,7 +134,7 @@ describe('adapter fetch · success + failure (failure ≠ sparse)', () => {
   beforeEach(() => {
     process.env.DD_API_KEY = 'test-api';
     process.env.DD_APP_KEY = 'test-app';
-    process.env.DD_SITE = 'us5';
+    process.env.DD_SITE = 'us5.datadoghq.com';
   });
 
   afterEach(() => {
