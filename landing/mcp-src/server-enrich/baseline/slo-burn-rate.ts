@@ -20,6 +20,8 @@ import {
   isMetricHistoryError,
 } from '../metrics-history';
 import { TtlCache, dimensionsKey, type Clock } from '../ttl-cache';
+import { filterAutosuspendWindows } from '../sample-filter';
+import type { AutosuspendWindow } from '../metrics-history/autosuspend-events';
 
 /** Fast-burn threshold · 14.4 (Google SRE · ~2% of a 30d budget in 1h). */
 export const FAST_BURN_THRESHOLD = 14.4;
@@ -114,6 +116,12 @@ export function errorBudgetRemaining(
 export type SloBurnDeps = {
   fetchHistory?: (req: MetricHistoryRequest) => Promise<MetricHistoryResult>;
   cache?: TtlCache<SloBlock>;
+  /**
+   * feat-040 (L3): autosuspend windows · 计算 SLI 时排除 autosuspend 段 sample。
+   * 调用方提前从 AutosuspendEventFetchAdapter 拉好传入 · 空 / 省略 → no-op 向后兼容。
+   * (SLI 通常算成功率 · autosuspend 段 metric 缺失会被当 ratio NaN 而影响算式 · 排除最干净。)
+   */
+  autosuspendWindows?: AutosuspendWindow[];
 };
 
 const defaultSloCache = new TtlCache<SloBlock>();
@@ -128,8 +136,22 @@ export function clearSloCache(): void {
   defaultSloCache.clear();
 }
 
-function sloCacheKey(spec: SloSpec, dimensions: Record<string, string>): string {
-  return `${spec.signal}|${dimensionsKey(dimensions)}|t:${spec.slo_target}|bw:${spec.budget_window}`;
+/**
+ * feat-040: autosuspend windows 进 cache key · 跟 baseline.coreCacheKey 同口径。
+ * 不同 windows 集合算出的 SLI 不同 · key 必须区分。
+ */
+function autosuspendKey(windows?: AutosuspendWindow[]): string {
+  if (!windows || windows.length === 0) return 'aw:none';
+  const sorted = [...windows].sort((a, b) => a.start - b.start);
+  return `aw:${sorted.map((w) => `${w.start}-${w.end}`).join(',')}`;
+}
+
+function sloCacheKey(
+  spec: SloSpec,
+  dimensions: Record<string, string>,
+  autosuspendWindows?: AutosuspendWindow[],
+): string {
+  return `${spec.signal}|${dimensionsKey(dimensions)}|t:${spec.slo_target}|bw:${spec.budget_window}|${autosuspendKey(autosuspendWindows)}`;
 }
 
 async function sliForWindow(
@@ -138,6 +160,7 @@ async function sliForWindow(
   window: MetricHistoryRequest['window'],
   bucket: string,
   fetchHistory: NonNullable<SloBurnDeps['fetchHistory']>,
+  autosuspendWindows?: AutosuspendWindow[],
 ): Promise<number | null> {
   const history = await fetchHistory({
     signal: spec.signal,
@@ -146,7 +169,12 @@ async function sliForWindow(
     bucket,
   });
   if (isMetricHistoryError(history)) return null; // failure ≠ "fine" · → 'unknown'/null upstream
-  return computeSli(history.points, spec);
+  // feat-040: autosuspend 段排除 (sample-filter 共享层 · 跟 baseline.computeCore 同 pattern)。
+  const points =
+    autosuspendWindows && autosuspendWindows.length > 0
+      ? filterAutosuspendWindows(history.points, autosuspendWindows)
+      : history.points;
+  return computeSli(points, spec);
 }
 
 /**
@@ -163,14 +191,35 @@ export async function sloBurnRate(
   const fetchHistory = deps.fetchHistory ?? getMetricHistory;
   const cache = deps.cache ?? defaultSloCache;
 
-  const key = sloCacheKey(spec, dimensions);
+  const key = sloCacheKey(spec, dimensions, deps.autosuspendWindows);
   const cached = cache.get(key);
   if (cached) return cached;
 
   const [sli1h, sli5m, sliBudget] = await Promise.all([
-    sliForWindow(spec, dimensions, WINDOW_1H, BUCKET_1H, fetchHistory),
-    sliForWindow(spec, dimensions, WINDOW_5M, BUCKET_5M, fetchHistory),
-    sliForWindow(spec, dimensions, { last: spec.budget_window }, BUCKET_BUDGET, fetchHistory),
+    sliForWindow(
+      spec,
+      dimensions,
+      WINDOW_1H,
+      BUCKET_1H,
+      fetchHistory,
+      deps.autosuspendWindows,
+    ),
+    sliForWindow(
+      spec,
+      dimensions,
+      WINDOW_5M,
+      BUCKET_5M,
+      fetchHistory,
+      deps.autosuspendWindows,
+    ),
+    sliForWindow(
+      spec,
+      dimensions,
+      { last: spec.budget_window },
+      BUCKET_BUDGET,
+      fetchHistory,
+      deps.autosuspendWindows,
+    ),
   ]);
 
   const burn1h = sli1h !== null ? burnRate(sli1h, spec.slo_target) : null;
@@ -184,7 +233,9 @@ export async function sloBurnRate(
       : burn1h > FAST_BURN_THRESHOLD && burn5m > FAST_BURN_THRESHOLD;
 
   const error_budget_remaining =
-    sliBudget !== null ? errorBudgetRemaining(sliBudget, spec.slo_target) : null;
+    sliBudget !== null
+      ? errorBudgetRemaining(sliBudget, spec.slo_target)
+      : null;
 
   const block: SloBlock = {
     sli_value: sli5m,

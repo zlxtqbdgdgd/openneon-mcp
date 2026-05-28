@@ -53,7 +53,14 @@ export type AuditEventType =
   | 'trace_search_invoked'
   | 'cross_tenant_blocked'
   // feat-025 T12 pool_stats · pgcat/PgBouncer 连接池 snapshot 调用审计
-  | 'pool_stats_invoked';
+  | 'pool_stats_invoked'
+  // feat-068 动态探针 (#143 · audit 事件流) · attach 路径全生命周期 + 三层限流 + post-condition
+  | 'probe_attached'
+  | 'probe_detached'
+  | 'probe_overhead_exceeded'
+  | 'probe_rate_limit_exceeded'
+  | 'probe_attach_denied'
+  | 'probe_attach_failed';
 
 export type AuditOutcome =
   | 'allow'

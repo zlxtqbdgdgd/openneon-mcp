@@ -11,10 +11,27 @@
  * feat-020/#1 ships ONE signal (`connections`) as the end-to-end tracer bullet. The full L2a
  * signal set (replication lag / cache_hit_ratio / LFC / storage_size …) lands in feat-020/#5,
  * which appends entries here without touching the handler.
+ *
+ * feat-038 (L3) 增加 STL 长漂移元数据 (`stlEnrichApplicable` + `stlEnrichFieldNames`) · 跟
+ * baseline_applicable 同 pattern · monotonic signal (storage_size_bytes) 不适用 STL.
  */
 
 /** Which direction of deviation is "bad" for SLI/burn-rate purposes (feat-018 consumes this). */
 export type SliDirection = 'high-bad' | 'low-bad' | 'none';
+
+/**
+ * feat-038 · STL enrich 5 字段稳定名 · 由 signal-registry 单一登记 · T4 输出 + agent 客户端消费
+ * 都用这个常量 · 不允许重新拼。
+ */
+export const STL_ENRICH_FIELD_NAMES = [
+  'is_drifting',
+  'trend_slope',
+  'trend_direction',
+  'drift_window_days',
+  'drift_confidence',
+] as const;
+
+export type StlEnrichFieldName = (typeof STL_ENRICH_FIELD_NAMES)[number];
 
 export type SignalDef = {
   /** Logical signal name · stable id threaded to feat-016 baseline + feat-064 adapter. */
@@ -43,6 +60,17 @@ export type SignalDef = {
    * replication_lag_seconds) keep this false and run feat-016 global baseline only.
    */
   seasonalApplicable: boolean;
+  /**
+   * feat-038 (L3) · true → 适用 STL 长漂移检测 (后台 cron 预计算 + T4 5 字段 enrich).
+   * 跟 baselineApplicable 语义同步：monotonic signal (storage_size_bytes) 不适用 (false) ·
+   * 否则 trend 永远 rising 误报。其他 baseline_applicable signal 默认 true.
+   */
+  stlEnrichApplicable: boolean;
+  /**
+   * feat-038 (L3) · STL enrich 字段名常量列表 (5 字段 · 顺序稳定 · agent 客户端可消费).
+   * 跟 STL_ENRICH_FIELD_NAMES 同来源 · 不允许在 handler 处重新拼名字.
+   */
+  stlEnrichFieldNames: readonly StlEnrichFieldName[];
   /** Direction that counts as bad · feat-018 burn-rate uses this. */
   sliDirection: SliDirection;
   /**
@@ -71,6 +99,9 @@ export const SIGNAL_REGISTRY: readonly SignalDef[] = [
     requiresNeonExt: false,
     baselineApplicable: true,
     seasonalApplicable: true,
+    // feat-038: connections 是 L3.1 "亮点 2" 核心场景 (容量漂移 100→500) · STL 必须开.
+    stlEnrichApplicable: true,
+    stlEnrichFieldNames: STL_ENRICH_FIELD_NAMES,
     sliDirection: 'high-bad',
     keySummary: true,
   },
@@ -84,6 +115,9 @@ export const SIGNAL_REGISTRY: readonly SignalDef[] = [
     requiresNeonExt: false,
     baselineApplicable: true,
     seasonalApplicable: true,
+    // feat-038: 长期 hit ratio 漂低 = 工作集换页变多 · capacity 信号 · STL 开.
+    stlEnrichApplicable: true,
+    stlEnrichFieldNames: STL_ENRICH_FIELD_NAMES,
     sliDirection: 'low-bad',
     keySummary: true,
   },
@@ -99,6 +133,9 @@ export const SIGNAL_REGISTRY: readonly SignalDef[] = [
     requiresNeonExt: false,
     baselineApplicable: true,
     seasonalApplicable: false,
+    // feat-038: replication lag 慢漂移 = 主备日益落后 · 长趋势预警有价值 · STL 开 (跟 seasonal 正交).
+    stlEnrichApplicable: true,
+    stlEnrichFieldNames: STL_ENRICH_FIELD_NAMES,
     sliDirection: 'high-bad',
     keySummary: false,
   },
@@ -112,6 +149,10 @@ export const SIGNAL_REGISTRY: readonly SignalDef[] = [
     requiresNeonExt: false,
     baselineApplicable: false,
     seasonalApplicable: false,
+    // feat-038: storage 本就单调增 · STL trend 永远 rising 误报 · 关掉 (跟 baselineApplicable 一致).
+    // 容量类用 threshold / growth-rate (未来 feature) · STL 不适用.
+    stlEnrichApplicable: false,
+    stlEnrichFieldNames: STL_ENRICH_FIELD_NAMES,
     sliDirection: 'none',
     keySummary: true,
   },
@@ -127,6 +168,9 @@ export const SIGNAL_REGISTRY: readonly SignalDef[] = [
     requiresNeonExt: true,
     baselineApplicable: true,
     seasonalApplicable: true,
+    // feat-038: LFC 长期 hit rate 下滑 = workset 超出 cache · 容量类信号 · STL 开.
+    stlEnrichApplicable: true,
+    stlEnrichFieldNames: STL_ENRICH_FIELD_NAMES,
     sliDirection: 'low-bad',
     keySummary: false,
   },
