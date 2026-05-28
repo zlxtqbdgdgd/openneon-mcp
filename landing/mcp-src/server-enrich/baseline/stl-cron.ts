@@ -34,6 +34,10 @@ import {
   type MetricHistoryRequest,
   type MetricHistoryResult,
 } from '../metrics-history';
+import {
+  filterAutosuspendWindows,
+  type AutosuspendWindow,
+} from '../sample-filter';
 
 /** Cron 默认 interval = 1h · 跟 ttl-cache TTL 对齐 · 漂移信号最多滞后 1h (详设 §3.3). */
 export const STL_CRON_INTERVAL_MS = 3_600_000;
@@ -69,6 +73,10 @@ export function stlCacheKey(endpointId: string, metricName: string): string {
  * @field bucket - history bucket · 默认 '1h' (跟 samplesPerDay=24 对齐).
  * @field warn - 日志注入 · 默认 console.warn.
  * @field cacheTtlMs - TTL 覆盖 (测试用) · 默认 STL_CACHE_TTL_MS.
+ * @field fetchAutosuspendWindows - feat-040 follow-up (#174) · 注入函数拿 per-endpoint autosuspend
+ *   windows · STL trend 计算前先过 filterAutosuspendWindows 排除 idle 段 (防月级慢漂移被 idle
+ *   window 污染 · 详 design#47 §3.4 / ADR-0014)。未注入 = 不做 filter (向后兼容 · 跟 feat-040
+ *   sub-interface 注入式同 pattern)。
  */
 export type StlPrecomputeOptions = {
   endpoints: readonly string[];
@@ -81,6 +89,11 @@ export type StlPrecomputeOptions = {
   bucket?: string;
   warn?: (msg: string, err?: unknown) => void;
   cacheTtlMs?: number;
+  // feat-040 follow-up (#174): autosuspend windows 注入 · 缺省 = 不 filter
+  fetchAutosuspendWindows?: (
+    endpointId: string,
+    windowDays: number,
+  ) => Promise<ReadonlyArray<AutosuspendWindow>>;
 };
 
 export type StlPrecomputeResult = {
@@ -147,8 +160,28 @@ export async function runStlPrecomputeOnce(
         return;
       }
 
+      // feat-040 follow-up (#174): autosuspend 段 filter · trend 计算前排除 idle window
+      // 防月级慢漂移被 idle 段污染 (详 design#47 §3.4 + ADR-0014).
+      let points: ReadonlyArray<[number, number | null]> = history.points;
+      if (opts.fetchAutosuspendWindows) {
+        try {
+          const windows = await opts.fetchAutosuspendWindows(
+            task.endpointId,
+            windowDays,
+          );
+          points = filterAutosuspendWindows(points, windows);
+        } catch (err) {
+          // autosuspend fetch 失败 · 不阻塞 STL 计算 · log warn + 用未 filter samples 兜底
+          // (跟 feat-040 baseline.ts 同 fail-safe pattern · idle window 风险换可用性).
+          warn(
+            `[stl-cron] autosuspend fetch 失败 endpoint=${task.endpointId} metric=${task.metricName} · 用未 filter samples 兜底 (trend 可能被 idle 段污染)`,
+            err,
+          );
+        }
+      }
+
       // 提取数值序列 (null = sparse bucket · STL 自身过滤 NaN/Infinity · 但 null 直接转 NaN 跳过).
-      const samples = history.points.map(([, v]) =>
+      const samples = points.map(([, v]) =>
         v === null || v === undefined ? Number.NaN : v,
       );
       const result = computeStl(samples, stlOpts);
