@@ -156,7 +156,7 @@ function denyVerdictToEventType(reason: string): AuditEventType {
     return 'g1_cross_project_deny';
   }
   if (/\bG9\b/.test(reason) || reason.includes('速率')) {
-    return 'g9_rate_limit_deny';
+    return 'g9_rate_limit_exceeded';
   }
   // G4 hard-deny + matrix deny + confirm-token fail-closed deny 等 → destructive 兜底
   return 'g4_destructive_deny';
@@ -591,7 +591,7 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                     // feat-060/#3 (#131): 用 side-table 取 fromClaim 声明 · 不读 zod inputSchema (zod 不支持任意元数据)
                     toolSchema: getToolClaimBindings(tool.name),
                     args: argsAfterInject,
-                    headers: authInfo.extra?.mcpAuthHeaders ?? {},
+                    headers: typedExtra.authInfo?.extra?.mcpAuthHeaders ?? {},
                     projectId:
                       grant.projectId ??
                       (argsAfterInject.projectId as string | undefined),

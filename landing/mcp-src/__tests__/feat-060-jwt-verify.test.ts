@@ -17,7 +17,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   generateKeyPair,
   SignJWT,
-  type KeyLike,
+  type CryptoKey,
   type JWTPayload,
   exportJWK,
 } from 'jose';
@@ -37,7 +37,7 @@ import { __setPolicyForTest, type PolicyConfig } from '../policy/loader';
 // jose mock: createRemoteJWKSet 拦截 · 直接返一个 key resolver 给本地 publicKey
 // ============================================================================
 
-let mockPublicKey: KeyLike | null = null;
+let mockPublicKey: CryptoKey | null = null;
 let mockJwksReachable = true;
 
 vi.mock('jose', async (importOriginal) => {
@@ -49,7 +49,7 @@ vi.mock('jose', async (importOriginal) => {
       return async (
         _header: import('jose').JWSHeaderParameters,
         _token: import('jose').FlattenedJWSInput,
-      ): Promise<KeyLike> => {
+      ): Promise<CryptoKey> => {
         if (!mockJwksReachable) {
           throw new Error('fetch failed: ECONNREFUSED (mock JWKS unreachable)');
         }
@@ -83,7 +83,7 @@ function basePolicy(): PolicyConfig {
 }
 
 async function signTestJwt(
-  privateKey: KeyLike,
+  privateKey: CryptoKey,
   claims: JWTPayload,
   opts: { issuer?: string; audience?: string; expiresIn?: string } = {},
 ): Promise<string> {
@@ -103,8 +103,8 @@ async function signTestJwt(
 // ============================================================================
 
 describe('feat-060/#1 jwt-verify', () => {
-  let validKp: { privateKey: KeyLike; publicKey: KeyLike };
-  let wrongKp: { privateKey: KeyLike; publicKey: KeyLike };
+  let validKp: { privateKey: CryptoKey; publicKey: CryptoKey };
+  let wrongKp: { privateKey: CryptoKey; publicKey: CryptoKey };
 
   beforeEach(async () => {
     __resetJwksCacheForTest();

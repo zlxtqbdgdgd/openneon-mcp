@@ -14,6 +14,7 @@ describe('handleGetPolicy (feat-057 · advisory)', () => {
         },
       },
       defaults: { autonomy_level: 'L1', shadow_mode: true },
+      authServices: {},
     });
   });
 
