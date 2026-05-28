@@ -49,7 +49,11 @@ export type AuditEventType =
   // feat-023/#2 T10 search_plans · 主动巡检 (filter + hits + duration_ms + backend 进 extra)
   | 'search_plans_invoked'
   // feat-025 T12 pool_stats · pgcat/PgBouncer 连接池 snapshot 调用审计
-  | 'pool_stats_invoked';
+  | 'pool_stats_invoked'
+  // feat-042/#3 (#162) DDL canary 跑完 · verdict 4-outcome (低风险 / 高风险 / 失败 / 超时) + 测量 + canary_branch_id
+  | 'canary_completed'
+  // feat-042/#4 (#163) 7d retention cron 清理 canary branch · 含 branch_id + age_ms
+  | 'canary_branch_purged';
 
 export type AuditOutcome =
   | 'allow'

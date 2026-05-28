@@ -26,6 +26,29 @@ export type AffectedObject = {
   name: string;
 };
 
+/**
+ * feat-042/#3 (#162) · DDL canary 证据 (DBA 复审用 · plan-mode 字段)。
+ *
+ * 来源: 上游 branch_canary_ddl tool 调用 · agent 把 verdict + metrics 透传到下一步 run_sql 的
+ * plan-mode payload (调用方拼装 · plan-mode 自己不发起 canary)。
+ * 出现时 renderPlan 会渲染额外的 "canary 证据" 段。
+ */
+export type CanaryEvidence = {
+  /** 'low_risk_proceed' / 'high_risk_review' / 'canary_failed' / 'timeout' / 'skip_low_risk' */
+  verdict: string;
+  /** risk-classifier 给出的风险分类 (HARD_CANARY 6 类 或 ALTER_TABLE_LIGHT 等) */
+  risk_class?: string;
+  /** canary branch_id (Neon API 创建 · DBA 可登去复盘) */
+  branch_id?: string;
+  duration_ms?: number;
+  rows_affected?: number;
+  locks_acquired?: number;
+  /** verdict=high_risk_review 时的触发原因 */
+  risk_reasons?: string[];
+  /** 失败 / 超时的错误描述 */
+  error?: string;
+};
+
 /** server 事实 plan (无 speculative 预测 · 详设 §4.1)。 */
 export type PlanPayload = {
   sql: string; // 原文 (复用 T6 参数化路径脱敏 · day-one 原样展示给 DBA)
@@ -35,6 +58,8 @@ export type PlanPayload = {
   reversibility: string;
   statement_properties: string[]; // 语句事实属性 · 如 "CONCURRENTLY：不阻塞写"
   estimated_rows?: number; // 仅 DML · T3 EXPLAIN 估算 (feat-019 · OQ3 未 ready 时省略)
+  // feat-042/#3 (#162) · DDL canary 预演证据 (可选 · agent 上游 branch_canary_ddl 调用透传)
+  canary_evidence?: CanaryEvidence;
 };
 
 // op-class → 风险级 (server 事实 · hard-deny class 在此 stage 前已 terminal · 不会到这)
@@ -124,6 +149,9 @@ export function buildPlanPayload(ctx: EnforcementCtx): PlanPayload {
     reversibility: REVERSIBILITY_BY_OP[ctx.opClass] ?? '未知 · 按高危处理',
     statement_properties: statementProperties(sql, ctx.opClass),
     // estimated_rows: OQ3 · feat-019 EXPLAIN 估算 defer (避免 plan 生成 I/O) · 省略
+    // feat-042/#3 (#162) · 上游 branch_canary_ddl 透传的 canary 证据 (可选 · ctx.canaryEvidence
+    // 在 orchestrator 拼装 EnforcementCtx 时由 route.ts 注入 · 缺省 undefined)。
+    canary_evidence: ctx.canaryEvidence,
   };
 }
 
@@ -197,11 +225,34 @@ export function renderPlan(plan: PlanPayload): string {
       ? `EXPLAIN 估算影响行数: ${plan.estimated_rows}`
       : ``,
     `语句属性:${props}`,
+    plan.canary_evidence ? renderCanaryEvidence(plan.canary_evidence) : ``,
     ``,
     `批准执行?`,
   ]
     .filter((line) => line !== ``)
     .join('\n');
+}
+
+/** feat-042/#3 · 渲染 canary 证据段 (DBA 在 plan mode 看到上游 canary 跑了什么)。 */
+function renderCanaryEvidence(c: CanaryEvidence): string {
+  const lines: string[] = [];
+  lines.push(``);
+  lines.push(`DDL canary 证据 (上游 branch_canary_ddl 预演结果):`);
+  lines.push(`  - verdict: ${c.verdict}`);
+  if (c.risk_class) lines.push(`  - risk_class: ${c.risk_class}`);
+  if (c.branch_id) lines.push(`  - branch_id: ${c.branch_id} (DBA 可登 canary 复盘)`);
+  if (c.duration_ms !== undefined)
+    lines.push(`  - duration_ms: ${c.duration_ms}`);
+  if (c.rows_affected !== undefined)
+    lines.push(`  - rows_affected: ${c.rows_affected}`);
+  if (c.locks_acquired !== undefined)
+    lines.push(`  - locks_acquired: ${c.locks_acquired}`);
+  if (c.risk_reasons && c.risk_reasons.length > 0) {
+    lines.push(`  - 触发原因:`);
+    for (const r of c.risk_reasons) lines.push(`    · ${r}`);
+  }
+  if (c.error) lines.push(`  - error: ${c.error}`);
+  return lines.join('\n');
 }
 
 /** elicitation 请求 schema (只 approve/reject · 不让 DBA 改写 SQL · §4.2)。 */

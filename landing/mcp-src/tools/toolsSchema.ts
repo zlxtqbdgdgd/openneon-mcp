@@ -1319,3 +1319,38 @@ export const getNeondbRecommendationsInputSchema = z.object({
     ),
   format: outputFormatField,
 });
+
+// feat-042/#3 (#162) · branch_canary_ddl · DDL 自动 branch canary 预演 + 测量 + plan mode 复审。
+// 详设: https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-042-L3-mcp-server-branch-canary-ddl.html
+export const branchCanaryDdlInputSchema = z.object({
+  projectId: z
+    .string()
+    .describe('The ID of the project (claim-binding 强制覆盖 · 跨 tenant 拒).'),
+  sql: z
+    .string()
+    .describe(
+      '待预演 DDL 原文 (handler 内 sha256 用 audit · 不落明文)。risk-classifier 先判定 · HARD_CANARY 6 类或表 size > 1M (CANARY_TABLE_ROW_THRESHOLD GUC) 触发 canary。',
+    ),
+  table_size_estimate: z
+    .number()
+    .optional()
+    .describe(
+      '可选 · 表行数估算 (T1 describe_table_schema / pg_class.reltuples)。配合表 size 兜底判定 · 大表 ALTER TABLE light / CREATE INDEX CONCURRENTLY 也走 canary 测 lock_contention。',
+    ),
+  force_canary: z
+    .boolean()
+    .optional()
+    .describe(
+      'DBA 谨慎模式 · 强制 canary · 跳过 risk-classifier 判定。',
+    ),
+  timeout_seconds: z
+    .number()
+    .optional()
+    .describe(
+      'canary 内 DDL 执行超时秒 · 默认 1800 (30 min) · clamp 30 ~ 7200。超时 → high_risk_review。',
+    ),
+  parent_branch_id: z
+    .string()
+    .optional()
+    .describe('源 branch (canary 从此 fork · 默认 main · 跨 project 拒)。'),
+});

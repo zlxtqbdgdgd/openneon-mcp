@@ -47,6 +47,7 @@ import {
   getNeondbRecommendationsInputSchema,
   searchPlansInputSchema,
   getNeondbPoolStatsInputSchema,
+  branchCanaryDdlInputSchema,
 } from './toolsSchema';
 
 type NeonToolDefinition = {
@@ -1666,6 +1667,55 @@ export const NEON_TOOLS = [
       destructiveHint: false,
       idempotentHint: true,
       openWorldHint: false,
+    } satisfies ToolAnnotations,
+  },
+  // feat-042/#3 (#162) branch_canary_ddl · DDL 自动 branch canary 预演 + 测量 + plan mode 复审。
+  // 详设: https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-042-L3-mcp-server-branch-canary-ddl.html
+  // op-class + 表 size 双判定 (feat-028 复用 · 6 类 HARD_CANARY · 1M 行兜底 · fail-closed) ·
+  // Neon API 创建 canary branch 跑 DDL + 测 duration/locks/rows · 4 outcome (低风险 / 高风险 review
+  // 出 plan markdown / 失败 / 超时) · 跨 tenant 走 feat-060 claim-binding · audit emit canary_completed
+  // via feat-031 (含 sql_sha256 不落原文) · 7d retention cron 兜底清理 (feat-042/#4)。
+  {
+    name: 'branch_canary_ddl' as const,
+    scope: 'branches',
+    category: 'optional',
+    description: `Run a high-risk DDL safely on a Neon canary branch BEFORE you touch prod.
+
+    <use_case>
+      Use this tool whenever you (the agent) are about to run a heavy DDL — ALTER TABLE that rewrites
+      a column / CREATE INDEX (non-CONCURRENTLY) / DROP TABLE / VACUUM FULL / CLUSTER /
+      ALTER TABLE ... VALIDATE CONSTRAINT — especially against a large table (> ~1M rows). The tool:
+      (1) classifies the DDL on the spot (no API call · reuses feat-028 op-class),
+      (2) if the classifier says "canary needed", creates a temporary Neon branch labelled
+          purpose=canary + expiry_ts=now+7d, runs the DDL there with a 1800s timeout (configurable),
+          and measures duration_ms / rows_affected / locks_acquired,
+      (3) returns a top-level verdict (skip_low_risk / low_risk_proceed / high_risk_review /
+          canary_failed / timeout) plus full metrics (JSON for you, markdown for the human DBA).
+      Pair high_risk_review verdicts with a DBA approval (plan mode) BEFORE running the DDL on prod.
+    </use_case>
+
+    <important_notes>
+      Does NOT modify prod. Only writes to a temporary canary branch (7d retention · auto-purged by
+      cron · CANARY_AUTO_PURGE GUC to disable). canary branches share parent_branch storage so
+      creation is cheap (copy-on-write). The DDL runs against the canary endpoint via the SAME
+      sqlRunner the server uses for run_sql, so its measurements reflect real PG behaviour for that
+      branch size. SKIP-list (READ_ONLY / CREATE INDEX CONCURRENTLY / ALTER TABLE light · ADD COLUMN
+      NULLable / RENAME / SET DEFAULT etc.) short-circuits without creating a branch. Pass
+      force_canary=true to override the classifier (DBA paranoid mode). Parser-unidentified SQL
+      (OTHER bucket) fails CLOSED → canary still runs (feat-028 fail-closed pattern). Global hard
+      limit 3 concurrent canaries per server (Neon API rate-limit guardrail). On Neon API 5xx /
+      429 / network → outcome=canary_failed kind=server_error|rate_limit|network · DO NOT proceed
+      blindly · ask DBA. plan_markdown field is the human-readable artifact to drop into the DBA's
+      approval channel.
+    </important_notes>`,
+    inputSchema: branchCanaryDdlInputSchema,
+    readOnlySafe: false,
+    annotations: {
+      title: 'Branch Canary DDL (feat-042 · DDL 自动 canary 预演 + plan mode)',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
     } satisfies ToolAnnotations,
   },
 ] as const satisfies readonly NeonToolDefinition[];

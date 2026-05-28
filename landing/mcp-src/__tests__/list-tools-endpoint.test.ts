@@ -62,7 +62,7 @@ describe('/api/list-tools endpoint', () => {
   it('returns 40 tools when include=all (full listing opt-in · backward-compat for clients wanting upstream tools)', async () => {
     const body = await callListTools({ include: 'all' });
     expect(body.categoryInclude).toBe('all');
-    expect(body.tools).toHaveLength(43); // 31 upstream + 4 day-one (T1/T2/T6/T8) + feat-057 get_policy + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 pool_stats
+    expect(body.tools).toHaveLength(44); // 31 upstream + 4 day-one (T1/T2/T6/T8) + feat-057 get_policy + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 pool_stats + feat-042 branch_canary_ddl
   });
 
   it('filters by scopes when category param is present (with include=all to isolate grant filter)', async () => {
@@ -84,7 +84,7 @@ describe('/api/list-tools endpoint', () => {
       include: 'all',
     });
     expect(body.grant.projectId).toBe('proj-123');
-    expect(body.tools).toHaveLength(35); // 24 upstream + 3 day-one (T6/T8/T2) + feat-057 get_policy + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 (require projectId · T1 hidden)
+    expect(body.tools).toHaveLength(36); // 24 upstream + 3 day-one (T6/T8/T2) + feat-057 get_policy + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-042 branch_canary_ddl (require projectId · T1 hidden)
     const names = body.tools.map((t) => t.name);
     expect(names).not.toContain('list_projects');
     expect(names).not.toContain('create_project');
@@ -123,7 +123,7 @@ describe('/api/list-tools endpoint', () => {
     const res = await GET(req);
     const body = (await res.json()) as ListToolsResponse;
     expect(body.readOnly).toBe(false);
-    expect(body.tools).toHaveLength(43); // 31 upstream + 4 day-one (T1/T2/T6/T8) + feat-057 get_policy + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 pool_stats
+    expect(body.tools).toHaveLength(44); // 31 upstream + 4 day-one (T1/T2/T6/T8) + feat-057 get_policy + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 pool_stats + feat-042 branch_canary_ddl
   });
 
   it('include=core explicit returns the same as default (4 day-one core tools · full · sales 4-step 完整)', async () => {
