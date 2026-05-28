@@ -289,6 +289,8 @@ function scanFuncCalls(obj: unknown): OpClass | null {
 const PRIORITY: OpClass[] = [
   'READ_ONLY',
   'OTHER',
+  // feat-068 DYNAMIC_PROBE_ATTACH 非 SQL · PG parser 不会推出 · 列出仅满足 OpClass exhaustiveness
+  'DYNAMIC_PROBE_ATTACH',
   'CLUSTER_LOCK',
   'VACUUM_FULL_LOCK',
   'CREATE_OR_RESTORE_BRANCH',

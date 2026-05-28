@@ -43,6 +43,8 @@ export type OpClass =
   | 'DROP_DATABASE_OR_TRUNCATE'
   | 'DROP_USER_OR_REVOKE'
   | 'CROSS_PROJECT' //            由 grant scope vs project_id 判 (G1 stage · 非 SQL 内容 · feat-056/#3)
+  // —— feat-068 动态探针 (USDT/uprobe attach · 非 SQL · 由 attach_neondb_dynamic_probe tool 标记) ——
+  | 'DYNAMIC_PROBE_ATTACH'
   // —— fail-closed bucket (feat-028 #108 · PG parser 解析失败 / 未识别 stmt) ——
   | 'OTHER'; //                   不退 READ_ONLY · 走 matrix 视为 require_plan 兜底
 
