@@ -229,6 +229,15 @@ export function summariseTrace(spans: TraceSpan[]): TraceSummary | null {
     .slice(0, 4)
     .map(([service_name, duration_us]) => ({ service_name, duration_us }));
 
+  // R2 ⚠ 阻塞-1 (handler row-level guard) · 从 root span 提取 `neon.project_id` 给 summary.
+  // 多种来源 fallback: custom `neon.project_id` / tag `@neon.project_id` 已 flatten 到 attributes ·
+  // 取首个非空 string · 不强制要求 (root span 路径 α agent 没注入会缺 · handler 见 undefined fail-open + audit).
+  const rawProjectId = root.attributes['neon.project_id'];
+  const project_id =
+    typeof rawProjectId === 'string' && rawProjectId.length > 0
+      ? rawProjectId
+      : undefined;
+
   return {
     trace_id: root.trace_id,
     span_count: spans.length,
@@ -239,6 +248,7 @@ export function summariseTrace(spans: TraceSpan[]): TraceSummary | null {
     has_error: hasError,
     components,
     tracestate: root.tracestate,
+    project_id,
   };
 }
 
@@ -403,6 +413,11 @@ export function createDatadogTraceAdapter(
       for (const ev of events) {
         const span = spanFromDatadogEvent(ev);
         if (!span) continue;
+        const rawProjectId = span.attributes['neon.project_id'];
+        const project_id =
+          typeof rawProjectId === 'string' && rawProjectId.length > 0
+            ? rawProjectId
+            : undefined;
         traces.push({
           trace_id: span.trace_id,
           span_count: 0, // unknown from search · agent calls getTraceById for full count
@@ -417,6 +432,7 @@ export function createDatadogTraceAdapter(
             { service_name: span.service_name, duration_us: span.duration_us },
           ],
           tracestate: span.tracestate,
+          project_id, // R2 ⚠ 阻塞-1 · row-level guard 用
         });
       }
       return { traces };

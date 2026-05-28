@@ -15,6 +15,19 @@
  *      mismatch → returns `not_found` (the agent gets nothing it shouldn't see · OWASP LLM10).
  *   3. handler emits its own `trace_get_invoked` audit (low / high depending on filter result).
  *
+ * 安全模型对比 (R2 ⚠ 阻塞-2 决策 · 文档化两条路径差异):
+ *   - get 路径 (本 handler)   = **span-level filter AFTER fetch** ·
+ *       trace_id 已经传到 Datadog backend (DD 内部可见 trace_id · 但不会泄漏 spans 给 agent
+ *       未授权的 project) · 后端返回后逐 span 比对 `neon.project_id` · 不匹配 drop · 全 drop
+ *       返 not_found · 不暴露"trace 存在但跨 tenant"信息。**trace_id 不属于 grant.projectId
+ *       的合法访问场景目前不在本 handler short-circuit · 安全靠 backend 查询本身不会因
+ *       trace_id 跨权而泄漏 + row-level drop 保底。如需"trace_id 不属于 grant 立即 short-circuit"
+ *       须前置 trace_id → project_id 反向映射表 (feat-061 待立)**。
+ *   - search 路径 (search-neondb-traces.ts) = **filter-level override BEFORE backend call** ·
+ *       filter.project_id 被硬覆盖为 grant.projectId · 不一致 emit cross_tenant_blocked + 改写后
+ *       才打 backend · 攻击者无法绕过 (即使 agent 提了 filter.project_id=victim 也被改回 self)。
+ *   两者均合理 · 但语义不同 · 评审/审计追溯需明确区分。
+ *
  * Token economy (§7 case 8 · OWASP LLM10): a single Neon path-β trace is bounded by the path's
  * span count (~5–20 spans · proxy → compute → safekeeper → pageserver) — within the < 5K token /
  * trace budget.
@@ -98,6 +111,26 @@ export async function handleGetNeondbTrace(
       errorReason: res.error.reason,
     });
     return { error: res.error };
+  }
+
+  // R2 ⚠ 阻塞-3 (1000 span 截断检查) · Datadog page.limit=1000 是硬上限 · 拿满即视为可能截断 ·
+  // applyCrossTenantGuard 在不完整数据上跑的安全结论不可信 (跨 tenant 的 spans 可能在被截断的尾巴里 ·
+  // 我们只能看到前 1000 个 · 反推 = 用户看到的"全干净"也许是假象) · fail-closed 返 backend_error。
+  if (res.spans.length >= 1000) {
+    emitTraceGetAudit(input, {
+      spanCount: res.spans.length,
+      crossTenantBlocked: false,
+      droppedCount: 0,
+      outcome: 'deny',
+      durationMs: Date.now() - start,
+      errorReason: 'backend_error_truncated',
+    });
+    return {
+      error: {
+        reason: 'backend_error',
+        detail: `Trace '${input.trace_id}' returned ${res.spans.length} spans which is at the Datadog page.limit=1000 ceiling. Cross-tenant guard cannot give a sound answer on truncated data · fail-closed (R2 ⚠ 阻塞-3 决策 ①). 缩小 time_range 或上 paginate 后端能力 (feat-066-followup) 后重试。`,
+      },
+    };
   }
 
   const { kept, dropped } = applyCrossTenantGuard(res.spans, input.projectId);

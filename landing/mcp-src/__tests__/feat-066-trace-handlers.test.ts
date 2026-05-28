@@ -25,6 +25,7 @@ import {
 import {
   handleSearchNeondbTraces,
   lockFilterToTenant,
+  filterTenantSummaries,
 } from '../tools/handlers/search-neondb-traces';
 import type {
   TraceFetchAdapter,
@@ -349,6 +350,100 @@ describe('case 6 · 跨 tenant 攻击: agent 传 filter.project_id=victim → �
     expect(kept[0].span_id).toBe('s1');
   });
 
+  // R2 ⚠ 阻塞-1 决策 ① · filterTenantSummaries row-level drop 真实化 · 反向回归
+  it('R2 ⚠ 阻塞-1 · filterTenantSummaries · summary.project_id != current → drop · undefined → keep', async () => {
+    const summaries = [
+      {
+        trace_id: 'a'.repeat(32),
+        span_count: 1,
+        duration_us: 1000,
+        root_service: 'neon-proxy',
+        root_operation: 'op',
+        start_time: '2026-05-28T11:00:00.000Z',
+        has_error: false,
+        components: [],
+        project_id: PROJECT_OWN,
+      },
+      {
+        trace_id: 'b'.repeat(32),
+        span_count: 1,
+        duration_us: 1000,
+        root_service: 'neon-proxy',
+        root_operation: 'op',
+        start_time: '2026-05-28T11:00:00.000Z',
+        has_error: false,
+        components: [],
+        project_id: PROJECT_VICTIM, // 应被 drop
+      },
+      {
+        trace_id: 'c'.repeat(32),
+        span_count: 1,
+        duration_us: 1000,
+        root_service: 'neon-proxy',
+        root_operation: 'op',
+        start_time: '2026-05-28T11:00:00.000Z',
+        has_error: false,
+        components: [],
+        // project_id undefined · fail-open 保留 (路径 α agent 没注入)
+      },
+    ];
+    const { kept, droppedCount } = filterTenantSummaries(summaries, PROJECT_OWN);
+    expect(kept).toHaveLength(2);
+    expect(droppedCount).toBe(1);
+    expect(kept.map((t) => t.trace_id)).toEqual([
+      'a'.repeat(32),
+      'c'.repeat(32),
+    ]);
+  });
+
+  it('R2 ⚠ 阻塞-1 · handler 路径 · row-level drop 触发二次 cross_tenant_blocked + cross_tenant_filtered=true', async () => {
+    mockSearchTraces = async () => ({
+      traces: [
+        {
+          trace_id: 'a'.repeat(32),
+          span_count: 1,
+          duration_us: 1000,
+          root_service: 'neon-proxy',
+          root_operation: 'op',
+          start_time: '2026-05-28T11:00:00.000Z',
+          has_error: false,
+          components: [],
+          project_id: PROJECT_OWN,
+        },
+        {
+          trace_id: 'b'.repeat(32),
+          span_count: 1,
+          duration_us: 1000,
+          root_service: 'neon-proxy',
+          root_operation: 'op',
+          start_time: '2026-05-28T11:00:00.000Z',
+          has_error: false,
+          components: [],
+          project_id: PROJECT_VICTIM, // 后端串入污染 row
+        },
+      ],
+    });
+    const result = await handleSearchNeondbTraces({
+      projectId: PROJECT_OWN,
+    });
+    expect('error' in result).toBe(false);
+    if ('error' in result) throw new Error('unreachable');
+    expect(result.traces).toHaveLength(1);
+    expect(result.cross_tenant_filtered).toBe(true);
+    const ctb = auditEvents.find(
+      (e) =>
+        e.event_type === 'cross_tenant_blocked' &&
+        (e.extra as Record<string, unknown>)['openneon.audit.guard'] ===
+          'search_neondb_traces.row_level_project_id_mismatch',
+    );
+    expect(ctb).toBeDefined();
+    expect(
+      (ctb!.extra as Record<string, unknown>)[
+        'openneon.audit.dropped_summary_count'
+      ],
+    ).toBe(1);
+  });
+
   it('handler 全跨 tenant · 所有 span 被丢 → 返回 not_found · 不暴露给 agent', async () => {
     mockGetTraceById = async () => ({
       spans: [
@@ -495,5 +590,39 @@ describe('case 8 · token economy: 1 trace JSON < 5K token (近似 ~20KiB JSON b
       limit: 9999, // attacker 试图拉爆 token
     });
     expect(seenLimit[0]).toBeLessThanOrEqual(50);
+  });
+
+  // R2 ⚠ 阻塞-3 · 1000 span 截断 → backend_error (跨 tenant guard 在不完整数据上不可信)
+  it('get_neondb_trace · 1000 span 截断 → backend_error fail-closed', async () => {
+    // 制造 1000 span (Datadog page.limit=1000 ceiling)
+    const spans: TraceSpan[] = Array.from({ length: 1000 }, (_, i) =>
+      spanOf({
+        span_id: `span-${i}`,
+        parent_span_id: i === 0 ? undefined : `span-${i - 1}`,
+        service_name: 'neon-pageserver',
+        duration_us: 100,
+      }),
+    );
+    mockGetTraceById = async () => ({
+      spans,
+      summary: {
+        trace_id: TRACE_ID,
+        span_count: spans.length,
+        duration_us: spans[0].duration_us,
+        root_service: 'neon-pageserver',
+        root_operation: 'op',
+        start_time: '2026-05-28T11:00:00.000Z',
+        has_error: false,
+        components: [{ service_name: 'neon-pageserver', duration_us: 100 }],
+      },
+    });
+    const result = await handleGetNeondbTrace({
+      projectId: PROJECT_OWN,
+      trace_id: TRACE_ID,
+    });
+    expect('error' in result).toBe(true);
+    if (!('error' in result)) throw new Error('unreachable');
+    expect(result.error.reason).toBe('backend_error');
+    expect(result.error.detail).toMatch(/1000|page\.limit|truncat/i);
   });
 });

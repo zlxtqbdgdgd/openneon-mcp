@@ -59,6 +59,15 @@ export type TraceSummary = {
   }>;
   /** Echoed from root span for downstream filtering / display. */
   tracestate?: string;
+  /**
+   * Tenant tag · 来自 root span `attributes['neon.project_id']` (Datadog 侧 `@neon.project_id` tag /
+   * custom dict 任一)。供 `filterTenantSummaries` row-level cross-tenant guard 使用 (R2 ⚠ 阻塞-1 决策 ①):
+   *   1. adapter 提取后填入 (Datadog adapter `summariseTrace` + `searchTraces` 都填)
+   *   2. handler 跑完 backend 拿到 traces[] 后再 row-by-row 比对 currentProjectId · 不匹配的 drop
+   *   3. undefined = root span 没暴露 project_id (路径 α/agent-side 注入失败) → fail-open 保留 (有 audit)
+   * undefined vs mismatch 用 `filterTenantSummaries` 区分语义。
+   */
+  project_id?: string;
 };
 
 /** Logical filter for `searchTraces` (translated to backend query DSL by the adapter). */

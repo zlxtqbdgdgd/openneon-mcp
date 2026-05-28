@@ -7,14 +7,21 @@
  * feat-066 trace-fetch seam. Cross-tenant guard (feat-066/#3) is enforced at the FILTER level
  * before the backend call:
  *
- *   - the caller-supplied projectId is the tenant boundary (route.ts `injectProjectId` already
- *     hard-overrode it from grant.projectId · feat-060). We treat it as the "current_project_id"
- *     and HARD-OVERWRITE any agent-supplied `filter.project_id` to match. An override (= agent
- *     tried to query a different project) emits a `cross_tenant_blocked` audit event before the
- *     backend call · the agent never sees the other project's traces.
- *   - each returned summary is re-checked: a summary whose root span service carries a
- *     `neon.project_id` attribute pointing elsewhere is dropped (belt-and-braces · backend bug
- *     resilience). Audit emits `cross_tenant_blocked` again if drop happens.
+ *   - 第 1 道护栏 (filter level · BEFORE backend): the caller-supplied projectId is the tenant
+ *     boundary (route.ts `injectProjectId` already hard-overrode it from grant.projectId · feat-060).
+ *     We treat it as the "current_project_id" and HARD-OVERWRITE any agent-supplied
+ *     `filter.project_id` to match. An override (= agent tried to query a different project) emits a
+ *     `cross_tenant_blocked` audit event before the backend call · the agent never sees the other
+ *     project's traces.
+ *   - 第 2 道护栏 (claim binding · feat-060): grant context · 已在 mcp orchestrator (route.ts)
+ *     `bindClaims` 层完成 fromClaim 注入 · 本 handler 不再二次校验 · A6 trace tool 加 noop fromClaim
+ *     占位以保证"三道护栏"名实相符 (R2 ⚠ 阻塞-5)。
+ *   - 第 3 道护栏 (row-level · AFTER backend · R2 ⚠ 阻塞-1 决策 ①): each returned summary is
+ *     re-checked: a summary whose root span carries an explicit `neon.project_id` attribute
+ *     pointing elsewhere is dropped (belt-and-braces · backend bug / Datadog 查询绕过 resilience).
+ *     undefined project_id (root span 没暴露) = fail-open 保留 + audit (路径 α agent-side 注入失败
+ *     不应 100% 屏蔽用户查得到自己的 trace · 但要可追溯)。drop 发生时 audit emits
+ *     `cross_tenant_blocked` 二次 + `cross_tenant_filtered` flag 给上层 RCA 不再继续推理。
  *   - handler emits `trace_search_invoked` audit (low / high depending on filter result).
  *
  * Limit cap (§7 case 8 token economy · OWASP LLM10) is enforced by the seam at TRACE_SEARCH_LIMIT_MAX = 50.
@@ -90,22 +97,34 @@ export function lockFilterToTenant(
 }
 
 /**
- * Belt-and-braces row-level guard · drops summaries whose components include a service the
- * caller wouldn't expect (e.g. a backend bug returns rows tagged with another project_id in
- * components — we don't surface them to the agent).
+ * Belt-and-braces row-level guard (R2 ⚠ 阻塞-1 决策 ① · 真实化) ·
+ * drops summaries whose root span project_id attribute mismatches the caller's tenant.
  *
- * Conservative: drop a summary only when the components carry an explicit `neon.project_id`
- * that mismatches. The `TraceSummary` shape doesn't include attributes by design (token
- * economy) — so this is a structural guard against future schema drift more than a check
- * against real Datadog responses.
+ * 语义:
+ *   - summary.project_id === currentProjectId → keep (匹配)
+ *   - summary.project_id !== undefined && summary.project_id !== currentProjectId → drop (跨 tenant)
+ *   - summary.project_id === undefined → keep (root span 没暴露 `neon.project_id` · 路径 α agent-side
+ *     注入失败 · fail-open · 避免把用户自己的合法 trace 100% 屏蔽 · 但调用方 audit 会记 dropped 计数
+ *     为 0 不代表"安全"·只代表"没拿到证据" · 实际生产应在 OTel resource attribute 注入 service.name
+ *     映射 + Datadog tag pipeline 保证至少 root span 有 neon.project_id)
+ *
+ * 当前 Datadog adapter 在 summariseTrace 跟 searchTraces 路径都已填 `project_id` (取自
+ * `attributes['neon.project_id']`) · 因此这个 guard 真实地运行 row-level 比对 · 不再是 placeholder。
  */
 export function filterTenantSummaries(
   traces: TraceSummary[],
   currentProjectId: string,
 ): { kept: TraceSummary[]; droppedCount: number } {
-  // No project_id leak vector in the current TraceSummary shape — guard reserved for forward
-  // compatibility. Default: keep all.
-  return { kept: traces, droppedCount: 0 };
+  const kept: TraceSummary[] = [];
+  let droppedCount = 0;
+  for (const t of traces) {
+    if (t.project_id !== undefined && t.project_id !== currentProjectId) {
+      droppedCount++;
+      continue;
+    }
+    kept.push(t);
+  }
+  return { kept, droppedCount };
 }
 
 export async function handleSearchNeondbTraces(
@@ -145,9 +164,24 @@ export async function handleSearchNeondbTraces(
     input.projectId,
   );
 
+  // R2 ⚠ 阻塞-1 (row-level guard 真实化) · row drop 触发二次 cross_tenant_blocked audit
+  if (droppedCount > 0) {
+    emitAuditEvent({
+      event_type: 'cross_tenant_blocked',
+      outcome: 'deny',
+      severity: 'high',
+      project_id: input.projectId,
+      extra: {
+        'openneon.audit.guard': 'search_neondb_traces.row_level_project_id_mismatch',
+        'openneon.audit.dropped_summary_count': droppedCount,
+        'openneon.audit.bound_project_id': input.projectId,
+      },
+    });
+  }
+
   emitTraceSearchAudit(input, {
     total: kept.length,
-    crossTenantBlocked: agentTriedCrossTenant,
+    crossTenantBlocked: agentTriedCrossTenant || droppedCount > 0,
     droppedCount,
     outcome: 'allow',
     durationMs: Date.now() - start,

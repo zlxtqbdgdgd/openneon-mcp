@@ -1400,10 +1400,9 @@ export const searchNeondbTracesInputSchema = z.object({
     .number()
     .int()
     .positive()
-    .max(50)
     .optional()
     .describe(
-      'Max trace summaries to return. Default 20 · hard cap 50 (TRACE_SEARCH_LIMIT_MAX · token economy · OWASP LLM10 · 详设 §5).',
+      'Max trace summaries to return. Default 20 · hard cap 50 (TRACE_SEARCH_LIMIT_MAX · token economy · OWASP LLM10 · 详设 §5). 超出 50 上限静默截断 (handler 层 Math.min) · 不报错 · 单源校验在 handler 避免与 zod .max 双重定义冲突 (R2 ⚠ 阻塞-4 修复).',
     ),
   format: outputFormatField,
 });
