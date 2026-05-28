@@ -47,6 +47,8 @@ import {
   getNeondbRecommendationsInputSchema,
   searchPlansInputSchema,
   getNeondbPoolStatsInputSchema,
+  getNeondbTraceInputSchema,
+  searchNeondbTracesInputSchema,
 } from './toolsSchema';
 
 type NeonToolDefinition = {
@@ -1662,6 +1664,75 @@ export const NEON_TOOLS = [
     readOnlySafe: true,
     annotations: {
       title: 'Get Neon DB Calling Services (T2 · 应用归因)',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    } satisfies ToolAnnotations,
+  },
+  // feat-066/#2 get_neondb_trace · trace 读 · path β 基线 + path α bonus (RAG 剧本 agent 拉全 span)
+  // detail design: https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-066-L3-mcp-tool-trace-read-seam.html
+  {
+    name: 'get_neondb_trace' as const,
+    scope: 'querying',
+    category: 'core',
+    description: `Fetch one full Neon trace (all spans · OTel-compatible) by W3C trace_id.
+
+    <use_case>
+      Use this tool when the agent has a SPECIFIC trace_id (from the user · from a log entry · from
+      search_neondb_traces). Returns every span in the trace (proxy → compute → safekeeper → pageserver
+      for path β · root=app for path α) with USR + Neon Key attributes + tracestate marker. Best
+      paired with search_neondb_traces (latency P99 surfaces a candidate · this tool drills in).
+    </use_case>
+
+    <important_notes>
+      Cross-tenant safety: projectId is the tenant boundary · spans tagged with another project_id are
+      dropped + cross_tenant_blocked audit (feat-066/#3 · feat-060 claim-binding 集成). trace_id MUST be
+      32 lowercase hex chars (W3C trace-context · validated by zod refine).
+      Datadog APM backend (POST /api/v2/spans/events/search · trace_id filter). NOTE the legacy
+      /api/v1/trace/{id} endpoint does NOT exist in the public API (详设 §11 风险表已澄清).
+      Token economy: one Neon path-β trace is ~5–20 spans · within < 5K token / trace budget (OWASP LLM10).
+    </important_notes>`,
+    inputSchema: getNeondbTraceInputSchema,
+    readOnlySafe: true,
+    annotations: {
+      title: 'Get Neon DB Trace (feat-066 · path β 单 trace 全 span)',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    } satisfies ToolAnnotations,
+  },
+  // feat-066/#2 search_neondb_traces · trace 列表检索 (按 latency / component / endpoint_id / time_range)
+  // detail design: https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-066-L3-mcp-tool-trace-read-seam.html
+  {
+    name: 'search_neondb_traces' as const,
+    scope: 'querying',
+    category: 'core',
+    description: `Search Neon trace summaries · filter by min_latency_ms / component / endpoint_id / time_range.
+
+    <use_case>
+      Use this tool to find candidate traces (e.g. "the P99 slow ones in the last hour") WITHOUT pulling
+      every span up front. Returns one row per root span with span_count / duration_us / root_service /
+      components breakdown / has_error. Drill into a specific trace via get_neondb_trace.
+    </use_case>
+
+    <workflow_rule>
+      Cross-tenant safety (feat-066/#3 · feat-060 集成): projectId is the authoritative tenant boundary.
+      filter.project_id supplied by the agent is HARD-OVERRIDDEN to projectId — any mismatch emits a
+      cross_tenant_blocked audit event before the backend call. The agent NEVER sees another project's traces.
+    </workflow_rule>
+
+    <important_notes>
+      Limit hard cap 50 (TRACE_SEARCH_LIMIT_MAX · token economy · OWASP LLM10). Default 20.
+      Default time range = last 1h when omitted (keep token cost predictable · 详设 §5).
+      Component enum maps to Datadog APM service-name namespace: \`service:neon-<component>\`.
+      Datadog APM backend (POST /api/v2/spans/events/search · root-span DDL filter).
+    </important_notes>`,
+    inputSchema: searchNeondbTracesInputSchema,
+    readOnlySafe: true,
+    annotations: {
+      title: 'Search Neon DB Traces (feat-066 · 按 latency/component 切 trace summary 列表)',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
