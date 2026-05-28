@@ -74,9 +74,11 @@ const RISK_BY_OP: Partial<Record<OpClass, PlanRisk>> = {
   CREATE_INDEX_CONCURRENTLY: 'medium',
   DDL_ADD_COLUMN: 'medium',
   CREATE_OR_RESTORE_BRANCH: 'low',
-  // feat-068 动态探针 attach · 短时 / overhead 受限 / 自动 detach · 可控 medium
-  // (DBA 审批仍要看 plan · 信息: target endpoint / duration / 预估 overhead)
-  DYNAMIC_PROBE_ATTACH: 'medium',
+  // feat-068 动态探针 attach · risk=high (跟设计 §3.1 RISK_BY_OP 严格一致 · #181 拍板)
+  // 即便 duration ≤ 5min + 自动 detach + 完全可逆 (REVERSIBILITY_BY_OP 段) · risk 等级 = 内核观测潜在影响
+  // (lock_wait / stacktrace 可能干扰生产负载 · CAP_BPF/CAP_PERFMON 内核权限) · 跨所有 ephemeral
+  // attach op-class 风险等级一致性 · DBA plan 模式审批必看
+  DYNAMIC_PROBE_ATTACH: 'high',
   // feat-028/#108 fail-closed bucket · parse 失败 / 未识别 stmt · 按 high 处理 (保守)
   OTHER: 'high',
 };

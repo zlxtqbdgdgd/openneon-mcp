@@ -274,12 +274,14 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
   });
 
   // ─────────────────────────────────────────────────────────────
-  // case F · watchdog 超时 (overhead 超阈值)
-  it('case F · watchdog overhead > max → 提前 detach + overhead_exceeded high audit', async () => {
-    const { ctx, dispatcher } = buildCtx();
-    // 模拟 sidecar 慢慢跑 · watchdog 第一次 poll 就拿到超阈值 overhead
+  // case F · watchdog 超时 (overhead 超阈值持续 ≥ persistence)
+  it('case F · watchdog overhead > max 持续 ≥ persistence → 提前 detach + overhead_exceeded high audit', async () => {
+    const { ctx, dispatcher } = buildCtx({
+      watchdogPersistenceMs: 30, // 测试用 · 30ms 持续就触发
+    });
+    // 模拟 sidecar 慢慢跑 · watchdog 持续超阈值
     dispatcher.forceOverheadPct = 8.0; // > max 2.0
-    dispatcher.fakeDurationMs = 200; // 给 watchdog 时间触发
+    dispatcher.fakeDurationMs = 200; // 给 watchdog 时间触发 (3-4 poll @ 10ms · 持续 30ms+)
     const out = await attachDynamicProbeHandler(
       {
         template: 'call_count',
@@ -540,5 +542,129 @@ describe('feat-068 templates · escape + render', () => {
         duration_seconds: 5,
       }),
     ).toThrow(/pid|invalid/);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// #181 + #182 follow-up · risk=high + watchdog 1s poll + 2s persistence
+// ────────────────────────────────────────────────────────────────────────
+describe('feat-068 follow-up · risk=high + watchdog persistence (#181 + #182)', () => {
+  let emitSpy: MockedFunction<typeof auditEmit.emitAuditEvent>;
+
+  beforeEach(() => {
+    __resetRateLimitForTest();
+    __setWhitelistForTest(FIXTURE_WHITELIST);
+    emitSpy = vi
+      .spyOn(auditEmit, 'emitAuditEvent')
+      .mockImplementation(() => undefined) as MockedFunction<
+      typeof auditEmit.emitAuditEvent
+    >;
+  });
+
+  // #181: risk_level 跟设计 §3.1 一致 = high
+  it('#181 · DYNAMIC_PROBE_ATTACH plan-mode risk_level=high (跟设计 §3.1 RISK_BY_OP 一致)', async () => {
+    // L3 + planApproved=false → 走 plan-mode 阶段 · verdict require_plan · 含 plan.risk_level
+    const { ctx } = buildCtx({
+      autonomyLevel: 'L3',
+      _testOnlyPlanApprovedBypass: false,
+    });
+    const out = await attachDynamicProbeHandler(
+      {
+        template: 'call_count',
+        function: 'postgresql:executor__run',
+        duration_seconds: 30,
+        max_overhead_pct: 2.0,
+        endpoint_id: 'ep-A',
+        project_id: 'tenant-A',
+      },
+      ctx,
+    );
+    expect(out.ok).toBe(false);
+    if (out.ok) throw new Error('unreachable');
+    expect(out.stage).toBe('policy');
+    expect(out.verdict?.action).toBe('require_plan');
+    // verdict.plan.risk_level 应该 = 'high'
+    expect(out.verdict?.plan?.risk_level).toBe('high');
+  });
+
+  // #182 watchdog 颗粒度: spike 不触发 / persistence 触发 通过 runWatchdog 单元测试
+  // (handler 层 case F 已验证 persistence 触发 detach · 这里测 watchdog 本身行为)
+  it('#182 · WATCHDOG_POLL_MS default = 1000ms · persistence default = 2000ms', async () => {
+    const { WATCHDOG_POLL_MS, WATCHDOG_PERSISTENCE_MS } = await import(
+      '../tools/handlers/dynamic-probe/watchdog'
+    );
+    expect(WATCHDOG_POLL_MS).toBe(1_000);
+    expect(WATCHDOG_PERSISTENCE_MS).toBe(2_000);
+  });
+
+  it('#182 · runWatchdog spike (单次超 < persistence) → 不 detach · 返 detached:false', async () => {
+    const { runWatchdog } = await import(
+      '../tools/handlers/dynamic-probe/watchdog'
+    );
+    let pollCount = 0;
+    const mockDispatcher = {
+      dispatch: async () => ({
+        status: 'completed' as const,
+        observedOverheadPct: 0.5,
+        elapsedMs: 0,
+        stdout: '',
+        stderr: '',
+      }),
+      detach: vi.fn(async () => undefined),
+      getObservedOverhead: async () => {
+        pollCount += 1;
+        // 第一次 poll 报 spike · 后续回归正常 (spike 不应触发 detach)
+        return pollCount === 1 ? 8.0 : 0.5;
+      },
+    };
+    const outcome = await runWatchdog({
+      attachId: 'a1',
+      dispatcher: mockDispatcher,
+      maxOverheadPct: 2.0,
+      durationSeconds: 0.1, // 100ms duration
+      tenant: 'tenant-A',
+      functionName: 'fn',
+      pollMs: 10,
+      persistenceMs: 50, // 持续 50ms 才触发 · 单次 spike (10ms) < 50ms 不触发
+    });
+    expect(outcome.detached).toBe(false); // spike 不触发 detach
+    expect(mockDispatcher.detach).not.toHaveBeenCalled();
+  });
+
+  it('#182 · runWatchdog 持续超阈值 ≥ persistence → 触发 detach + emit overhead_exceeded', async () => {
+    const { runWatchdog } = await import(
+      '../tools/handlers/dynamic-probe/watchdog'
+    );
+    const mockDispatcher = {
+      dispatch: async () => ({
+        status: 'detached_early' as const,
+        observedOverheadPct: 8.0,
+        elapsedMs: 0,
+        stdout: '',
+        stderr: '',
+      }),
+      detach: vi.fn(async () => undefined),
+      getObservedOverhead: async () => 8.0, // 持续超阈值
+    };
+    const outcome = await runWatchdog({
+      attachId: 'a1',
+      dispatcher: mockDispatcher,
+      maxOverheadPct: 2.0,
+      durationSeconds: 5,
+      tenant: 'tenant-A',
+      functionName: 'fn',
+      pollMs: 10,
+      persistenceMs: 30, // 30ms 持续即触发 · 3+ poll 后超
+    });
+    expect(outcome.detached).toBe(true);
+    if (!outcome.detached) throw new Error('unreachable');
+    expect(outcome.observedPct).toBe(8.0);
+    expect(mockDispatcher.detach).toHaveBeenCalled();
+    const overheadEv = emitSpy.mock.calls.find(
+      (c) => c[0].event_type === 'probe_overhead_exceeded',
+    );
+    expect(overheadEv).toBeDefined();
+    expect(overheadEv?.[0].severity).toBe('high');
+    expect(overheadEv?.[0].extra?.persisted_ms).toBeGreaterThanOrEqual(30);
   });
 });
