@@ -451,6 +451,117 @@ describe('feat-043 · slot-monitor policy resolver', () => {
 });
 
 // ────────────────────────────────────────────────────────────────────────
+// feat-043 follow-up (#177): PG < 16 silent skip emit warn 单测
+// ────────────────────────────────────────────────────────────────────────
+import {
+  checkSlot,
+  __resetPgVersionUnsupportedStampForTest,
+} from '../server-enrich/slot-monitor/slot-checker';
+
+describe('feat-043 follow-up · PG < 16 silent skip emit warn (#177)', () => {
+  beforeEach(() => {
+    emitMock.mockReset();
+    __resetPgVersionUnsupportedStampForTest();
+  });
+
+  it('PG < 16 endpoint 首次 skip → emit pg_version_unsupported warn + outcome=skip', () => {
+    const row = {
+      slot_name: 'pg14_slot',
+      inactive_seconds: null as number | null,
+      restart_lsn: '0/0',
+    };
+    const ctx = {
+      endpoint_id: 'ep-pg14',
+      project_id: 'proj-1',
+      policy: resolveSlotMonitorPolicy(null),
+      nowIso: () => '2026-05-28T10:00:00.000Z',
+    };
+
+    const outcome = checkSlot(row, ctx);
+    expect(outcome.kind).toBe('skip');
+    expect((outcome as { kind: 'skip'; reason: string }).reason).toBe(
+      'unknown_inactive_seconds',
+    );
+    expect(emitMock).toHaveBeenCalledTimes(1);
+    const e = emitMock.mock.calls[0][0] as AuditEventCapture;
+    expect(e.event_type).toBe('replication_slot_monitor_pg_version_unsupported');
+    expect(e.severity).toBe('low');
+    expect(e.principal).toBe('system:slot-monitor');
+    expect(e.outcome).toBe('allow');
+    expect(e.endpoint_id).toBe('ep-pg14');
+    expect(e.project_id).toBe('proj-1');
+    expect(e.extra?.['openneon.slot_monitor.detected_at']).toBe(
+      '2026-05-28T10:00:00.000Z',
+    );
+    expect(
+      String(e.extra?.['openneon.slot_monitor.reason']),
+    ).toContain('pg_replication_slots.inactive_since');
+  });
+
+  it('同 endpoint 重复 skip → 仅首次 emit (per process emit-once)', () => {
+    const row = { slot_name: 's', inactive_seconds: null as number | null };
+    const ctx = {
+      endpoint_id: 'ep-pg14',
+      project_id: 'proj-1',
+      policy: resolveSlotMonitorPolicy(null),
+    };
+    checkSlot(row, ctx);
+    checkSlot(row, ctx);
+    checkSlot(row, ctx);
+    expect(emitMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('不同 endpoint 各自 emit 1 次 (per endpoint 独立 stamp)', () => {
+    const row = { slot_name: 's', inactive_seconds: null as number | null };
+    checkSlot(row, {
+      endpoint_id: 'ep-a',
+      project_id: 'proj-1',
+      policy: resolveSlotMonitorPolicy(null),
+    });
+    checkSlot(row, {
+      endpoint_id: 'ep-b',
+      project_id: 'proj-2',
+      policy: resolveSlotMonitorPolicy(null),
+    });
+    checkSlot(row, {
+      endpoint_id: 'ep-a', // 重复
+      project_id: 'proj-1',
+      policy: resolveSlotMonitorPolicy(null),
+    });
+    expect(emitMock).toHaveBeenCalledTimes(2);
+    const endpoints = emitMock.mock.calls.map(
+      (c) => (c[0] as AuditEventCapture).endpoint_id,
+    );
+    expect(endpoints.sort()).toEqual(['ep-a', 'ep-b']);
+  });
+
+  it('PG >= 16 endpoint (inactive_seconds 有值) 不触发 pg_version_unsupported emit', () => {
+    const row = { slot_name: 's', inactive_seconds: 1000 };
+    checkSlot(row, {
+      endpoint_id: 'ep-pg16',
+      project_id: 'proj-1',
+      policy: resolveSlotMonitorPolicy(null),
+    });
+    // below threshold · 0 emit
+    expect(emitMock).not.toHaveBeenCalled();
+  });
+
+  it('process restart 等效 (__reset stamp) → 重新 emit', () => {
+    const row = { slot_name: 's', inactive_seconds: null as number | null };
+    const ctx = {
+      endpoint_id: 'ep-pg14',
+      project_id: 'proj-1',
+      policy: resolveSlotMonitorPolicy(null),
+    };
+    checkSlot(row, ctx);
+    expect(emitMock).toHaveBeenCalledTimes(1);
+    __resetPgVersionUnsupportedStampForTest(); // simulate process restart
+    checkSlot(row, ctx);
+    expect(emitMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
 // 额外: runSlotMonitorRound 直接调 (绕过 register · 行为级测试)
 // ────────────────────────────────────────────────────────────────────────
 describe('feat-043 · runSlotMonitorRound 行为', () => {

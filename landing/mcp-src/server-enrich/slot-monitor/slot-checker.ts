@@ -28,6 +28,23 @@ export type SlotCheckOutcome =
   | { kind: 'warn'; thresholdSeconds: number }
   | { kind: 'critical'; thresholdSeconds: number };
 
+/**
+ * feat-043 follow-up (#177): per-endpoint per-process emit-once stamp.
+ *
+ * PG < 16 endpoint 的 `inactive_seconds == null` skip 是设计预期, 但 silent skip
+ * 用户察觉不到 slot monitor 在该 endpoint 不工作 (PG 14/15 不支持 inactive_since 字段)。
+ * 首次 skip 触发 1 次 `replication_slot_monitor_pg_version_unsupported` audit
+ * (severity=low) · 重复 cron round 不再 emit · 防 audit 流量爆炸。
+ *
+ * lifecycle = process · 重启重置 (mcp 进程 restart 后 PG 仍未升级再 emit 一次提醒)。
+ */
+const pgVersionUnsupportedSeen = new Set<string>();
+
+/** 测试用 · 清空 emit-once stamp · 跟 mcp 进程 restart 等效 */
+export function __resetPgVersionUnsupportedStampForTest(): void {
+  pgVersionUnsupportedSeen.clear();
+}
+
 export type SlotCheckContext = {
   endpoint_id: string;
   /** 来自 endpoint registry · audit attribute 用 · DBA 端 cross-tenant routing 隔离 key */
@@ -68,6 +85,27 @@ export function checkSlot(
   ctx: SlotCheckContext,
 ): SlotCheckOutcome {
   if (row.inactive_seconds == null) {
+    // feat-043 follow-up (#177): PG < 16 endpoint 首次 skip emit warn · 防 silent skip
+    if (!pgVersionUnsupportedSeen.has(ctx.endpoint_id)) {
+      pgVersionUnsupportedSeen.add(ctx.endpoint_id);
+      const now = (ctx.nowIso ?? (() => new Date().toISOString()))();
+      emitAuditEvent({
+        event_type: 'replication_slot_monitor_pg_version_unsupported',
+        principal: 'system:slot-monitor',
+        outcome: 'allow',
+        severity: 'low',
+        project_id: ctx.project_id,
+        endpoint_id: ctx.endpoint_id,
+        extra: {
+          'openneon.slot_monitor.endpoint_id': ctx.endpoint_id,
+          'openneon.slot_monitor.project_id': ctx.project_id,
+          'openneon.slot_monitor.slot_name': row.slot_name,
+          'openneon.slot_monitor.detected_at': now,
+          'openneon.slot_monitor.reason':
+            'pg_replication_slots.inactive_since 仅 PG >= 16 支持 · 本 endpoint 跳过 slot inactive 检测 · 升级 PG 16+ 后自动恢复',
+        },
+      });
+    }
     return { kind: 'skip', reason: 'unknown_inactive_seconds' };
   }
   const thresholds = effectiveThresholdsFor(ctx.endpoint_id, ctx.policy);
