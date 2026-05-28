@@ -110,7 +110,7 @@ describe('getAvailableTools', () => {
 describe('getAccessControlWarnings', () => {
   it('warns when no valid scope categories are set', () => {
     const warnings = getAccessControlWarnings(grant({ scopes: [] }), false);
-    expect(warnings).toHaveLength(4);
+    expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain('No valid scope categories');
   });
 
@@ -119,7 +119,7 @@ describe('getAccessControlWarnings', () => {
       grant({ projectId: 'proj-123', scopes: [] }),
       false,
     );
-    expect(warnings).toHaveLength(4);
+    expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain('No tools are available.');
   });
 
