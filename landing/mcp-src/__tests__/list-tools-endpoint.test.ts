@@ -63,21 +63,13 @@ describe('/api/list-tools endpoint', () => {
   it('returns NEON_TOOLS.length tools when include=all (full listing opt-in · backward-compat for clients wanting upstream tools)', async () => {
     const body = await callListTools({ include: 'all' });
     expect(body.categoryInclude).toBe('all');
-<<<<<<< HEAD
     expect(body.tools).toHaveLength(45); // 31 upstream + 4 day-one (T1/T2/T6/T8) + feat-057 get_policy + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 pool_stats + feat-045 generate_rca_report + feat-037 cluster_neondb_logs
-=======
-    expect(body.tools).toHaveLength(NEON_TOOLS.length); // 来源单一: NEON_TOOLS 数组 · 避免硬编码 (R2 ⚠ 漏审 6)
->>>>>>> origin/main
   });
 
   it('filters by scopes when category param is present (with include=all to isolate grant filter)', async () => {
     const body = await callListTools({ category: 'querying', include: 'all' });
     expect(body.grant.scopes).toEqual(['querying']);
-<<<<<<< HEAD
     expect(body.tools).toHaveLength(21); // 10 upstream + 2 day-one (T6/T2) + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-045 generate_rca_report + feat-037 cluster_neondb_logs · scope='querying'
-=======
-    expect(body.tools).toHaveLength(21); // 10 upstream + 2 day-one (T6/T2) + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-066/#2 trace get/search · scope='querying'
->>>>>>> origin/main
   });
 
   it('returns only always-available tools when scopes are all invalid (with include=all)', async () => {
@@ -93,11 +85,7 @@ describe('/api/list-tools endpoint', () => {
       include: 'all',
     });
     expect(body.grant.projectId).toBe('proj-123');
-<<<<<<< HEAD
     expect(body.tools).toHaveLength(37); // 24 upstream + 3 day-one (T6/T8/T2) + feat-057 get_policy + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-045 generate_rca_report + feat-037 cluster_neondb_logs (T1 hidden as project-agnostic)
-=======
-    expect(body.tools).toHaveLength(37); // 24 upstream + 3 day-one (T6/T8/T2) + feat-057 get_policy + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-066/#2 trace get/search (require projectId · T1 hidden)
->>>>>>> origin/main
     const names = body.tools.map((t) => t.name);
     expect(names).not.toContain('list_projects');
     expect(names).not.toContain('create_project');
@@ -136,11 +124,7 @@ describe('/api/list-tools endpoint', () => {
     const res = await GET(req);
     const body = (await res.json()) as ListToolsResponse;
     expect(body.readOnly).toBe(false);
-<<<<<<< HEAD
     expect(body.tools).toHaveLength(45); // 31 upstream + 4 day-one (T1/T2/T6/T8) + feat-057 get_policy + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 pool_stats + feat-045 generate_rca_report
-=======
-    expect(body.tools).toHaveLength(NEON_TOOLS.length); // 来源单一: NEON_TOOLS 数组 · 避免硬编码 (R2 ⚠ 漏审 6)
->>>>>>> origin/main
   });
 
   it('include=core explicit returns the same as default (4 day-one core tools · full · sales 4-step 完整)', async () => {
