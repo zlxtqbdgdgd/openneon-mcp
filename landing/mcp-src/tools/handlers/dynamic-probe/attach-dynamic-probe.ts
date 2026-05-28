@@ -65,6 +65,8 @@ export type AttachHandlerCtx = {
   _testOnlyPlanApprovedBypass?: boolean;
   /** 测试用 · watchdog poll 缩短 */
   watchdogPollMs?: number;
+  /** 测试用 · watchdog persistence 缩短 (#182 · 默认 WATCHDOG_PERSISTENCE_MS=2000) */
+  watchdogPersistenceMs?: number;
 };
 
 export type AttachHandlerOutcome =
@@ -274,6 +276,7 @@ export async function attachDynamicProbeHandler(
     tenant: ctx.tenant,
     functionName: input.function,
     pollMs: ctx.watchdogPollMs,
+    persistenceMs: ctx.watchdogPersistenceMs,
     signal: watchAbort.signal,
   });
 
