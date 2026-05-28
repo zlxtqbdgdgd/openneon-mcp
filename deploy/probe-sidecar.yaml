@@ -1,0 +1,80 @@
+# feat-068/#3 (#142) · ephemeral probe sidecar pod manifest
+#
+# 设计 (feat-068 详设 §3 容器化部署 + §6 capability):
+#
+#   - 独立 pod (跟 compute 在同 Node · podAffinity)
+#   - 跑完自销: restartPolicy=Never + ttlSecondsAfterFinished (Job 包一层时用)
+#   - resources: cpu=500m / mem=256Mi (watchdog overhead cap)
+#   - shareProcessNamespace + hostPID = true (能看到 compute PID)
+#   - mount /sys/kernel/debug RO (BPF maps 读取)
+#   - capability:
+#       kernel ≥ 5.8: CAP_BPF + CAP_PERFMON (最小权限 · 推荐)
+#       kernel 4.14-5.7: 退化到 SYS_ADMIN (dev/test only · prod 必须 5.8+)
+#
+# 注: 真生产部署由 mcp 后端 (kubectl/SDK) 动态生成 pod · 这份 YAML 是模板 + 文档化示例。
+apiVersion: v1
+kind: Pod
+metadata:
+  generateName: openneon-probe-sidecar-
+  namespace: openneon-probe
+  labels:
+    app: openneon-mcp
+    component: dynamic-probe-sidecar
+    # 用于关联 mcp 侧 attach_id (运维 join key)
+    openneon.mcp/attach-id: ATTACH_ID_PLACEHOLDER
+spec:
+  restartPolicy: Never
+  # 让 sidecar 看到 host 的 PID 命名空间 (target compute PID 可见)
+  hostPID: true
+  shareProcessNamespace: true
+  # 关联到 compute pod 所在 node (mcp 派 pod 时填 nodeName)
+  # nodeName: NODE_NAME_PLACEHOLDER
+  tolerations:
+    - operator: Exists
+  containers:
+    - name: bpftrace
+      image: ghcr.io/iovisor/bpftrace:v0.20.2  # 含 bpftrace + bcc
+      # mcp 派单线时把 bpftrace 脚本通过 env / configMap / kubectl exec stdin 注入 ·
+      # 这里给 args 占位 · 真值 = `-p <pid> -e '<script>'`
+      command: ["bpftrace"]
+      args:
+        - "-p"
+        - "TARGET_PID_PLACEHOLDER"
+        - "-e"
+        - "BPFTRACE_SCRIPT_PLACEHOLDER"
+      resources:
+        requests:
+          cpu: "500m"
+          memory: "256Mi"
+        limits:
+          cpu: "500m"
+          memory: "256Mi"
+      securityContext:
+        # kernel ≥ 5.8 推荐: 最小权限
+        capabilities:
+          add: ["BPF", "PERFMON"]
+          drop: ["ALL"]
+        # 内核 4.14-5.7 dev/test 兜底 (按需切):
+        # capabilities:
+        #   add: ["SYS_ADMIN"]
+        #   drop: ["ALL"]
+        readOnlyRootFilesystem: true
+        runAsNonRoot: false  # bpftrace 需 root (有 cap 也要 uid=0 才能 attach uprobe)
+      volumeMounts:
+        - name: debugfs
+          mountPath: /sys/kernel/debug
+          readOnly: true
+        - name: tracefs
+          mountPath: /sys/kernel/tracing
+          readOnly: true
+  volumes:
+    - name: debugfs
+      hostPath:
+        path: /sys/kernel/debug
+        type: Directory
+    - name: tracefs
+      hostPath:
+        path: /sys/kernel/tracing
+        type: Directory
+  # ephemeral · 完成不重启 · TTL 由外层 Job (或 mcp 主动 delete) 控
+  activeDeadlineSeconds: 360  # duration_cap (300s) + buffer 60s · 防失控
