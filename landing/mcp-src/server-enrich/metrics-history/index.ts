@@ -27,6 +27,28 @@ export type {
 } from './types';
 export { isMetricHistoryError } from './types';
 
+// feat-040 (L3) · AutosuspendEventFetchAdapter sub-interface · 跟 feat-066 TraceFetchAdapter 同 pattern.
+// 不进 MetricHistoryAdapter union · 独立 sub-interface · 调用方按 Partial<...> 组合。
+export type {
+  AutosuspendWindow,
+  AutosuspendEventFetchAdapter,
+  AutosuspendEventsRequest,
+  AutosuspendEventsResult,
+  AutosuspendEventsSuccess,
+  AutosuspendEventsError,
+  NeonControlPlaneMode,
+  NeonControlPlaneConfig,
+  GetAutosuspendWindowsDeps,
+} from './autosuspend-events';
+export {
+  getAutosuspendWindows,
+  createAutosuspendCache,
+  clearAutosuspendCache,
+  createNeonControlPlaneAdapter,
+  readNeonControlPlaneConfig,
+  isAutosuspendEventsError,
+} from './autosuspend-events';
+
 /**
  * Fetch a signal's historical time series.
  *
