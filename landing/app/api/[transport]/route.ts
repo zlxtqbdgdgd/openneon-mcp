@@ -156,7 +156,7 @@ function denyVerdictToEventType(reason: string): AuditEventType {
     return 'g1_cross_project_deny';
   }
   if (/\bG9\b/.test(reason) || reason.includes('速率')) {
-    return 'g9_rate_limit_deny';
+    return 'g9_rate_limit_exceeded';
   }
   // G4 hard-deny + matrix deny + confirm-token fail-closed deny 等 → destructive 兜底
   return 'g4_destructive_deny';
