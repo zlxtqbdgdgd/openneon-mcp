@@ -26,6 +26,9 @@ import { SIGNAL_REGISTRY, type SignalDef } from '../signal-registry';
 import { baseline } from '../../server-enrich/baseline/baseline';
 import { sloBurnRate, type SloBlock } from '../../server-enrich/baseline/slo-burn-rate';
 import { getSloSpec } from '../../server-enrich/baseline/slo-specs';
+import { getStlCache } from '../../server-enrich/baseline/stl-cache-singleton';
+import { stlCacheKey } from '../../server-enrich/baseline/stl-cron';
+import type { StlEnrich } from '../../server-enrich/baseline/stl';
 import type { ToolHandlerExtraParams } from '../types';
 
 export type GetHealthSignalsInput = {
@@ -72,6 +75,17 @@ export type HealthSignal = {
   bucket_id?: number;
   /** Full SLO block (feat-018 · ~7 fields) for signals with an SLO spec. */
   slo?: SloBlock;
+  /**
+   * feat-038 (L3) · STL 长漂移检测 enrich 5 字段。后台 cron 每 1h 预计算 · T4 调用零开销读 ttl-cache.
+   *
+   * Cache miss / not_computable / stlEnrichApplicable=false 时 5 字段全 null (degrade · 不阻塞).
+   * is_drifting=true → status 翻 'anomalous' (跟 is_sli_burning 同语义 · 长期趋势异常也应露给 shallow depth).
+   */
+  is_drifting?: boolean | null;
+  trend_slope?: number | null;
+  trend_direction?: 'rising' | 'falling' | 'flat' | null;
+  drift_window_days?: number | null;
+  drift_confidence?: number | null;
 };
 
 const DEFAULT_DATABASE = 'neondb';
@@ -219,6 +233,62 @@ async function enrichWithSlo(
 }
 
 /**
+ * feat-038 (L3) · STL 长漂移检测 enrich · 读 module-level ttl-cache · 不算只读 (cron 预算).
+ *
+ * Detail design: https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-038-L3-mcp-server-enrich-baseline-stl.html §3.5
+ *
+ * 行为 (跟 enrichWithBaseline / enrichWithSlo 同 pattern · degrade-not-block §8):
+ *   - status='unavailable' → 不动 (signal 本就盲 · 没必要加 STL 字段噪音).
+ *   - stlEnrichApplicable=false (monotonic signal e.g. storage_size_bytes) → 不动 · 5 字段不挂.
+ *   - cache miss / 5 字段都 null → 显式挂 5 个 null (透明: agent 看见字段缺失 ≠ 字段不存在).
+ *   - cache hit · is_drifting=true → status 翻 'anomalous' (跟 is_sli_burning 同 pattern · 长漂移
+ *     是 shallow depth 应该出的信号 · 容量预警价值最高).
+ *
+ * Cache key 用 `dimensions.endpoint` 当主键 · 跟 stl-cron 写入侧一致 (§6 跨 tenant 隔离 = 含完整维度).
+ * 没有 endpoint 时 fallback 用 projectId · agent 永远看到 5 字段 null (cache miss 一致表现 · 不报错).
+ */
+function enrichWithStl(
+  sig: HealthSignal,
+  def: SignalDef,
+  dimensions: Record<string, string>,
+  projectId: string,
+): HealthSignal {
+  if (sig.status === 'unavailable') return sig;
+  if (!def.stlEnrichApplicable) return sig;
+
+  const endpointId = dimensions.endpoint ?? projectId;
+  const cached: StlEnrich | undefined = getStlCache().get(
+    stlCacheKey(endpointId, def.signal),
+  );
+
+  // Cache miss: 5 字段全 null degrade · 字段显式存在 (透明 · agent 知道 STL 槽位在但还没数据).
+  if (!cached) {
+    return {
+      ...sig,
+      is_drifting: null,
+      trend_slope: null,
+      trend_direction: null,
+      drift_window_days: null,
+      drift_confidence: null,
+    };
+  }
+
+  const next: HealthSignal = {
+    ...sig,
+    is_drifting: cached.is_drifting,
+    trend_slope: cached.trend_slope,
+    trend_direction: cached.trend_direction,
+    drift_window_days: cached.drift_window_days,
+    drift_confidence: cached.drift_confidence,
+  };
+  // is_drifting=true 翻 anomalous (跟 is_sli_burning · 容量类长漂移 shallow 必须出).
+  if (cached.is_drifting === true && next.status === 'ok') {
+    next.status = 'anomalous';
+  }
+  return next;
+}
+
+/**
  * Filter signals for the requested depth (feat-007 token economy).
  *
  * - `shallow` (default): anomalous + unavailable signals (always surfaced for honesty) plus
@@ -263,6 +333,12 @@ export function flattenSignalRow(
     burn_rate_1h: blank(sig.slo?.burn_rate_1h),
     burn_rate_5m: blank(sig.slo?.burn_rate_5m),
     error_budget_remaining: blank(sig.slo?.error_budget_remaining),
+    // feat-038 (L3) STL 长漂移 5 字段 · CSV 列稳定 · cache miss / not_applicable → 空字符串.
+    is_drifting: blank(sig.is_drifting),
+    trend_slope: blank(sig.trend_slope),
+    trend_direction: blank(sig.trend_direction),
+    drift_window_days: blank(sig.drift_window_days),
+    drift_confidence: blank(sig.drift_confidence),
   };
 }
 
@@ -317,6 +393,8 @@ export async function handleGetHealthSignals(
           if (def.sliDirection !== 'none') {
             sig = await enrichWithSlo(sig, def, dimensions);
           }
+          // feat-038: STL 长漂移 enrich · 同步读 ttl-cache · cron 已预算 · 不调外部 I/O.
+          sig = enrichWithStl(sig, def, dimensions, args.projectId);
           signals.push(sig);
         }
 

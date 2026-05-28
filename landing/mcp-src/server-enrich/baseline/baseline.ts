@@ -48,6 +48,13 @@ import {
   type BucketCore,
 } from './seasonal-bucketing';
 import { parseDurationSeconds } from '../metrics-history/duration';
+import {
+  filterAutosuspendWindows,
+  checkMinSamples,
+  getMinValidSamples,
+  BaselineNotComputableError,
+} from '../sample-filter';
+import type { AutosuspendWindow } from '../metrics-history/autosuspend-events';
 
 export const DEFAULT_K = 3;
 export const DEFAULT_MIN_POINTS = 20;
@@ -72,8 +79,24 @@ export type BaselineRequest = {
   seasonal?: boolean;
   /** feat-017: bucketing strategy · default 'hour-of-day' (only value supported in L2b). */
   bucketStrategy?: 'hour-of-day';
+  /**
+   * feat-040 (L3): autosuspend windows from Neon control plane · sample-filter 双指针 O(N+M) 排除
+   *
+   * 来自 AutosuspendEventFetchAdapter (metrics-history/autosuspend-events.ts) · 调用方 (T4 handler /
+   * cron) 提前拉好传进来 · baseline 算法本身不直接打 control plane API (保持 pure · 跟 fetchHistory
+   * 同 pattern)。Aurora / 无 autosuspend 概念时传空数组 / 省略 · 自动 no-op。
+   *
+   * 详 §3.3 sample-filter 共享层 · 跟 sample-filter.filterAutosuspendWindows 接口契约一致。
+   */
+  autosuspendWindows?: AutosuspendWindow[];
+  /**
+   * feat-040 (L3): policy.yaml `baseline.min_valid_samples` override · 默认 100。
+   *
+   * filter 后 finite sample 不足时 throw BaselineNotComputableError · baseline 内部 catch 翻 status
+   * 'insufficient_data' (跟既有 三态 一致 · 调用方无需改) · 上游 T4 handler 后续可读 baseline_state 字段。
+   */
+  minValidSamples?: number;
 };
-
 export type BaselineResult = {
   status: BaselineStatus;
   /** Only on status='ok'. */
@@ -154,19 +177,35 @@ function windowKey(window: MetricHistoryRequest['window']): string {
     : `abs:${window.from}-${window.to}`;
 }
 
+/**
+ * feat-040: autosuspend windows 进 cache key · 不同 windows 集合算出的 core 是不同 objective core ·
+ * key 必须区分 (不然 windows 变了 cache 仍返旧 band)。windows 通常 1h cache 内稳定 · 实际进入此函数
+ * 的频率低 · key 用 start+end 紧凑 hash 不展开 JSON.stringify (省字节)。
+ */
+function autosuspendWindowsKey(
+  windows: AutosuspendWindow[] | undefined,
+): string {
+  if (!windows || windows.length === 0) return 'aw:none';
+  const sorted = [...windows].sort((a, b) => a.start - b.start);
+  return `aw:${sorted.map((w) => `${w.start}-${w.end}`).join(',')}`;
+}
+
 function coreCacheKey(req: BaselineRequest): string {
   // Full dimensions in the key = cross-tenant isolation boundary (§6).
-  return `${req.signal}|${dimensionsKey(req.dimensions)}|${windowKey(req.window)}|${req.bucket}`;
+  // feat-040: autosuspend windows 进 key · 不同 windows 不串场。
+  return `${req.signal}|${dimensionsKey(req.dimensions)}|${windowKey(req.window)}|${req.bucket}|${autosuspendWindowsKey(req.autosuspendWindows)}`;
 }
 
 /**
  * feat-017: seasonal cache key. Prefix isolates it from the feat-016 cache space so a non-seasonal
  * and seasonal call for the same signal don't collide. `bucketStrategy` is in the key so a future
  * 'hour-of-week' strategy gets its own entries.
+ *
+ * feat-040: autosuspend windows 进 key · 跟 coreCacheKey 同口径。
  */
 function seasonalCoreKey(req: BaselineRequest): string {
   const strategy = req.bucketStrategy ?? 'hour-of-day';
-  return `seasonal:${strategy}|${req.signal}|${dimensionsKey(req.dimensions)}|${windowKey(req.window)}|${req.bucket}`;
+  return `seasonal:${strategy}|${req.signal}|${dimensionsKey(req.dimensions)}|${windowKey(req.window)}|${req.bucket}|${autosuspendWindowsKey(req.autosuspendWindows)}`;
 }
 
 function ttlMsFromBucket(bucket: string): number {
@@ -178,7 +217,11 @@ function ttlMsFromBucket(bucket: string): number {
   }
 }
 
-/** Compute the objective band core (history fetch → median/MAD → three-state). No caching here. */
+/** Compute the objective band core (history fetch → median/MAD → three-state). No caching here.
+ *
+ * feat-040 (L3): autosuspend windows 排除走 sample-filter.filterAutosuspendWindows · filter 后
+ * 跟既有 flattenFiniteValues / median / MAD 同口径 · 不动算法本身 (橫切关注集中在 sample-filter.ts)。
+ */
 async function computeCore(
   req: BaselineRequest,
   fetchHistory: NonNullable<BaselineDeps['fetchHistory']>,
@@ -197,7 +240,34 @@ async function computeCore(
     return { status: 'insufficient_data', coverage: ZERO_COVERAGE };
   }
 
-  const values = flattenFiniteValues(history.points);
+  // feat-040: autosuspend 段排除 (sample-filter 共享层 · 双指针 O(N+M))。windows 由调用方
+  // 从 AutosuspendEventFetchAdapter 提前拉好传入 · 空 windows / 省略 → no-op (向后兼容)。
+  const hasAutosuspendInputs =
+    (req.autosuspendWindows && req.autosuspendWindows.length > 0) ||
+    req.minValidSamples !== undefined;
+  const points =
+    req.autosuspendWindows && req.autosuspendWindows.length > 0
+      ? filterAutosuspendWindows(history.points, req.autosuspendWindows)
+      : history.points;
+
+  // feat-040: min_valid_samples 阈值校验 · 仅在 feat-040 启用 (传了 autosuspendWindows 或显式 minValidSamples)
+  // 时生效 · 向后兼容 feat-016/017 既有 behavior (min_points=20 单独走)。
+  // filter 后不足时 throw → catch 翻 insufficient_data (三态保持不变 · 调用方 behavior 不动)。
+  if (hasAutosuspendInputs) {
+    const minValid = getMinValidSamples({
+      policyMinValidSamples: req.minValidSamples,
+    });
+    try {
+      checkMinSamples(points, minValid);
+    } catch (err) {
+      if (err instanceof BaselineNotComputableError) {
+        return { status: 'insufficient_data', coverage: history.coverage };
+      }
+      throw err;
+    }
+  }
+
+  const values = flattenFiniteValues(points);
   if (values.length < minPoints) {
     return { status: 'insufficient_data', coverage: history.coverage };
   }
@@ -245,15 +315,21 @@ async function computeSeasonalCoreLayer(
     };
   }
 
+  // feat-040: autosuspend 段排除 (跟 computeCore 同 pattern · 双指针 O(N+M) · 算法不动)。
+  const points =
+    req.autosuspendWindows && req.autosuspendWindows.length > 0
+      ? filterAutosuspendWindows(history.points, req.autosuspendWindows)
+      : history.points;
+
   // Per-bucket cores.
-  const groups = groupByHourOfDay(history.points);
+  const groups = groupByHourOfDay(points);
   const buckets: SeasonalCore['buckets'] = {};
   for (const [h, vs] of groups) {
     buckets[h] = computeBucketCore(vs, minPoints);
   }
 
-  // Global fallback core · same shape as feat-016 BaselineCore.
-  const allValues = flattenFiniteValues(history.points);
+  // Global fallback core · same shape as feat-016 BaselineCore (跟 filter 后的 points 一致).
+  const allValues = flattenFiniteValues(points);
   let global: BaselineCore;
   if (allValues.length < minPoints) {
     global = { status: 'insufficient_data', coverage: history.coverage };
@@ -366,7 +442,14 @@ export async function baseline(
   if (req.seasonal === true) {
     const seasonalCache = deps.seasonalCache ?? defaultSeasonalCache;
     const now = deps.now ?? Date.now;
-    return baselineSeasonal(req, fetchHistory, seasonalCache, k, minPoints, now);
+    return baselineSeasonal(
+      req,
+      fetchHistory,
+      seasonalCache,
+      k,
+      minPoints,
+      now,
+    );
   }
 
   const cache = deps.cache ?? defaultCache;
@@ -378,7 +461,11 @@ export async function baseline(
     cache.set(key, core, ttlMsFromBucket(req.bucket));
   }
 
-  if (core.status !== 'ok' || core.median === undefined || core.mad === undefined) {
+  if (
+    core.status !== 'ok' ||
+    core.median === undefined ||
+    core.mad === undefined
+  ) {
     return { status: core.status, coverage: core.coverage, algo: null };
   }
 

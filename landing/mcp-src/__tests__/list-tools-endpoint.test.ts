@@ -68,7 +68,7 @@ describe('/api/list-tools endpoint', () => {
   it('filters by scopes when category param is present (with include=all to isolate grant filter)', async () => {
     const body = await callListTools({ category: 'querying', include: 'all' });
     expect(body.grant.scopes).toEqual(['querying']);
-    expect(body.tools).toHaveLength(19); // 10 upstream + 2 day-one (T6/T2) + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 · scope='querying'
+    expect(body.tools).toHaveLength(20); // 10 upstream + 2 day-one (T6/T2) + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-045 generate_rca_report · scope='querying'
   });
 
   it('returns only always-available tools when scopes are all invalid (with include=all)', async () => {

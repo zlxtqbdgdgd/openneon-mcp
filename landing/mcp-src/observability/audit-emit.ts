@@ -53,7 +53,14 @@ export type AuditEventType =
   // feat-042/#3 (#162) DDL canary 跑完 · verdict 4-outcome (低风险 / 高风险 / 失败 / 超时) + 测量 + canary_branch_id
   | 'canary_completed'
   // feat-042/#4 (#163) 7d retention cron 清理 canary branch · 含 branch_id + age_ms
-  | 'canary_branch_purged';
+  | 'canary_branch_purged'
+  // feat-068 动态探针 (#143 · audit 事件流) · attach 路径全生命周期 + 三层限流 + post-condition
+  | 'probe_attached'
+  | 'probe_detached'
+  | 'probe_overhead_exceeded'
+  | 'probe_rate_limit_exceeded'
+  | 'probe_attach_denied'
+  | 'probe_attach_failed';
 
 export type AuditOutcome =
   | 'allow'
