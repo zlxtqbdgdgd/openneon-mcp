@@ -278,3 +278,28 @@ export function assertProductionObfuscatorMode(
   }
   return false;
 }
+
+// ------------------------------------------------------------------------------------------------
+// feat-037/#4 · obfuscateLogLine · log pattern 聚类 hybrid path 强制复用 (主备路径都过)
+// ------------------------------------------------------------------------------------------------
+
+/**
+ * obfuscateLogLine · feat-037/#4 · log line 脱敏 (OWASP LLM02 主防御).
+ *
+ * 跟 obfuscateText 复用同一个 literal-aware tokenizer · 但针对 log line 调优:
+ *   - log 不是 SQL · 不走 libpg-query verify (parseSync 会 fail · log 不是合法 SQL)
+ *   - 直接走 obfuscateText 的 fail-closed 字面量替换通路 · 已支持 numeric / string literal /
+ *     UUID / timestamp / IP 等替换 ('<>' 占位形如 $N)
+ *   - production NODE_ENV='production' 走 getObfuscatorMode() 强制 strict
+ *
+ * **复用点 (feat-024 T11)**: 跟 search-samples / auto-explain collector 共用同一脱敏通路 ·
+ * "raw log 不出 mcp 边界" 这一条 fail-closed 保证由本函数承担。
+ *
+ * @param line raw log line (含 PII 可能 · numeric / UUID / IP / hostname / SQL 字面量)
+ * @returns obfuscated log line (literal token 全 $N · 关键字 / identifier / log structure 保留)
+ */
+export function obfuscateLogLine(line: string): string {
+  const mode = getObfuscatorMode();
+  const { text } = obfuscateText(line, mode);
+  return text;
+}
