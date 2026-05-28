@@ -50,6 +50,10 @@ export type AuditEventType =
   | 'search_plans_invoked'
   // feat-025 T12 pool_stats · pgcat/PgBouncer 连接池 snapshot 调用审计
   | 'pool_stats_invoked'
+  // feat-043 slot-monitor (design#53 §3.3 · system principal · 仅 audit OTel · 1h cron 双级阈值 24h/36h)
+  | 'replication_slot_inactive_warn'
+  | 'replication_slot_inactive_critical'
+  | 'replication_slot_monitor_cron_summary'
   // feat-068 动态探针 (#143 · audit 事件流) · attach 路径全生命周期 + 三层限流 + post-condition
   | 'probe_attached'
   | 'probe_detached'
