@@ -94,6 +94,8 @@ import {
   type CategoryInclude,
 } from '../../../mcp-src/config/categories';
 import { NEON_TOOLS } from '../../../mcp-src/tools/definitions';
+// feat-060/#2 (#130): per-call JWT claim 绑定 SQL/tool 参数 · 防同 project 内跨用户越权 (§0.2 亮点 A3)
+import { bindClaims } from '../../../mcp-src/auth/claim-binding';
 import { assert } from '../../../lib/assert';
 import { buildResourceMetadataUrlForResourceRequest } from '../../../lib/oauth/protected-resource-metadata';
 import {
@@ -224,6 +226,9 @@ type AuthenticatedExtra = {
       client?: AuthContext['extra']['client'];
       transport?: AppContext['transport'];
       userAgent?: string;
+      // feat-060/#2 (#130): MCP-Auth-<authService> headers 在 verifyToken 时捕获 ·
+      // 给 claim-binding middleware 用 (避免 tool dispatch 时重读 req · 上游 MCP SDK 不直传 req)。
+      mcpAuthHeaders?: Record<string, string>;
     };
   };
   signal?: AbortSignal;
@@ -570,10 +575,48 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
 
                 try {
                   // Inject projectId if in project-scoped mode
-                  const effectiveArgs = injectProjectId(
+                  const argsAfterInject = injectProjectId(
                     (args ?? {}) as Record<string, unknown>,
                     grant,
                   );
+
+                  // feat-060/#2 (#130): JWT claim 绑定 middleware · 串在 feat-029 API Key check 之后 / feat-056 pipeline 之前。
+                  // - 扫 tool inputSchema 的 fromClaim 声明 · verify JWT · 4-outcome 决策 · 强制覆盖 agent 越权值
+                  // - pass / override → 用 boundArgs 继续 dispatch
+                  // - deny_missing / deny_invalid → 返 isError content (HTTP 200 + isError=true · 跟 feat-029 一致风格)
+                  const claimResult = await bindClaims({
+                    toolName: tool.name,
+                    toolSchema:
+                      tool.inputSchema as
+                        | import('../../../mcp-src/auth/claim-binding').ToolInputSchema
+                        | undefined,
+                    args: argsAfterInject,
+                    headers: authInfo.extra?.mcpAuthHeaders ?? {},
+                    projectId:
+                      grant.projectId ??
+                      (argsAfterInject.projectId as string | undefined),
+                    principal: `agent:${account?.id ?? 'unknown'}`,
+                  });
+                  if (
+                    claimResult.outcome === 'deny_missing' ||
+                    claimResult.outcome === 'deny_invalid'
+                  ) {
+                    logger.warn('claim-binding deny (feat-060):', {
+                      ...properties,
+                      outcome: claimResult.outcome,
+                      code: claimResult.denyDetail?.code,
+                    });
+                    return {
+                      content: [
+                        {
+                          type: 'text',
+                          text: `Claim binding rejected: ${claimResult.denyDetail?.code ?? 'UNKNOWN'} (${claimResult.outcome}). ${claimResult.denyDetail?.message ?? ''}`,
+                        },
+                      ],
+                      isError: true,
+                    } as const;
+                  }
+                  const effectiveArgs = claimResult.boundArgs ?? argsAfterInject;
 
                   // feat-056 enforcement pipeline (ADR-0007 · #73 骨架: hard-deny G4 · 在 toolHandler 之前)
                   const a = effectiveArgs as Record<string, unknown>;
@@ -1381,12 +1424,34 @@ const fetchAccountDetails = async (
 };
 
 // Token verification function with two paths (OAuth tokens + API keys)
+/**
+ * feat-060/#2 (#130): 扫描 request headers 抓所有 \`MCP-Auth-<authService>\` 形态的 JWT ·
+ * 返 {<authService 名 (小写)> → JWT} 字典 · 给 claim-binding middleware 用。
+ *
+ * header 名跟 Google MCP Toolbox 同源 · authService 名跟 policy.yaml authServices 字典 key 一致。
+ * 大小写不敏感 (HTTP 规范) · 此处统一小写 key。
+ */
+function extractMcpAuthHeaders(req: Request): Record<string, string> {
+  const result: Record<string, string> = {};
+  // Next.js Request.headers 是 Headers (web standard) · 用 forEach iterate
+  req.headers.forEach((value, name) => {
+    const lower = name.toLowerCase();
+    if (lower.startsWith('mcp-auth-') && value.length > 0) {
+      // key 保留 \`mcp-auth-<service>\` 全名 (claim-binding extractJwt 也用全名匹配)
+      result[lower] = value;
+    }
+  });
+  return result;
+}
+
 const verifyToken = async (
   req: Request,
   bearerToken?: string,
 ): Promise<AuthInfo | undefined> => {
   const userAgent = req.headers.get('user-agent') || undefined;
   const readOnlyHeader = req.headers.get('x-read-only');
+  // feat-060/#2 (#130): 捕获所有 MCP-Auth-<authService> headers · 后续 tool dispatch 时给 bindClaims 用
+  const mcpAuthHeaders = extractMcpAuthHeaders(req);
 
   logger.info('verifyToken called', {
     hasBearerToken: !!bearerToken,
@@ -1466,6 +1531,8 @@ const verifyToken = async (
           },
           transport,
           userAgent,
+          // feat-060/#2 (#130): forward MCP-Auth-* headers 给 claim-binding
+          mcpAuthHeaders,
         },
       };
     }
@@ -1570,6 +1637,8 @@ const verifyToken = async (
       grant,
       transport,
       userAgent,
+      // feat-060/#2 (#130): forward MCP-Auth-* headers 给 claim-binding
+      mcpAuthHeaders,
     },
   };
 };
