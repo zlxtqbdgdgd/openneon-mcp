@@ -28,7 +28,7 @@ describe('filterToolsForGrant', () => {
       grant({ scopes: ['querying'] }),
     );
     const names = tools.map((t) => t.name);
-    expect(tools).toHaveLength(20); // 10 upstream + 2 day-one (T6 · T2) + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-045 generate_rca_report · all scope='querying'
+    expect(tools).toHaveLength(21); // 10 upstream + 2 day-one (T6 · T2) + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-066/#2 trace get/search · all scope='querying'
     expect(names).toContain('run_sql');
     expect(names).toContain('search');
     expect(names).toContain('fetch');
@@ -62,7 +62,7 @@ describe('filterToolsForGrant', () => {
       NEON_TOOLS,
       grant({ projectId: 'proj-123', scopes: ['querying'] }),
     );
-    expect(tools).toHaveLength(18); // 8 upstream + 2 day-one (T6/T2) + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-045 generate_rca_report · scope='querying' (project-scoped)
+    expect(tools).toHaveLength(19); // 8 upstream + 2 day-one (T6/T2) + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-066/#2 trace get/search · scope='querying' + require projectId
     const names = tools.map((t) => t.name);
     expect(names).toContain('run_sql');
     expect(names).toContain('get_neondb_query_statement'); // T6 day-one
@@ -74,7 +74,7 @@ describe('filterToolsForGrant', () => {
 describe('getAvailableTools', () => {
   it('applies read-only filter after grant filtering', () => {
     const tools = getAvailableTools(grant({ scopes: ['querying'] }), true);
-    expect(tools).toHaveLength(15); // 6 upstream + 2 day-one (T6/T2) + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 · scope='querying' + readOnlySafe
+    expect(tools).toHaveLength(17); // 6 upstream + 2 day-one (T6/T2) + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-066/#2 trace get/search · scope='querying' + readOnlySafe
     for (const tool of tools) {
       expect(tool.readOnlySafe).toBe(true);
     }

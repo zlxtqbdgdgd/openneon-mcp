@@ -2235,4 +2235,49 @@ You MUST follow these steps:
       content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
     };
   },
+
+  // feat-066/#2 search_neondb_traces · trace summary 列表 · filter.project_id 硬覆盖 (feat-066/#3 cross-tenant)
+  search_neondb_traces: async ({ params }) => {
+    const result = await handleSearchNeondbTraces({
+      projectId: params.projectId,
+      filter: params.filter,
+      limit: params.limit,
+    });
+    if (params.format === 'csv' || params.format === 'tsv') {
+      if ('error' in result) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        };
+      }
+      const header = JSON.stringify(
+        { total: result.total, cross_tenant_filtered: result.cross_tenant_filtered },
+        null,
+        2,
+      );
+      const flatRows = result.traces.map((t) => ({
+        trace_id: t.trace_id,
+        span_count: t.span_count,
+        duration_us: t.duration_us,
+        root_service: t.root_service,
+        root_operation: t.root_operation,
+        start_time: t.start_time,
+        has_error: t.has_error,
+        tracestate: t.tracestate ?? '',
+        components: t.components.map((c) => c.service_name + ':' + c.duration_us + 'us').join('·'),
+      }));
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `${header}
+${formatToolResponse(flatRows, { format: params.format })}`,
+          },
+        ],
+      };
+    }
+    return {
+      content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+    };
+  },
+
 } satisfies ToolHandlers;

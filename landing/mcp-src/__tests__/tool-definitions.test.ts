@@ -153,7 +153,7 @@ describe('tool category field (feat-005 #2 · narrative #3 ecosystem-friendly)',
 
   it('current optional count = 40 (44 total - 4 core · keeps 26+ listing budget for ecosystem MCPs)', () => {
     const optional = NEON_TOOLS.filter((t) => t.category === 'optional');
-    expect(optional.length).toBe(40);
+    expect(optional.length).toBe(41);
   });
 
   it('T1 find_neondb_instances is core (sales 剧本入口 · narrative §3 demo spine 第 1 步)', () => {

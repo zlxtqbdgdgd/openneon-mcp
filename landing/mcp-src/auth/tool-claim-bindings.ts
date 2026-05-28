@@ -46,6 +46,34 @@ export const TOOL_CLAIM_BINDINGS: Record<string, ToolClaimBinding[]> = {
       spec: { service: 'default', field: 'sub' },
     },
   ],
+  // feat-066/A6 · trace 读两件套的"第 2 道护栏"占位 (R2 ⚠ 阻塞-5 决策):
+  //
+  //   grant.projectId 已经在 route.ts `injectProjectId` 层做了 filter-level 硬覆盖 (第 1 道) ·
+  //   bindClaims 这一层对 trace tool 来说**当前无额外覆盖语义** — 因为 projectId 已经从 grant
+  //   而非 JWT.claim 取 · 加 fromClaim={service:'default', field:'project_id'} 表面"覆盖"实际
+  //   会被 grant-filter 已注入的相同值再次写一遍 (idempotent · noop)。
+  //
+  //   保留这个 binding 的价值 = "三道护栏"名实相符:
+  //     1) filter-level inject (grant-filter.injectProjectId) → projectId 来自 grant
+  //     2) claim-binding sweep (本 binding) → bindClaims 扫到 projectId · 走 4-outcome 路径 ·
+  //        即使 noop 也留下 audit trail (可以追溯 fromClaim 是否 firing) · 防 grant pipeline 重构
+  //        意外丢 hop 后无人察觉
+  //     3) row-level filter (handler `filterTenantSummaries` / `applyCrossTenantGuard`)
+  //
+  //   未来若引入"project_id 必须等于 JWT.project_id"的 multi-claim 模型 · 这个 binding 即变成
+  //   非 noop · 现在做 placeholder 比将来加 hop 容易。
+  get_neondb_trace: [
+    {
+      paramName: 'projectId',
+      spec: { service: 'default', field: 'project_id' },
+    },
+  ],
+  search_neondb_traces: [
+    {
+      paramName: 'projectId',
+      spec: { service: 'default', field: 'project_id' },
+    },
+  ],
 };
 
 /**
