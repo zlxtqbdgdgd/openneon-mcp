@@ -48,12 +48,32 @@ export type ProjectPolicy = {
   audit_severity?: 'info' | 'medium' | 'high';
   // feat-055/#1: per-project G9 rate counter (已 clamp 到 CONFIG_BOUNDS · undefined = 用 day-one defaults)
   rate_counter?: RateCounterConfig;
+  // feat-060/#1 (#129): 本 project 接受的 authService 名列表 (未配 = 该 project 不走 feat-060 路径 ·
+  // 向后兼容 feat-029-only 部署)。authService 详细配置在顶层 authServices 字典。
+  authServices?: string[];
+};
+
+// feat-060/#1 (#129): per-call JWT 验证用的 OIDC authService 配置 · top-level 字典 · 多 project 共享。
+// 设计: features/feat-060-L2-mcp-server-claim-binding.html §4.1。
+export type AuthServiceConfig = {
+  /** authService 名 (e.g. "saas-app-oidc") · 引用其他 project policy 的 authServices 名同 */
+  name: string;
+  /** OIDC issuer URL (e.g. "https://auth.saas-app.com") · 用于 JWT.iss 校验 */
+  issuer: string;
+  /** JWKS endpoint URL · 拉公钥用 (e.g. "https://auth.saas-app.com/.well-known/jwks.json") */
+  jwks_url: string;
+  /** JWT audience claim · mcp server 自身标识 (e.g. "openneon-mcp") · 防 token 重放到其他 audience */
+  audience: string;
+  /** JWKS 缓存 TTL 秒 · 默认 600 (10 min) · fail-closed: 过期后 JWKS 不可达 → 拒签 (不 stale 兜底) */
+  jwks_cache_ttl_seconds: number;
 };
 
 export type PolicyConfig = {
   schema_version?: number;
   projects: Record<string, ProjectPolicy>; // key = Neon project_id
   defaults: { autonomy_level: AutonomyLevel; shadow_mode?: boolean };
+  // feat-060/#1 (#129): 顶层 authService 配置字典 · key = authService 名 (project policy 的 authServices 数组引用此 key)
+  authServices: Record<string, AuthServiceConfig>;
 };
 
 export type ResolvedPolicy = {
@@ -76,8 +96,16 @@ const FALLBACK_DEFAULTS: PolicyConfig['defaults'] = {
   shadow_mode: true,
 };
 
+// feat-060/#1 (#129): JWKS cache TTL 上下界 (clamp · 防 prompt injection 写 ttl=0 关掉 cache 或写很大数禁掉过期)
+const JWKS_TTL_BOUNDS = { min: 60, max: 86400 }; // 1 min ~ 24h
+const DEFAULT_JWKS_TTL_SECONDS = 600; // 10 min · per 详设 §4.1
+
 // in-memory current policy · 热重载原子 swap(JS 单线程 · 引用赋值原子 · in-flight 读旧)
-let current: PolicyConfig = { projects: {}, defaults: FALLBACK_DEFAULTS };
+let current: PolicyConfig = {
+  projects: {},
+  defaults: FALLBACK_DEFAULTS,
+  authServices: {},
+};
 let loaded = false;
 
 function isAutonomyLevel(v: unknown): v is AutonomyLevel {
@@ -189,6 +217,82 @@ function validateRateCounter(pid: string, raw: unknown): RateCounterConfig {
   return result;
 }
 
+/**
+ * 校验 + 规整 authServices 顶层段 (feat-060/#1 · 详设 §4.1)。
+ *
+ * 缺段 / 非 object → 返空字典 (向后兼容 · feat-029-only 部署不需要 authServices)。
+ * 每条 authService 必须含 issuer / jwks_url / audience (string · 非空) · jwks_cache_ttl_seconds
+ * 可省 (默认 600s · clamp 到 [60, 86400])。
+ * 任一字段非法 → throw (调用方 fail-safe · 不 fail-open · 跟 timeout_overrides 同风格)。
+ */
+function validateAuthServices(
+  raw: unknown,
+): Record<string, AuthServiceConfig> {
+  if (!raw || typeof raw !== 'object') return {};
+  const result: Record<string, AuthServiceConfig> = {};
+  for (const [name, svcRaw] of Object.entries(raw as Record<string, unknown>)) {
+    if (!svcRaw || typeof svcRaw !== 'object') {
+      throw new Error(`authServices "${name}" 不是 object`);
+    }
+    const svc = svcRaw as Record<string, unknown>;
+    if (typeof svc.issuer !== 'string' || svc.issuer.length === 0) {
+      throw new Error(`authServices "${name}" 的 issuer 非法 (必须非空 string)`);
+    }
+    if (typeof svc.jwks_url !== 'string' || svc.jwks_url.length === 0) {
+      throw new Error(`authServices "${name}" 的 jwks_url 非法 (必须非空 string)`);
+    }
+    if (typeof svc.audience !== 'string' || svc.audience.length === 0) {
+      throw new Error(`authServices "${name}" 的 audience 非法 (必须非空 string)`);
+    }
+    let ttl = DEFAULT_JWKS_TTL_SECONDS;
+    if (svc.jwks_cache_ttl_seconds !== undefined) {
+      if (typeof svc.jwks_cache_ttl_seconds !== 'number') {
+        throw new Error(
+          `authServices "${name}" 的 jwks_cache_ttl_seconds 非法 (须 number)`,
+        );
+      }
+      const c = clampNumber(svc.jwks_cache_ttl_seconds, JWKS_TTL_BOUNDS);
+      if (c.clamped) {
+        logger.warn(
+          `authServices "${name}" jwks_cache_ttl_seconds=${svc.jwks_cache_ttl_seconds} 越界 · clamp 到 ${c.value} (JWKS_TTL_BOUNDS · ADR-0007)`,
+        );
+      }
+      ttl = c.value;
+    }
+    result[name] = {
+      name,
+      issuer: svc.issuer,
+      jwks_url: svc.jwks_url,
+      audience: svc.audience,
+      jwks_cache_ttl_seconds: ttl,
+    };
+  }
+  return result;
+}
+
+/**
+ * 校验 project policy 的 authServices 字段 (feat-060/#1 · 详设 §4.1)。
+ *
+ * 缺段 → undefined (该 project 不走 feat-060 路径 · 向后兼容 feat-029-only)。
+ * 非数组 / 元素非 string → throw (调用方 fail-safe)。
+ * 已知未引用顶层 authServices · 此时不强校验存在 (验证延后到 verify 时 · 防 ordering 依赖)。
+ */
+function validateProjectAuthServices(
+  pid: string,
+  raw: unknown,
+): string[] | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) {
+    throw new Error(`project ${pid} authServices 非法 (须 string 数组)`);
+  }
+  for (const item of raw) {
+    if (typeof item !== 'string' || item.length === 0) {
+      throw new Error(`project ${pid} authServices 数组元素非法 (须非空 string)`);
+    }
+  }
+  return [...raw];
+}
+
 /** 校验 + 规整 js-yaml load 结果 → PolicyConfig · 非法抛错(调用方 fail-safe) */
 export function validate(raw: unknown): PolicyConfig {
   if (!raw || typeof raw !== 'object') {
@@ -234,6 +338,8 @@ export function validate(raw: unknown): PolicyConfig {
       audit_severity: p.audit_severity as ProjectPolicy['audit_severity'],
       // feat-055/#1: per-project G9 rate counter · clamp 到 CONFIG_BOUNDS (越界 warn + use clamped)
       rate_counter: validateRateCounter(pid, p.rate_counter),
+      // feat-060/#1 (#129): per-project authServices 引用列表 (undefined = 未配 · 该 project 不走 feat-060)
+      authServices: validateProjectAuthServices(pid, p.authServices),
     };
   }
   return {
@@ -241,6 +347,8 @@ export function validate(raw: unknown): PolicyConfig {
       typeof r.schema_version === 'number' ? r.schema_version : undefined,
     projects,
     defaults,
+    // feat-060/#1 (#129): 顶层 authServices 字典 (缺 = 空字典 · 向后兼容)
+    authServices: validateAuthServices(r.authServices),
   };
 }
 
@@ -274,7 +382,11 @@ export function loadPolicy(): boolean {
         },
       );
     } else {
-      current = { projects: {}, defaults: FALLBACK_DEFAULTS };
+      current = {
+        projects: {},
+        defaults: FALLBACK_DEFAULTS,
+        authServices: {},
+      };
       logger.warn(
         'policy 启动加载失败 · 落 L1 defaults (fail-safe · 不 fail-open)',
         {
@@ -363,4 +475,27 @@ export function applyOverrides(
 export function __setPolicyForTest(config: PolicyConfig): void {
   current = config;
   loaded = true;
+}
+
+/**
+ * feat-060/#1 (#129): 拉某 authService 的完整配置 · 给 jwks-cache / jwt-verify 用。
+ * 未配置(name 不在 policy.yaml authServices 字典里) → 返 undefined · 调用方负责
+ * 翻译为 deny_missing outcome (per 详设 §4 4-outcome 矩阵)。
+ */
+export function getAuthService(
+  name: string,
+): AuthServiceConfig | undefined {
+  ensureLoaded();
+  return current.authServices[name];
+}
+
+/**
+ * feat-060/#1 (#129): 拉某 project 接受哪些 authService 名 · 给 claim-binding middleware 用。
+ * 未配置(project 没 authServices 字段) → 返空数组 (该 project 不走 feat-060 路径 ·
+ * 向后兼容 feat-029-only 部署 · 调用方不会 invoke verify · tool 该走啥走啥)。
+ */
+export function getProjectAuthServices(projectId: string): string[] {
+  ensureLoaded();
+  const p = current.projects[projectId];
+  return p?.authServices ? [...p.authServices] : [];
 }
