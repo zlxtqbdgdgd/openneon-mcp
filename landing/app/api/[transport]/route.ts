@@ -591,7 +591,7 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                     // feat-060/#3 (#131): 用 side-table 取 fromClaim 声明 · 不读 zod inputSchema (zod 不支持任意元数据)
                     toolSchema: getToolClaimBindings(tool.name),
                     args: argsAfterInject,
-                    headers: authInfo.extra?.mcpAuthHeaders ?? {},
+                    headers: typedExtra.authInfo?.extra?.mcpAuthHeaders ?? {},
                     projectId:
                       grant.projectId ??
                       (argsAfterInject.projectId as string | undefined),

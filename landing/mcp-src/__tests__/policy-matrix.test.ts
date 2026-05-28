@@ -81,6 +81,7 @@ describe('resolvePolicy + per-project verdict (feat-056/#2)', () => {
         },
       },
       defaults: { autonomy_level: 'L1', shadow_mode: true },
+      authServices: {},
     });
   });
 
