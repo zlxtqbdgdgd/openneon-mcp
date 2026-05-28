@@ -96,6 +96,8 @@ import {
 import { NEON_TOOLS } from '../../../mcp-src/tools/definitions';
 // feat-060/#2 (#130): per-call JWT claim 绑定 SQL/tool 参数 · 防同 project 内跨用户越权 (§0.2 亮点 A3)
 import { bindClaims } from '../../../mcp-src/auth/claim-binding';
+// feat-060/#3 (#131): tool fromClaim 注册表 (side-table · 跟 zod schema 解耦)
+import { getToolClaimBindings } from '../../../mcp-src/auth/tool-claim-bindings';
 import { assert } from '../../../lib/assert';
 import { buildResourceMetadataUrlForResourceRequest } from '../../../lib/oauth/protected-resource-metadata';
 import {
@@ -586,10 +588,8 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
                   // - deny_missing / deny_invalid → 返 isError content (HTTP 200 + isError=true · 跟 feat-029 一致风格)
                   const claimResult = await bindClaims({
                     toolName: tool.name,
-                    toolSchema:
-                      tool.inputSchema as
-                        | import('../../../mcp-src/auth/claim-binding').ToolInputSchema
-                        | undefined,
+                    // feat-060/#3 (#131): 用 side-table 取 fromClaim 声明 · 不读 zod inputSchema (zod 不支持任意元数据)
+                    toolSchema: getToolClaimBindings(tool.name),
                     args: argsAfterInject,
                     headers: authInfo.extra?.mcpAuthHeaders ?? {},
                     projectId:

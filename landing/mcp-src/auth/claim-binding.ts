@@ -147,6 +147,52 @@ function claimValuesMatch(
 }
 
 /**
+ * feat-060/#3 (#131): 沿 dot-path 取嵌套字段 (e.g. \`expected_user_filter.value\` from \`{ expected_user_filter: { value: 42 } }\`)。
+ *
+ * 中途任一层不是 object / 该 key 不存在 → 返 undefined。不抛错 (调用方按 undefined 处理 · agent 未传 = pass)。
+ */
+function getNestedValue(
+  obj: Record<string, unknown>,
+  path: string,
+): unknown {
+  const parts = path.split('.');
+  let cur: unknown = obj;
+  for (const part of parts) {
+    if (cur === null || cur === undefined || typeof cur !== 'object') {
+      return undefined;
+    }
+    cur = (cur as Record<string, unknown>)[part];
+  }
+  return cur;
+}
+
+/**
+ * feat-060/#3 (#131): 沿 dot-path 设置嵌套字段 · 中途缺层 → 自动建空 object。
+ *
+ * **重要**: 不 mutate 原 obj · 返新 shallow-cloned obj (浅克隆 path 路径上每层 · 兄弟节点共享)。
+ * 防 claim-binding override 时 mutate 上游传入的 args。
+ *
+ * e.g. setNestedValue({a: {b: 1}}, 'a.c', 2) → {a: {b: 1, c: 2}} (原 a 对象被 clone)
+ */
+function setNestedValue(
+  obj: Record<string, unknown>,
+  path: string,
+  value: unknown,
+): Record<string, unknown> {
+  const parts = path.split('.');
+  if (parts.length === 1) {
+    return { ...obj, [parts[0]]: value };
+  }
+  const [head, ...rest] = parts;
+  const child = obj[head];
+  const childObj: Record<string, unknown> =
+    child !== null && typeof child === 'object'
+      ? (child as Record<string, unknown>)
+      : {};
+  return { ...obj, [head]: setNestedValue(childObj, rest.join('.'), value) };
+}
+
+/**
  * 主入口 · per tool-call 调一次。
  *
  * @param ctx.toolName tool 名 (audit 用 + log)
@@ -194,7 +240,8 @@ export async function bindClaims(ctx: {
   }
 
   // 3. 逐个 fromClaim param 处理 · 任一 deny 立即终止 (fail-closed) · 全部 pass 或部分 override → 返合并 args
-  const boundArgs: Record<string, unknown> = { ...ctx.args };
+  // feat-060/#3 (#131): paramName 支持 dot-path (e.g. \`expected_user_filter.value\`) · nested set/get
+  let boundArgs: Record<string, unknown> = { ...ctx.args };
   let sawOverride = false;
   const verifiedClaims: Map<string, JWTPayload> = new Map();
 
@@ -296,15 +343,15 @@ export async function bindClaims(ctx: {
       return { outcome: 'deny_missing', denyDetail: detail };
     }
 
-    // 比对 + override
-    const agentValue = ctx.args[paramName];
+    // 比对 + override · 支持 dot-path (e.g. \`expected_user_filter.value\`)
+    const agentValue = getNestedValue(ctx.args, paramName);
     if (claimValuesMatch(agentValue, claimValue)) {
       // pass · 注入 boundArgs (agent 未传时把 claim 值塞进去 · 已传一致时维持)
-      boundArgs[paramName] = claimValue;
+      boundArgs = setNestedValue(boundArgs, paramName, claimValue);
     } else {
       // override · agent 传了不一致值 · 用 claim 强制覆盖 · audit high
       sawOverride = true;
-      boundArgs[paramName] = claimValue;
+      boundArgs = setNestedValue(boundArgs, paramName, claimValue);
       emitClaimAudit({
         ...ctx,
         outcome: 'override',
