@@ -21,7 +21,11 @@ import {
   timeoutInjectionStage,
   type TimeoutSpec,
 } from './stages/timeout-injection';
-import { planModeStage, type PlanPayload } from './stages/plan-mode';
+import {
+  planModeStage,
+  type PlanPayload,
+  type CanaryEvidence,
+} from './stages/plan-mode';
 import { confirmTokenStage } from './stages/confirm-token';
 import type { ConfirmTokenSnapshot } from './confirm-token-store';
 
@@ -63,6 +67,11 @@ export type EnforcementCtx = {
   // 到 CONFIG_BOUNDS)· 缺省 → DEFAULT_RATE_COUNTER_CONFIG (day-one 5/5min/0.8 口径)。
   // TODO(feat-056): 从 resolvePolicy().rate_counter 注入 per-project 配置 · 接线前此字段恒为 undefined。
   rateCounterConfig?: RateCounterConfig;
+  // feat-042/#3 (#162): 上游 branch_canary_ddl 调用结果透传 (verdict + metrics) · plan-mode renderPlan
+  // 渲染 canary 证据段给 DBA。orchestrator 调 pipeline 时如果识别到 agent 前一步刚跑了
+  // branch_canary_ddl + 当前 run_sql 是同一条 DDL · 注入此字段给 DBA 看完整证据链 · 不强制
+  // (向后兼容 · 缺省 undefined · 接线侧在 route.ts · 此处只暴露字段)。
+  canaryEvidence?: CanaryEvidence;
 };
 
 /** stage: 适用则返回 Verdict · 不适用返回 null (继续下一 stage) */

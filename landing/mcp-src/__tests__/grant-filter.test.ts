@@ -47,7 +47,7 @@ describe('filterToolsForGrant', () => {
       grant({ projectId: 'proj-123', scopes: null }),
     );
     const names = tools.map((t) => t.name);
-    expect(tools).toHaveLength(37); // 24 upstream + 3 day-one (T6/T8/T2) + feat-057 get_policy + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-066/#2 trace get/search (require projectId · T1 hidden)
+    expect(tools).toHaveLength(36); // 24 upstream + 3 day-one (T6/T8/T2) + feat-057 get_policy + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-042 branch_canary_ddl (require projectId · T1 hidden)
     expect(names).not.toContain('list_projects');
     expect(names).not.toContain('create_project');
     expect(names).not.toContain('search');

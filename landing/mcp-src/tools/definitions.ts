@@ -47,8 +47,7 @@ import {
   getNeondbRecommendationsInputSchema,
   searchPlansInputSchema,
   getNeondbPoolStatsInputSchema,
-  getNeondbTraceInputSchema,
-  searchNeondbTracesInputSchema,
+  branchCanaryDdlInputSchema,
 } from './toolsSchema';
 
 type NeonToolDefinition = {
@@ -1670,73 +1669,53 @@ export const NEON_TOOLS = [
       openWorldHint: false,
     } satisfies ToolAnnotations,
   },
-  // feat-066/#2 get_neondb_trace · trace 读 · path β 基线 + path α bonus (RAG 剧本 agent 拉全 span)
-  // detail design: https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-066-L3-mcp-tool-trace-read-seam.html
+  // feat-042/#3 (#162) branch_canary_ddl · DDL 自动 branch canary 预演 + 测量 + plan mode 复审。
+  // 详设: https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-042-L3-mcp-server-branch-canary-ddl.html
+  // op-class + 表 size 双判定 (feat-028 复用 · 6 类 HARD_CANARY · 1M 行兜底 · fail-closed) ·
+  // Neon API 创建 canary branch 跑 DDL + 测 duration/locks/rows · 4 outcome (低风险 / 高风险 review
+  // 出 plan markdown / 失败 / 超时) · 跨 tenant 走 feat-060 claim-binding · audit emit canary_completed
+  // via feat-031 (含 sql_sha256 不落原文) · 7d retention cron 兜底清理 (feat-042/#4)。
   {
-    name: 'get_neondb_trace' as const,
-    scope: 'querying',
+    name: 'branch_canary_ddl' as const,
+    scope: 'branches',
     category: 'optional',
-    description: `Fetch one full Neon trace (all spans · OTel-compatible) by W3C trace_id.
+    description: `Run a high-risk DDL safely on a Neon canary branch BEFORE you touch prod.
 
     <use_case>
-      Use this tool when the agent has a SPECIFIC trace_id (from the user · from a log entry · from
-      search_neondb_traces). Returns every span in the trace (proxy → compute → safekeeper → pageserver
-      for path β · root=app for path α) with USR + Neon Key attributes + tracestate marker. Best
-      paired with search_neondb_traces (latency P99 surfaces a candidate · this tool drills in).
+      Use this tool whenever you (the agent) are about to run a heavy DDL — ALTER TABLE that rewrites
+      a column / CREATE INDEX (non-CONCURRENTLY) / DROP TABLE / VACUUM FULL / CLUSTER /
+      ALTER TABLE ... VALIDATE CONSTRAINT — especially against a large table (> ~1M rows). The tool:
+      (1) classifies the DDL on the spot (no API call · reuses feat-028 op-class),
+      (2) if the classifier says "canary needed", creates a temporary Neon branch labelled
+          purpose=canary + expiry_ts=now+7d, runs the DDL there with a 1800s timeout (configurable),
+          and measures duration_ms / rows_affected / locks_acquired,
+      (3) returns a top-level verdict (skip_low_risk / low_risk_proceed / high_risk_review /
+          canary_failed / timeout) plus full metrics (JSON for you, markdown for the human DBA).
+      Pair high_risk_review verdicts with a DBA approval (plan mode) BEFORE running the DDL on prod.
     </use_case>
 
     <important_notes>
-      Cross-tenant safety: projectId is the tenant boundary · spans tagged with another project_id are
-      dropped + cross_tenant_blocked audit (feat-066/#3 · feat-060 claim-binding 集成). trace_id MUST be
-      32 lowercase hex chars (W3C trace-context · validated by zod refine).
-      Datadog APM backend (POST /api/v2/spans/events/search · trace_id filter). NOTE the legacy
-      /api/v1/trace/{id} endpoint does NOT exist in the public API (详设 §11 风险表已澄清).
-      Token economy: one Neon path-β trace is ~5–20 spans · within < 5K token / trace budget (OWASP LLM10).
+      Does NOT modify prod. Only writes to a temporary canary branch (7d retention · auto-purged by
+      cron · CANARY_AUTO_PURGE GUC to disable). canary branches share parent_branch storage so
+      creation is cheap (copy-on-write). The DDL runs against the canary endpoint via the SAME
+      sqlRunner the server uses for run_sql, so its measurements reflect real PG behaviour for that
+      branch size. SKIP-list (READ_ONLY / CREATE INDEX CONCURRENTLY / ALTER TABLE light · ADD COLUMN
+      NULLable / RENAME / SET DEFAULT etc.) short-circuits without creating a branch. Pass
+      force_canary=true to override the classifier (DBA paranoid mode). Parser-unidentified SQL
+      (OTHER bucket) fails CLOSED → canary still runs (feat-028 fail-closed pattern). Global hard
+      limit 3 concurrent canaries per server (Neon API rate-limit guardrail). On Neon API 5xx /
+      429 / network → outcome=canary_failed kind=server_error|rate_limit|network · DO NOT proceed
+      blindly · ask DBA. plan_markdown field is the human-readable artifact to drop into the DBA's
+      approval channel.
     </important_notes>`,
-    inputSchema: getNeondbTraceInputSchema,
-    readOnlySafe: true,
+    inputSchema: branchCanaryDdlInputSchema,
+    readOnlySafe: false,
     annotations: {
-      title: 'Get Neon DB Trace (feat-066 · path β 单 trace 全 span)',
-      readOnlyHint: true,
+      title: 'Branch Canary DDL (feat-042 · DDL 自动 canary 预演 + plan mode)',
+      readOnlyHint: false,
       destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
-    } satisfies ToolAnnotations,
-  },
-  // feat-066/#2 search_neondb_traces · trace 列表检索 (按 latency / component / endpoint_id / time_range)
-  // detail design: https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-066-L3-mcp-tool-trace-read-seam.html
-  {
-    name: 'search_neondb_traces' as const,
-    scope: 'querying',
-    category: 'optional',
-    description: `Search Neon trace summaries · filter by min_latency_ms / component / endpoint_id / time_range.
-
-    <use_case>
-      Use this tool to find candidate traces (e.g. "the P99 slow ones in the last hour") WITHOUT pulling
-      every span up front. Returns one row per root span with span_count / duration_us / root_service /
-      components breakdown / has_error. Drill into a specific trace via get_neondb_trace.
-    </use_case>
-
-    <workflow_rule>
-      Cross-tenant safety (feat-066/#3 · feat-060 集成): projectId is the authoritative tenant boundary.
-      filter.project_id supplied by the agent is HARD-OVERRIDDEN to projectId — any mismatch emits a
-      cross_tenant_blocked audit event before the backend call. The agent NEVER sees another project's traces.
-    </workflow_rule>
-
-    <important_notes>
-      Limit hard cap 50 (TRACE_SEARCH_LIMIT_MAX · token economy · OWASP LLM10). Default 20.
-      Default time range = last 1h when omitted (keep token cost predictable · 详设 §5).
-      Component enum maps to Datadog APM service-name namespace: \`service:neon-<component>\`.
-      Datadog APM backend (POST /api/v2/spans/events/search · root-span DDL filter).
-    </important_notes>`,
-    inputSchema: searchNeondbTracesInputSchema,
-    readOnlySafe: true,
-    annotations: {
-      title: 'Search Neon DB Traces (feat-066 · 按 latency/component 切 trace summary 列表)',
-      readOnlyHint: true,
-      destructiveHint: false,
-      idempotentHint: true,
-      openWorldHint: false,
+      idempotentHint: false,
+      openWorldHint: true,
     } satisfies ToolAnnotations,
   },
 ] as const satisfies readonly NeonToolDefinition[];
