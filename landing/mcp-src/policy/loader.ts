@@ -51,6 +51,9 @@ export type ProjectPolicy = {
   // feat-060/#1 (#129): 本 project 接受的 authService 名列表 (未配 = 该 project 不走 feat-060 路径 ·
   // 向后兼容 feat-029-only 部署)。authService 详细配置在顶层 authServices 字典。
   authServices?: string[];
+  // feat-040 follow-up (#175): per-project baseline.min_valid_samples 覆盖 · 默认 DEFAULT_MIN_VALID_SAMPLES=100
+  // 取值范围 50-500 · 越界 clamp + warn (跟 rate_counter 一致 fail-safe pattern)
+  baseline?: { min_valid_samples?: number };
 };
 
 // feat-060/#1 (#129): per-call JWT 验证用的 OIDC authService 配置 · top-level 字典 · 多 project 共享。
@@ -87,6 +90,8 @@ export type ResolvedPolicy = {
   shadow_mode?: unknown;
   // feat-055/#1: per-project G9 rate counter (恒有值 · 未配 project 落 DEFAULT_RATE_COUNTER_CONFIG)
   rate_counter: RateCounterConfig;
+  // feat-040 follow-up (#175): per-project baseline.min_valid_samples 覆盖 · undefined = 走 DEFAULT_MIN_VALID_SAMPLES
+  baseline_min_valid_samples?: number;
   source: 'configured' | 'defaults';
 };
 
@@ -99,6 +104,10 @@ const FALLBACK_DEFAULTS: PolicyConfig['defaults'] = {
 // feat-060/#1 (#129): JWKS cache TTL 上下界 (clamp · 防 prompt injection 写 ttl=0 关掉 cache 或写很大数禁掉过期)
 const JWKS_TTL_BOUNDS = { min: 60, max: 86400 }; // 1 min ~ 24h
 const DEFAULT_JWKS_TTL_SECONDS = 600; // 10 min · per 详设 §4.1
+
+// feat-040 follow-up (#175): baseline.min_valid_samples clamp 范围 · 详设 ADR-0014 + sample-filter.ts §DEFAULT 100
+// 50 下界(再低 baseline 噪声放大失真) / 500 上界(再高慢漂移信号被过度过滤)
+const BASELINE_MIN_VALID_SAMPLES_BOUNDS = { min: 50, max: 500 };
 
 // in-memory current policy · 热重载原子 swap(JS 单线程 · 引用赋值原子 · in-flight 读旧)
 let current: PolicyConfig = {
@@ -277,6 +286,42 @@ function validateAuthServices(
  * 非数组 / 元素非 string → throw (调用方 fail-safe)。
  * 已知未引用顶层 authServices · 此时不强校验存在 (验证延后到 verify 时 · 防 ordering 依赖)。
  */
+/**
+ * 校验 + clamp project policy 的 baseline.min_valid_samples (feat-040 follow-up · #175)。
+ *
+ * 缺段 → undefined (该 project 走 DEFAULT_MIN_VALID_SAMPLES=100 兜底)。
+ * 非数字 / 不是正整数 → throw (fail-safe · 跟 timeout_overrides 同风格)。
+ * 越 BASELINE_MIN_VALID_SAMPLES_BOUNDS → clamp + warn (跟 rate_counter / JWKS_TTL 一致 pattern)。
+ */
+function validateBaseline(
+  pid: string,
+  raw: unknown,
+): { min_valid_samples?: number } | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== 'object') {
+    throw new Error(`project ${pid} baseline 不是 object`);
+  }
+  const b = raw as Record<string, unknown>;
+  if (b.min_valid_samples === undefined) return {};
+  if (
+    typeof b.min_valid_samples !== 'number' ||
+    !Number.isFinite(b.min_valid_samples) ||
+    !Number.isInteger(b.min_valid_samples) ||
+    b.min_valid_samples <= 0
+  ) {
+    throw new Error(
+      `project ${pid} baseline.min_valid_samples 非法 (须正整数): ${String(b.min_valid_samples)}`,
+    );
+  }
+  const c = clampNumber(b.min_valid_samples, BASELINE_MIN_VALID_SAMPLES_BOUNDS);
+  if (c.clamped) {
+    logger.warn(
+      `project ${pid} baseline.min_valid_samples=${b.min_valid_samples} 越界 · clamp 到 ${c.value} (BASELINE_MIN_VALID_SAMPLES_BOUNDS · 详设 §3.5/ADR-0014)`,
+    );
+  }
+  return { min_valid_samples: c.value };
+}
+
 function validateProjectAuthServices(
   pid: string,
   raw: unknown,
@@ -340,6 +385,8 @@ export function validate(raw: unknown): PolicyConfig {
       rate_counter: validateRateCounter(pid, p.rate_counter),
       // feat-060/#1 (#129): per-project authServices 引用列表 (undefined = 未配 · 该 project 不走 feat-060)
       authServices: validateProjectAuthServices(pid, p.authServices),
+      // feat-040 follow-up (#175): per-project baseline.min_valid_samples · clamp 50-500 · 越界 warn
+      baseline: validateBaseline(pid, p.baseline),
     };
   }
   return {
@@ -435,6 +482,8 @@ export function resolvePolicy(projectId?: string): ResolvedPolicy {
       shadow_mode: p.shadow_mode,
       // feat-055/#1: 已 clamp 的 per-project rate counter (validate 时落了 defaults 兜底 · 恒有值)
       rate_counter: p.rate_counter ?? { ...DEFAULT_RATE_COUNTER_CONFIG },
+      // feat-040 follow-up (#175): per-project baseline.min_valid_samples · 调用方传 sample-filter.getMinValidSamples
+      baseline_min_valid_samples: p.baseline?.min_valid_samples,
       source: 'configured',
     };
   }
