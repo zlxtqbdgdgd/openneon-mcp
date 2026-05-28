@@ -59,10 +59,10 @@ import {
 } from '../server-enrich/plan-store';
 // feat-025 T12 get_neondb_pool_stats · pgcat / PgBouncer 连接池 snapshot (External-component)
 import { handleGetPoolStats } from './handlers/pool-stats';
-// feat-045 generate_rca_report · L3 agent-native RCA 报告生成 (mcp tool form-shift).
-// 详设: https://github.com/zlxtqbdgdgd/openneon-design/issues/18 + openneon-mcp#145/#146/#147.
-import { handleGenerateRcaReport } from './handlers/generate-rca-report';
-import type { RcaFetcherDeps } from '../server-enrich/rca/data-fetcher';
+// feat-066/#2 get_neondb_trace · 单 trace 全 span 检索 (W3C trace_id 32 hex)
+import { handleGetNeondbTrace } from './handlers/get-neondb-trace';
+// feat-066/#2 search_neondb_traces · trace 列表检索 (按 latency / component / endpoint / time_range)
+import { handleSearchNeondbTraces } from './handlers/search-neondb-traces';
 // feat-006 #2 day-one ship · token economy地基 · CSV default output
 import { formatToolResponse } from '../server/response-formatter';
 
@@ -2194,53 +2194,95 @@ You MUST follow these steps:
       ],
     };
   },
-
-  // feat-045 generate_rca_report · L3 agent-native RCA 报告生成. 4 个 mcp tool 并行
-  // (Promise.allSettled · #146 §) + 7 节 markdown 模板 + LLM 三原则 prompt (#145 §). Cache
-  // 走 ADR-0009 通用 ttl-cache 收口 + plan mode 走 feat-027 elicitation. 4 个数据源 fetcher
-  // 全 stub (contract-only) · 集中修阶段对照 A6/feat-068/feat-031/feat-019 真实 handler 接通:
-  //   - fetchTrace → feat-066 get_neondb_trace · openneon-mcp#139 contract
-  //   - fetchProbe → feat-068 dynamic probe mcp tool
-  //   - fetchAudit → feat-031 query_audit_events
-  //   - fetchValidation → feat-019 compute_explain_diff
-  generate_rca_report: async ({ params }, _neonClient, _extra) => {
-    const fetcher: RcaFetcherDeps = {
-      fetchTrace: async () => {
-        throw new Error(
-          'fetchTrace not wired · feat-066 get_neondb_trace handler pending merge (集中修接通 openneon-mcp#139 contract)',
-        );
-      },
-      fetchProbe: async () => {
-        throw new Error('fetchProbe not wired · feat-068 dynamic probe handler pending (集中修)');
-      },
-      fetchAudit: async () => {
-        throw new Error(
-          'fetchAudit not wired · feat-031 query_audit_events handler pending (集中修)',
-        );
-      },
-      fetchValidation: async () => {
-        throw new Error(
-          'fetchValidation not wired · feat-019 compute_explain_diff handler pending (集中修)',
-        );
-      },
-    };
-    const result = await handleGenerateRcaReport(
-      {
-        trace_id: params.trace_id,
-        audit_filter: params.audit_filter,
-        cache: params.cache,
-        trace_state: params.trace_state,
-        model: params.model,
-      },
-      {
-        fetcher,
-        // skipPlanMode 在生产 wiring 阶段开关 · default 走 DEFAULT_REQUEST_APPROVAL (返回
-        // 'unavailable' fail-closed deny) · 集中修阶段接通 feat-027 elicitation orchestrator.
-        skipPlanMode: true,
-      },
-    );
+  // feat-066/#2 get_neondb_trace · trace 读 path β 基线 · projectId 跨 tenant 强制 boundary
+  // (route.ts injectProjectId 已硬覆盖 args.projectId · 我们再做 span attribute 级 cross-tenant guard · feat-066/#3)
+  get_neondb_trace: async ({ params }) => {
+    const result = await handleGetNeondbTrace({
+      projectId: params.projectId,
+      trace_id: params.trace_id,
+      time_range: params.time_range,
+    });
+    if (params.format === 'csv' || params.format === 'tsv') {
+      if ('error' in result) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        };
+      }
+      const header = JSON.stringify(
+        { summary: result.summary, cross_tenant_filtered: result.cross_tenant_filtered },
+        null,
+        2,
+      );
+      const flatRows = result.spans.map((sp) => ({
+        trace_id: sp.trace_id,
+        span_id: sp.span_id,
+        parent_span_id: sp.parent_span_id ?? '',
+        service_name: sp.service_name,
+        operation_name: sp.operation_name,
+        start_time: sp.start_time,
+        duration_us: sp.duration_us,
+        tracestate: sp.tracestate ?? '',
+        attributes: Object.entries(sp.attributes)
+          .map(([k, v]) => k + '=' + String(v))
+          .join('·'),
+      }));
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `${header}
+${formatToolResponse(flatRows, { format: params.format })}`,
+          },
+        ],
+      };
+    }
     return {
       content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
     };
   },
+
+  // feat-066/#2 search_neondb_traces · trace summary 列表 · filter.project_id 硬覆盖 (feat-066/#3 cross-tenant)
+  search_neondb_traces: async ({ params }) => {
+    const result = await handleSearchNeondbTraces({
+      projectId: params.projectId,
+      filter: params.filter,
+      limit: params.limit,
+    });
+    if (params.format === 'csv' || params.format === 'tsv') {
+      if ('error' in result) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        };
+      }
+      const header = JSON.stringify(
+        { total: result.total, cross_tenant_filtered: result.cross_tenant_filtered },
+        null,
+        2,
+      );
+      const flatRows = result.traces.map((t) => ({
+        trace_id: t.trace_id,
+        span_count: t.span_count,
+        duration_us: t.duration_us,
+        root_service: t.root_service,
+        root_operation: t.root_operation,
+        start_time: t.start_time,
+        has_error: t.has_error,
+        tracestate: t.tracestate ?? '',
+        components: t.components.map((c) => c.service_name + ':' + c.duration_us + 'us').join('·'),
+      }));
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `${header}
+${formatToolResponse(flatRows, { format: params.format })}`,
+          },
+        ],
+      };
+    }
+    return {
+      content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+    };
+  },
+
 } satisfies ToolHandlers;

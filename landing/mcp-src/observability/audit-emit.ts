@@ -48,6 +48,10 @@ export type AuditEventType =
   | 'recommendation_classified'
   // feat-023/#2 T10 search_plans · 主动巡检 (filter + hits + duration_ms + backend 进 extra)
   | 'search_plans_invoked'
+  // feat-066/#3 T13/T14 trace 读 + 跨 tenant 安全 audit · 'trace_get_invoked' / 'trace_search_invoked' / 'cross_tenant_blocked'
+  | 'trace_get_invoked'
+  | 'trace_search_invoked'
+  | 'cross_tenant_blocked'
   // feat-025 T12 pool_stats · pgcat/PgBouncer 连接池 snapshot 调用审计
   | 'pool_stats_invoked'
   // feat-043 slot-monitor (design#53 §3.3 · system principal · 仅 audit OTel · 1h cron 双级阈值 24h/36h)

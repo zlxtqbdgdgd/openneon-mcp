@@ -1320,40 +1320,89 @@ export const getNeondbRecommendationsInputSchema = z.object({
   format: outputFormatField,
 });
 
-// feat-045 generate_rca_report input schema · L3 agent-native RCA 报告生成 (mcp tool form-shift)
-// detail design: https://github.com/zlxtqbdgdgd/openneon-design/issues/18
-// sub-issues: openneon-mcp#145 (handler + 7节模板 + 三原则) · #146 (4 mcp tool 并行 + plan mode) ·
-// #147 (6 fixture + token economy + cache + 跨 model robustness).
-export const generateRcaReportInputSchema = z.object({
+// feat-066/#2 get_neondb_trace input schema · 单 trace 全 span 检索 (W3C trace_id 32 hex)
+// detail design: features/feat-066-L3-mcp-tool-trace-read-seam.html §4
+const TRACE_ID_HEX_RE = /^[0-9a-f]{32}$/;
+
+export const getNeondbTraceInputSchema = z.object({
+  projectId: z
+    .string()
+    .describe(
+      'Neon project ID · cross-tenant boundary (hard-overridden by grant.projectId via route.ts injectProjectId + feat-060 claim-binding before reaching this tool · feat-066/#3).',
+    ),
   trace_id: z
     .string()
-    .regex(/^[0-9a-f]{32}$/i, 'trace_id must be 32 hex characters (W3C trace_id)')
-    .describe('W3C trace_id (32 hex chars) · identifies the incident to RCA.'),
-  audit_filter: z
+    .refine((s) => TRACE_ID_HEX_RE.test(s), {
+      message:
+        "trace_id must be 32 lowercase hex chars (W3C trace-context · feat-066 §3.2)",
+    })
+    .describe(
+      'W3C trace_id · 32 lowercase hex chars (feat-033 libpq traceparent / feat-065 proxy traceparent emit this).',
+    ),
+  time_range: z
     .object({
-      start: z.string().describe('ISO8601 start time inclusive.'),
-      end: z.string().describe('ISO8601 end time exclusive.'),
+      start: z.string().describe('Window start · ISO8601 (e.g. "2026-05-28T11:00:00Z").'),
+      end: z.string().describe('Window end · ISO8601.'),
     })
     .optional()
     .describe(
-      'Optional time range for audit-event lookup (feat-031 query_audit_events). Defaults to ±10min around the trace.',
+      "Optional ISO8601 time window. Narrows the backend query (Datadog APM scans a smaller window · faster). Omit → defaults to last 1h.",
     ),
-  cache: z
-    .boolean()
+  format: outputFormatField,
+});
+
+// feat-066/#2 search_neondb_traces input schema · 按 latency / component / endpoint / time_range 切 trace summary 列表
+// detail design: features/feat-066-L3-mcp-tool-trace-read-seam.html §4
+export const searchNeondbTracesInputSchema = z.object({
+  projectId: z
+    .string()
+    .describe(
+      'Neon project ID · cross-tenant boundary. Hard-overrides any filter.project_id supplied by the agent (audit-emit \'cross_tenant_blocked\' fires on mismatch · feat-066/#3 · feat-060 集成).',
+    ),
+  filter: z
+    .object({
+      min_latency_ms: z
+        .number()
+        .nonnegative()
+        .optional()
+        .describe(
+          'Minimum root-span wall-clock latency (ms). Surfaces slow traces — P95/P99 spelunking entry point.',
+        ),
+      component: z
+        .enum(['proxy', 'compute', 'safekeeper', 'pageserver'])
+        .optional()
+        .describe(
+          "Component slice · 'proxy' (Neon proxy entry) · 'compute' (Postgres compute) · 'safekeeper' (WAL receivers) · 'pageserver' (storage reads).",
+        ),
+      project_id: z
+        .string()
+        .optional()
+        .describe(
+          "Ignored at runtime — the handler hard-overwrites this to projectId (cross-tenant guard · feat-066/#3). Documented here so agents see the field exists; passing a different value emits a cross_tenant_blocked audit event.",
+        ),
+      endpoint_id: z
+        .string()
+        .optional()
+        .describe('Optional endpoint slice (sub-project · Neon endpoint_id).'),
+      time_range: z
+        .object({
+          start: z.string().describe('Window start · ISO8601.'),
+          end: z.string().describe('Window end · ISO8601.'),
+        })
+        .optional()
+        .describe(
+          "Optional ISO8601 time window. Omit → defaults to last 1h (token economy · narrow scan).",
+        ),
+    })
+    .optional()
+    .describe('Optional filter to narrow the search.'),
+  limit: z
+    .number()
+    .int()
+    .positive()
     .optional()
     .describe(
-      'When true (default) consult RCA cache · ongoing trace 60s TTL · closed trace 24h TTL (#147 §Cache 策略).',
+      'Max trace summaries to return. Default 20 · hard cap 50 (TRACE_SEARCH_LIMIT_MAX · token economy · OWASP LLM10 · 详设 §5). 超出 50 上限静默截断 (handler 层 Math.min) · 不报错 · 单源校验在 handler 避免与 zod .max 双重定义冲突 (R2 ⚠ 阻塞-4 修复).',
     ),
-  trace_state: z
-    .enum(['ongoing', 'closed'])
-    .optional()
-    .describe(
-      'Trace state hint · ongoing → 60s cache TTL · closed → 24h. Default ongoing (conservative).',
-    ),
-  model: z
-    .enum(['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5'])
-    .optional()
-    .describe(
-      'LLM model · default claude-opus-4-7. sonnet / haiku also supported for cost vs depth tradeoff (#147 跨 model robustness).',
-    ),
+  format: outputFormatField,
 });
