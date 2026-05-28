@@ -151,7 +151,7 @@ describe('feat-060/#2 claim-binding · 4-outcome 矩阵 8 用例', () => {
 
   // ───────────────────────── 1. pass · agent 传一致值 ─────────────────────────
   it('用例 1 · pass: agent 传 user_id=42 + JWT.sub=42 → outcome=pass · boundArgs.user_id=42 · audit low', async () => {
-    const jwt = await signJwt(validKp.privateKey, { sub: '42' });
+    const jwt = await signJwt(validKp.privateKey, { sub: 42 as unknown as string });
     const result = await bindClaims({
       toolName: 'get_user_orders',
       toolSchema: mockToolSchema,
@@ -170,7 +170,7 @@ describe('feat-060/#2 claim-binding · 4-outcome 矩阵 8 用例', () => {
 
   // ───────────────────────── 2. pass · agent 不传 → 注入 ─────────────────────────
   it('用例 2 · pass: agent 不传 user_id + JWT.sub=42 → boundArgs.user_id=42 (server 注入)', async () => {
-    const jwt = await signJwt(validKp.privateKey, { sub: '42' });
+    const jwt = await signJwt(validKp.privateKey, { sub: 42 as unknown as string });
     const result = await bindClaims({
       toolName: 'get_user_orders',
       toolSchema: mockToolSchema,
@@ -187,7 +187,7 @@ describe('feat-060/#2 claim-binding · 4-outcome 矩阵 8 用例', () => {
 
   // ───────────────────────── 3. override · agent 传不一致 ─────────────────────────
   it('用例 3 · override: agent user_id=999 + JWT.sub=42 → outcome=override · boundArgs=42 · audit high (attempted=999/bound=42)', async () => {
-    const jwt = await signJwt(validKp.privateKey, { sub: '42' });
+    const jwt = await signJwt(validKp.privateKey, { sub: 42 as unknown as string });
     const result = await bindClaims({
       toolName: 'get_user_orders',
       toolSchema: mockToolSchema,
@@ -226,7 +226,7 @@ describe('feat-060/#2 claim-binding · 4-outcome 矩阵 8 用例', () => {
   // ───────────────────────── 5. deny_invalid · JWT 过期 ─────────────────────────
   it('用例 5 · deny_invalid: exp 已过 → outcome=deny_invalid · audit high', async () => {
     // 已过期 token (exp = 1 小时前)
-    const expiredJwt = await new SignJWT({ sub: '42' })
+    const expiredJwt = await new SignJWT({ sub: 42 as unknown as string })
       .setProtectedHeader({ alg: 'RS256', kid: 'test-key-1' })
       .setIssuedAt(Math.floor(Date.now() / 1000) - 7200)
       .setExpirationTime(Math.floor(Date.now() / 1000) - 3600)
@@ -249,7 +249,7 @@ describe('feat-060/#2 claim-binding · 4-outcome 矩阵 8 用例', () => {
 
   // ───────────────────────── 6. deny_invalid · 签名失败 ─────────────────────────
   it('用例 6 · deny_invalid: 用 wrong keypair 签 → outcome=deny_invalid · audit high', async () => {
-    const jwt = await signJwt(wrongKp.privateKey, { sub: '42' });
+    const jwt = await signJwt(wrongKp.privateKey, { sub: 42 as unknown as string });
     const result = await bindClaims({
       toolName: 'get_user_orders',
       toolSchema: mockToolSchema,
@@ -265,7 +265,7 @@ describe('feat-060/#2 claim-binding · 4-outcome 矩阵 8 用例', () => {
 
   // ───────────────────────── 7. deny_invalid · audience 不符 ─────────────────────────
   it('用例 7 · deny_invalid: aud=other-app → outcome=deny_invalid · audit high', async () => {
-    const jwt = await signJwt(validKp.privateKey, { sub: '42' }, {
+    const jwt = await signJwt(validKp.privateKey, { sub: 42 as unknown as string }, {
       audience: 'other-app',
     });
     const result = await bindClaims({
@@ -284,7 +284,7 @@ describe('feat-060/#2 claim-binding · 4-outcome 矩阵 8 用例', () => {
   // ───────────────────────── 8. deny_invalid · JWKS 不可达 ─────────────────────────
   it('用例 8 · deny_invalid: JWKS 不可达 + cache 过期 → outcome=deny_invalid · 不 stale 兜底 · audit high', async () => {
     mockJwksReachable = false;
-    const jwt = await signJwt(validKp.privateKey, { sub: '42' });
+    const jwt = await signJwt(validKp.privateKey, { sub: 42 as unknown as string });
     const result = await bindClaims({
       toolName: 'get_user_orders',
       toolSchema: mockToolSchema,
@@ -336,7 +336,7 @@ describe('feat-060/#2 claim-binding · 4-outcome 矩阵 8 用例', () => {
         },
       },
     });
-    const jwt = await signJwt(validKp.privateKey, { sub: '42' });
+    const jwt = await signJwt(validKp.privateKey, { sub: 42 as unknown as string });
     const result = await bindClaims({
       toolName: 'get_user_orders',
       toolSchema: mockToolSchema,
