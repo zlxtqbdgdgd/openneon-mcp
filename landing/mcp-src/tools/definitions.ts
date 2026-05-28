@@ -1670,50 +1670,73 @@ export const NEON_TOOLS = [
       openWorldHint: false,
     } satisfies ToolAnnotations,
   },
-  // feat-045 generate_rca_report · L3 agent-native RCA 报告生成 (Datadog APM RCA form-shift).
-  // 4 个 mcp tool 并行 (feat-066 get_neondb_trace + feat-068 dynamic probe + feat-031
-  // query_audit_events + feat-019 compute_explain_diff) + 7 节 markdown 模板 + LLM 三原则
-  // prompt + plan mode 集成. 详设:
-  // https://github.com/zlxtqbdgdgd/openneon-design/issues/18 + openneon-mcp#145/#146/#147.
-  // Contract dependencies (按 issue body 编程 · 真实 handler 集中修阶段接通):
-  //   - feat-066 (openneon-mcp#139): get_neondb_trace · search_neondb_traces
-  //   - feat-068 dynamic probe mcp tool
-  //   - feat-031 query_audit_events
-  //   - feat-019 compute_explain_diff
+  // feat-066/#2 get_neondb_trace · trace 读 · path β 基线 + path α bonus (RAG 剧本 agent 拉全 span)
+  // detail design: https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-066-L3-mcp-tool-trace-read-seam.html
   {
-    name: 'generate_rca_report' as const,
+    name: 'get_neondb_trace' as const,
     scope: 'querying',
     category: 'optional',
-    description: `Generate an agent-native RCA report for an incident · the form-shift counterpart to Datadog APM RCA dashboard. Use after diagnosis + fix to write a postmortem the DBA can read directly.
+    description: `Fetch one full Neon trace (all spans · OTel-compatible) by W3C trace_id.
 
     <use_case>
-      Pass a trace_id (32 hex) and the tool: (1) parallel-fetches trace span / dynamic probe hotspots /
-      audit event timeline / explain diff (4 mcp tools via Promise.allSettled · any leg failing
-      degrades to [DATA_MISSING:*] without aborting), (2) renders a 7-section markdown template,
-      (3) runs an LLM with the 三原则 prompt to fill natural-language attribution sentences only
-      (server-computed tables stay verbatim), (4) caches by trace_id + state (ongoing 60s / closed
-      24h · ADR-0009 seam reuse).
+      Use this tool when the agent has a SPECIFIC trace_id (from the user · from a log entry · from
+      search_neondb_traces). Returns every span in the trace (proxy → compute → safekeeper → pageserver
+      for path β · root=app for path α) with USR + Neon Key attributes + tracestate marker. Best
+      paired with search_neondb_traces (latency P99 surfaces a candidate · this tool drills in).
     </use_case>
 
     <important_notes>
-      LLM call is the only cost. Plan mode (feat-027 elicitation) MUST approve before running ·
-      fail-closed deny when capability missing. Output ≤ 4500 tokens (hard cap) · single RCA stays
-      within the 5K token budget for agent context. Audit emits 'rca_generated' per call with
-      model / tokens / cached / duration_ms. Three models supported: claude-opus-4-7 (default · best
-      attribution) / sonnet-4-6 (3-5× cheaper · ~95% structure consistency) / haiku-4-5 (cheapest ·
-      same template, terser prose).
+      Cross-tenant safety: projectId is the tenant boundary · spans tagged with another project_id are
+      dropped + cross_tenant_blocked audit (feat-066/#3 · feat-060 claim-binding 集成). trace_id MUST be
+      32 lowercase hex chars (W3C trace-context · validated by zod refine).
+      Datadog APM backend (POST /api/v2/spans/events/search · trace_id filter). NOTE the legacy
+      /api/v1/trace/{id} endpoint does NOT exist in the public API (详设 §11 风险表已澄清).
+      Token economy: one Neon path-β trace is ~5–20 spans · within < 5K token / trace budget (OWASP LLM10).
     </important_notes>`,
-    inputSchema: generateRcaReportInputSchema,
-    // readOnly 在底层数据视角 (4 个数据源 tool 都 read-only) · 但本 tool 触发 LLM 调用涉及
-    // cost · 因此 readOnlySafe=false (按 openneon-mcp#145 §验收门 readOnlyHint=false).
-    readOnlySafe: false,
+    inputSchema: getNeondbTraceInputSchema,
+    readOnlySafe: true,
     annotations: {
-      title: 'Generate RCA Report (feat-045 · L3 agent-native postmortem)',
-      readOnlyHint: false,
+      title: 'Get Neon DB Trace (feat-066 · path β 单 trace 全 span)',
+      readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
-      // LLM 调用 + 多个下游 mcp tool · 诚实标 openWorldHint=true
-      openWorldHint: true,
+      openWorldHint: false,
+    } satisfies ToolAnnotations,
+  },
+  // feat-066/#2 search_neondb_traces · trace 列表检索 (按 latency / component / endpoint_id / time_range)
+  // detail design: https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-066-L3-mcp-tool-trace-read-seam.html
+  {
+    name: 'search_neondb_traces' as const,
+    scope: 'querying',
+    category: 'optional',
+    description: `Search Neon trace summaries · filter by min_latency_ms / component / endpoint_id / time_range.
+
+    <use_case>
+      Use this tool to find candidate traces (e.g. "the P99 slow ones in the last hour") WITHOUT pulling
+      every span up front. Returns one row per root span with span_count / duration_us / root_service /
+      components breakdown / has_error. Drill into a specific trace via get_neondb_trace.
+    </use_case>
+
+    <workflow_rule>
+      Cross-tenant safety (feat-066/#3 · feat-060 集成): projectId is the authoritative tenant boundary.
+      filter.project_id supplied by the agent is HARD-OVERRIDDEN to projectId — any mismatch emits a
+      cross_tenant_blocked audit event before the backend call. The agent NEVER sees another project's traces.
+    </workflow_rule>
+
+    <important_notes>
+      Limit hard cap 50 (TRACE_SEARCH_LIMIT_MAX · token economy · OWASP LLM10). Default 20.
+      Default time range = last 1h when omitted (keep token cost predictable · 详设 §5).
+      Component enum maps to Datadog APM service-name namespace: \`service:neon-<component>\`.
+      Datadog APM backend (POST /api/v2/spans/events/search · root-span DDL filter).
+    </important_notes>`,
+    inputSchema: searchNeondbTracesInputSchema,
+    readOnlySafe: true,
+    annotations: {
+      title: 'Search Neon DB Traces (feat-066 · 按 latency/component 切 trace summary 列表)',
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
     } satisfies ToolAnnotations,
   },
   // feat-037 cluster_neondb_logs · L3 log pattern 聚类 hybrid path (LLM 主 + Drain3 备).
