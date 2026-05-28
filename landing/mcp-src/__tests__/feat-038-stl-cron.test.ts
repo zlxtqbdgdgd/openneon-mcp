@@ -284,3 +284,142 @@ describe('feat-038 · stlCacheKey 单一拼接点', () => {
     expect(a).not.toBe(b);
   });
 });
+
+// ────────────────────────────────────────────────────────────────────────
+// feat-040 follow-up (#174): STL ↔ autosuspend sample-filter wire 单测
+// ────────────────────────────────────────────────────────────────────────
+describe('feat-038 · STL ↔ autosuspend sample-filter wire (#174)', () => {
+  let cache: TtlCache<StlEnrich>;
+  let warnings: string[];
+
+  beforeEach(() => {
+    cache = new TtlCache<StlEnrich>();
+    warnings = [];
+  });
+
+  /** 构造混合数据 · idle window 内 sample 显著偏离 trend (污染源) */
+  function buildHistoryWithIdleSpike(): {
+    history: MetricHistoryResult;
+    bucketMs: number;
+    startMs: number;
+  } {
+    const N = 720;
+    const bucketMs = 3_600_000; // 1h
+    const startMs = 1_700_000_000_000;
+    const points: Array<[number, number | null]> = [];
+    for (let i = 0; i < N; i++) {
+      const ts = startMs + i * bucketMs;
+      const normal = 100 + i * 0.05; // 缓慢漂移
+      // i 300-400: idle window 内 sample = 0 (autosuspend → 连接数掉到 0 · 严重污染 trend)
+      const v = i >= 300 && i < 400 ? 0 : normal;
+      points.push([ts, v]);
+    }
+    return { history: { points }, bucketMs, startMs };
+  }
+
+  it('注入 autosuspend windows → 排除 idle 段 · STL trend 不被 0 值污染', async () => {
+    const { history, bucketMs, startMs } = buildHistoryWithIdleSpike();
+    const idleStart = startMs + 300 * bucketMs;
+    const idleEnd = startMs + 400 * bucketMs;
+
+    const fetchHistory = vi.fn(async () => history);
+    const fetchAutosuspendWindows = vi.fn(async () => [
+      { start: idleStart, end: idleEnd },
+    ]);
+
+    const opts: StlPrecomputeOptions = {
+      endpoints: ['ep-a'],
+      metrics: ['connections'],
+      cache,
+      fetchHistory,
+      fetchAutosuspendWindows,
+      concurrency: 5,
+      stlOpts: DEFAULT_STL_OPTS,
+      warn: (m, e) => warnings.push(`${m} ${e ?? ''}`),
+    };
+
+    const { written, failed } = await runStlPrecomputeOnce(opts);
+    expect(written).toBe(1);
+    expect(failed).toBe(0);
+    expect(fetchAutosuspendWindows).toHaveBeenCalledWith('ep-a', 30);
+
+    const cached = cache.get(stlCacheKey('ep-a', 'connections'));
+    expect(cached).toBeDefined();
+    // trend direction 应该被 idle 0 值显著拖低 · filter 后保持 'rising' (缓慢漂移真信号)
+    expect(cached!.trend_direction).toBe('rising');
+  });
+
+  it('未注入 fetchAutosuspendWindows → 不 filter · 向后兼容', async () => {
+    const { history } = buildHistoryWithIdleSpike();
+    const fetchHistory = vi.fn(async () => history);
+
+    const opts: StlPrecomputeOptions = {
+      endpoints: ['ep-a'],
+      metrics: ['connections'],
+      cache,
+      fetchHistory,
+      concurrency: 5,
+      stlOpts: DEFAULT_STL_OPTS,
+      warn: (m, e) => warnings.push(`${m} ${e ?? ''}`),
+    };
+
+    const { written, failed } = await runStlPrecomputeOnce(opts);
+    expect(written).toBe(1);
+    expect(failed).toBe(0);
+    // 不 filter · 计算成功 · 但 trend 被 idle 0 值污染 (未 filter 行为不变 · 向后兼容)
+    expect(cache.get(stlCacheKey('ep-a', 'connections'))).toBeDefined();
+  });
+
+  it('autosuspend fetch throw → 用未 filter samples 兜底 + log warn (不阻塞 STL)', async () => {
+    const { history } = buildHistoryWithIdleSpike();
+    const fetchHistory = vi.fn(async () => history);
+    const fetchAutosuspendWindows = vi.fn(async () => {
+      throw new Error('control plane unreachable');
+    });
+
+    const opts: StlPrecomputeOptions = {
+      endpoints: ['ep-a'],
+      metrics: ['connections'],
+      cache,
+      fetchHistory,
+      fetchAutosuspendWindows,
+      concurrency: 5,
+      stlOpts: DEFAULT_STL_OPTS,
+      warn: (m, e) => warnings.push(`${m} ${e ?? ''}`),
+    };
+
+    const { written, failed } = await runStlPrecomputeOnce(opts);
+    // fail-safe: 不阻塞 STL · 仍 written 1
+    expect(written).toBe(1);
+    expect(failed).toBe(0);
+    expect(warnings.some((w) => w.includes('autosuspend fetch 失败'))).toBe(true);
+    expect(
+      warnings.some((w) => w.includes('用未 filter samples 兜底')),
+    ).toBe(true);
+  });
+
+  it('空 autosuspend windows (健康 endpoint) → filter 返原 samples · 等价无 filter', async () => {
+    const { history } = buildHistoryWithIdleSpike();
+    const fetchHistory = vi.fn(async () => history);
+    const fetchAutosuspendWindows = vi.fn(async () => []);
+
+    const opts: StlPrecomputeOptions = {
+      endpoints: ['ep-a'],
+      metrics: ['connections'],
+      cache,
+      fetchHistory,
+      fetchAutosuspendWindows,
+      concurrency: 5,
+      stlOpts: DEFAULT_STL_OPTS,
+      warn: (m, e) => warnings.push(`${m} ${e ?? ''}`),
+    };
+
+    const { written, failed } = await runStlPrecomputeOnce(opts);
+    expect(written).toBe(1);
+    expect(failed).toBe(0);
+  });
+
+  afterEach(() => {
+    cache.clear();
+  });
+});
