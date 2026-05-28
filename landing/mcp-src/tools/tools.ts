@@ -59,6 +59,10 @@ import {
 } from '../server-enrich/plan-store';
 // feat-025 T12 get_neondb_pool_stats · pgcat / PgBouncer 连接池 snapshot (External-component)
 import { handleGetPoolStats } from './handlers/pool-stats';
+// feat-045 generate_rca_report · L3 agent-native RCA 报告生成 (mcp tool form-shift).
+// 详设: https://github.com/zlxtqbdgdgd/openneon-design/issues/18 + openneon-mcp#145/#146/#147.
+import { handleGenerateRcaReport } from './handlers/generate-rca-report';
+import type { RcaFetcherDeps } from '../server-enrich/rca/data-fetcher';
 // feat-006 #2 day-one ship · token economy地基 · CSV default output
 import { formatToolResponse } from '../server/response-formatter';
 
@@ -2188,6 +2192,55 @@ You MUST follow these steps:
               : `${header}\n${formatToolResponse(flatRows, { format: params.format })}`,
         },
       ],
+    };
+  },
+
+  // feat-045 generate_rca_report · L3 agent-native RCA 报告生成. 4 个 mcp tool 并行
+  // (Promise.allSettled · #146 §) + 7 节 markdown 模板 + LLM 三原则 prompt (#145 §). Cache
+  // 走 ADR-0009 通用 ttl-cache 收口 + plan mode 走 feat-027 elicitation. 4 个数据源 fetcher
+  // 全 stub (contract-only) · 集中修阶段对照 A6/feat-068/feat-031/feat-019 真实 handler 接通:
+  //   - fetchTrace → feat-066 get_neondb_trace · openneon-mcp#139 contract
+  //   - fetchProbe → feat-068 dynamic probe mcp tool
+  //   - fetchAudit → feat-031 query_audit_events
+  //   - fetchValidation → feat-019 compute_explain_diff
+  generate_rca_report: async ({ params }, _neonClient, _extra) => {
+    const fetcher: RcaFetcherDeps = {
+      fetchTrace: async () => {
+        throw new Error(
+          'fetchTrace not wired · feat-066 get_neondb_trace handler pending merge (集中修接通 openneon-mcp#139 contract)',
+        );
+      },
+      fetchProbe: async () => {
+        throw new Error('fetchProbe not wired · feat-068 dynamic probe handler pending (集中修)');
+      },
+      fetchAudit: async () => {
+        throw new Error(
+          'fetchAudit not wired · feat-031 query_audit_events handler pending (集中修)',
+        );
+      },
+      fetchValidation: async () => {
+        throw new Error(
+          'fetchValidation not wired · feat-019 compute_explain_diff handler pending (集中修)',
+        );
+      },
+    };
+    const result = await handleGenerateRcaReport(
+      {
+        trace_id: params.trace_id,
+        audit_filter: params.audit_filter,
+        cache: params.cache,
+        trace_state: params.trace_state,
+        model: params.model,
+      },
+      {
+        fetcher,
+        // skipPlanMode 在生产 wiring 阶段开关 · default 走 DEFAULT_REQUEST_APPROVAL (返回
+        // 'unavailable' fail-closed deny) · 集中修阶段接通 feat-027 elicitation orchestrator.
+        skipPlanMode: true,
+      },
+    );
+    return {
+      content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
     };
   },
 } satisfies ToolHandlers;
