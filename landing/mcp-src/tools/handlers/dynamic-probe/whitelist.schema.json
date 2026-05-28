@@ -1,0 +1,50 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/zlxtqbdgdgd/openneon/blob/main/whitelist.schema.json",
+  "title": "openneon dynamic-probe whitelist schema",
+  "description": "mirror from openneon (A0b · PR #39) · 同步策略 = mirror (build-time copy · 不 runtime fetch · 跨仓自治). 升级路径: openneon 仓更新 schema → 本仓 PR 同 commit 同步 mirror + 测试。",
+  "type": "object",
+  "required": ["version", "probes", "denylist"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "SemVer 版本 · 跟 openneon 仓 whitelist.yaml 对齐"
+    },
+    "probes": {
+      "type": "array",
+      "description": "允许 attach 的 probe 清单 (feat-067 PG USDT + feat-069 Rust uprobe 维护)",
+      "items": {
+        "type": "object",
+        "required": ["function", "kind", "binary"],
+        "properties": {
+          "function": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_:]*$",
+            "description": "符号名 · regex anchor · 防 bpftrace 注入"
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["usdt", "uprobe", "kprobe"]
+          },
+          "binary": {
+            "type": "string",
+            "description": "binary path 或 USDT provider 名 (e.g. /usr/lib/postgresql/16/bin/postgres · pageserver)"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "denylist": {
+      "type": "array",
+      "description": "硬禁 attach 的 pattern · 优先于 whitelist · scram_* / *_secret / *_password 等",
+      "items": {
+        "type": "string",
+        "description": "glob pattern (* match 任意字符) · 跟 function 全名 case-insensitive 比"
+      }
+    }
+  },
+  "additionalProperties": false
+}

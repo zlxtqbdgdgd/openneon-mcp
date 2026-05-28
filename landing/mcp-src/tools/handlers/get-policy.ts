@@ -24,6 +24,8 @@ const ALL_OPS: readonly OpClass[] = [
   'DROP_DATABASE_OR_TRUNCATE',
   'DROP_USER_OR_REVOKE',
   'CROSS_PROJECT',
+  // feat-068 动态探针 attach (eBPF / USDT / uprobe · attach_neondb_dynamic_probe tool)
+  'DYNAMIC_PROBE_ATTACH',
   // feat-028/#108 fail-closed bucket
   'OTHER',
 ];

@@ -96,6 +96,16 @@ const MATRIX: Record<
   DROP_DATABASE_OR_TRUNCATE: ['deny', 'deny', 'deny', 'deny', 'deny'],
   DROP_USER_OR_REVOKE: ['deny', 'deny', 'deny', 'deny', 'deny'],
   CROSS_PROJECT: ['deny', 'deny', 'deny', 'deny', 'deny'],
+  // feat-068 动态探针 attach (eBPF / USDT / uprobe)
+  // L1/L2 deny · L3/L4 require_plan (走 plan mode · L4 走 ODD 预审批跳 plan · 接 feat-049 MRC 状态机)
+  // 不接受自由 bpftrace · 只允许模板 enum (templates.ts 5 个 PoC · escape 在 schema.ts + templates.ts)
+  DYNAMIC_PROBE_ATTACH: [
+    'deny',
+    'deny',
+    'deny',
+    'require_plan',
+    'require_plan',
+  ],
   // feat-028/#108 fail-closed bucket · PG parser 解析失败 / 未识别 stmt 兜底
   // L1 deny · 其他 L 都 require_plan (不放行未知 SQL · 走 plan mode 让人/agent 看一眼)
   OTHER: [

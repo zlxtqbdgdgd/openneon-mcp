@@ -49,6 +49,9 @@ const RISK_BY_OP: Partial<Record<OpClass, PlanRisk>> = {
   CREATE_INDEX_CONCURRENTLY: 'medium',
   DDL_ADD_COLUMN: 'medium',
   CREATE_OR_RESTORE_BRANCH: 'low',
+  // feat-068 动态探针 attach · 短时 / overhead 受限 / 自动 detach · 可控 medium
+  // (DBA 审批仍要看 plan · 信息: target endpoint / duration / 预估 overhead)
+  DYNAMIC_PROBE_ATTACH: 'medium',
   // feat-028/#108 fail-closed bucket · parse 失败 / 未识别 stmt · 按 high 处理 (保守)
   OTHER: 'high',
 };
@@ -66,6 +69,8 @@ const REVERSIBILITY_BY_OP: Partial<Record<OpClass, string>> = {
   CREATE_INDEX_CONCURRENTLY: '可 DROP INDEX 回滚 (建索引本身不改数据)',
   DDL_ADD_COLUMN: 'ADD COLUMN 可 DROP COLUMN 回滚 (新列数据丢失)',
   CREATE_OR_RESTORE_BRANCH: '分支操作不影响源 · 可删分支回滚',
+  DYNAMIC_PROBE_ATTACH:
+    'eBPF/USDT/uprobe attach · duration cap ≤ 5min · watchdog 超 overhead 自动 detach · sidecar 跑完自销 (不污染 compute 主进程) · 完全可逆',
   OTHER: '解析未识别 / fail-closed · 可逆性未知 · 按高危处理',
 };
 

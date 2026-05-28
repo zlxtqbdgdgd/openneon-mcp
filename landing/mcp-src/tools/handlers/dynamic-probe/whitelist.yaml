@@ -1,0 +1,29 @@
+# dynamic-probe whitelist · feat-068 测试 fixture
+# 生产部署用 openneon 仓的 whitelist.yaml (feat-067 PG USDT + feat-069 Rust uprobe 维护)
+# 本文件用于 mcp 测试 + 文档 example · 跟 schema.json 兼容
+version: "0.1.0-feat-068-fixture"
+probes:
+  # feat-067 PG USDT
+  - function: ExecutorRun
+    kind: usdt
+    binary: postgres
+    description: "PG executor run · 查询执行入口"
+  - function: GetPageAtLsnRequest
+    kind: uprobe
+    binary: pageserver
+    description: "Neon pageserver page request"
+  - function: LWLockAcquire
+    kind: usdt
+    binary: postgres
+    description: "PG LWLock 获取 · 锁竞争分析"
+  # feat-069 Rust uprobe
+  - function: neon_pageserver::wal_lazy_apply
+    kind: uprobe
+    binary: pageserver
+    description: "Rust uprobe · WAL lazy apply 路径"
+denylist:
+  - "scram_*"          # 密码相关
+  - "*_secret*"        # 密钥
+  - "*password*"
+  - "decrypt_*"        # 加密路径
+  - "AuthenticateUser" # 认证流程
