@@ -59,9 +59,14 @@ import {
 } from '../server-enrich/plan-store';
 // feat-025 T12 get_neondb_pool_stats · pgcat / PgBouncer 连接池 snapshot (External-component)
 import { handleGetPoolStats } from './handlers/pool-stats';
-// feat-042/#3 (#162) branch_canary_ddl · DDL 自动 canary 预演 (op-class + 表 size 双判定 +
-// 4 outcome + plan mode markdown) · 详 handlers/branch-canary-ddl.ts
-import { handleBranchCanaryDdl } from './handlers/branch-canary-ddl';
+// feat-045 generate_rca_report · L3 agent-native RCA 报告生成 (mcp tool form-shift).
+// 详设: https://github.com/zlxtqbdgdgd/openneon-design/issues/18 + openneon-mcp#145/#146/#147.
+import { handleGenerateRcaReport } from './handlers/generate-rca-report';
+// feat-037 cluster_neondb_logs · L3 log pattern 聚类 hybrid path (LLM 主 + Drain3 备).
+// 详设: https://github.com/zlxtqbdgdgd/openneon-design/issues/51 + openneon-mcp#154/#155/#157/#158/#156.
+import { handleClusterNeondbLogs } from './handlers/cluster-neondb-logs';
+import { emitAuditEvent } from '../observability/audit-emit';
+import type { RcaFetcherDeps } from '../server-enrich/rca/data-fetcher';
 // feat-006 #2 day-one ship · token economy地基 · CSV default output
 import { formatToolResponse } from '../server/response-formatter';
 
@@ -2236,48 +2241,48 @@ You MUST follow these steps:
     };
   },
 
-  // feat-066/#2 search_neondb_traces · trace summary 列表 · filter.project_id 硬覆盖 (feat-066/#3 cross-tenant)
-  search_neondb_traces: async ({ params }) => {
-    const result = await handleSearchNeondbTraces({
-      projectId: params.projectId,
-      filter: params.filter,
-      limit: params.limit,
-    });
-    if (params.format === 'csv' || params.format === 'tsv') {
-      if ('error' in result) {
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-        };
-      }
-      const header = JSON.stringify(
-        { total: result.total, cross_tenant_filtered: result.cross_tenant_filtered },
-        null,
-        2,
-      );
-      const flatRows = result.traces.map((t) => ({
-        trace_id: t.trace_id,
-        span_count: t.span_count,
-        duration_us: t.duration_us,
-        root_service: t.root_service,
-        root_operation: t.root_operation,
-        start_time: t.start_time,
-        has_error: t.has_error,
-        tracestate: t.tracestate ?? '',
-        components: t.components.map((c) => c.service_name + ':' + c.duration_us + 'us').join('·'),
-      }));
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `${header}
-${formatToolResponse(flatRows, { format: params.format })}`,
-          },
-        ],
-      };
-    }
+  // feat-037 cluster_neondb_logs · L3 log pattern 聚类 hybrid path (LLM 主 + Drain3 备).
+  // 50K token 阈值切主备 · 强制 obfuscateLogLine (raw log 不出 mcp 边界 · feat-024 T11) ·
+  // LLM 主路径过 feat-027 plan mode · cache 走 ADR-0009 ttl-cache 收口.
+  // LogFetchAdapter (feat-064 seam) 默认走 stub (feat-036 v2 jsonlog 接通前返 feat_036_not_ready).
+  cluster_neondb_logs: async ({ params }, _neonClient, _extra) => {
+    const result = await handleClusterNeondbLogs(
+      {
+        endpoint_id: params.endpoint_id,
+        time_range: params.time_range,
+        trace_id: params.trace_id,
+        severity: params.severity,
+        force_path: params.force_path,
+        top_n: params.top_n,
+        cache: params.cache,
+        trace_state: params.trace_state,
+        model: params.model,
+      },
+      {
+        // skipPlanMode=true · feat-027 elicitation orchestrator 接通前默认跳过 (DEFAULT_CLUSTER_REQUEST_APPROVAL
+        // 返 'unavailable' fail-closed deny · 跟 generate_rca_report 同 stance).
+        skipPlanMode: true,
+        emitAudit: (event) => {
+          emitAuditEvent({
+            event_type: 'log_clustering_invoked',
+            outcome: event.outcome,
+            endpoint_id: event.endpoint_id,
+            project_id: event.project_id ?? undefined,
+            extra: {
+              path_used: event.path_used,
+              cost_estimate_usd: event.cost_estimate_usd,
+              cache_hit: event.cache_hit,
+              model: event.model,
+              total_lines: event.total_lines,
+              duration_ms: event.duration_ms,
+              fallback_reason: event.fallback_reason,
+            },
+          });
+        },
+      },
+    );
     return {
       content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
     };
   },
-
 } satisfies ToolHandlers;

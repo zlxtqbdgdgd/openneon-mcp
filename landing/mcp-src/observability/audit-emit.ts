@@ -54,6 +54,8 @@ export type AuditEventType =
   | 'cross_tenant_blocked'
   // feat-025 T12 pool_stats · pgcat/PgBouncer 连接池 snapshot 调用审计
   | 'pool_stats_invoked'
+  // feat-037 cluster_neondb_logs · log pattern 聚类调用审计 (path_used + cost_estimate_usd + cache_hit + model 进 extra)
+  | 'log_clustering_invoked'
   // feat-042/#3 (#162) DDL canary 跑完 · verdict 4-outcome (低风险 / 高风险 / 失败 / 超时) + 测量 + canary_branch_id
   | 'canary_completed'
   // feat-042/#4 (#163) 7d retention cron 清理 canary branch · 含 branch_id + age_ms

@@ -47,7 +47,8 @@ import {
   getNeondbRecommendationsInputSchema,
   searchPlansInputSchema,
   getNeondbPoolStatsInputSchema,
-  branchCanaryDdlInputSchema,
+  generateRcaReportInputSchema,
+  clusterNeondbLogsInputSchema,
 } from './toolsSchema';
 
 type NeonToolDefinition = {
@@ -1715,6 +1716,44 @@ export const NEON_TOOLS = [
       readOnlyHint: false,
       destructiveHint: false,
       idempotentHint: false,
+      openWorldHint: true,
+    } satisfies ToolAnnotations,
+  },
+  // feat-037 cluster_neondb_logs · L3 log pattern 聚类 hybrid path (LLM 主 + Drain3 备).
+  // 50K token 阈值切换主备 · 强制 obfuscator 复用 (raw log 不出 mcp 边界) · LLM 主路径过 plan mode.
+  // 详设: https://github.com/zlxtqbdgdgd/openneon-design/issues/51 + openneon-mcp#154/#155/#157/#158/#156.
+  {
+    name: 'cluster_neondb_logs' as const,
+    scope: 'querying',
+    category: 'optional',
+    description: `Cluster compute logs into top-N patterns + tail aggregate. Hybrid path: LLM (small batches · 业务语义) + Drain3 (big batches · 0 LLM cost).
+
+    <use_case>
+      Pass endpoint_id + time_range and the tool: (1) fetches obfuscated log via LogFetchAdapter
+      seam (vendor-neutral · Datadog logs default), (2) re-obfuscates at the mcp boundary (feat-024
+      T11 · raw log never leaves the server), (3) routes to LLM main path (≤ 50K tokens · two-tier
+      semantic naming + 5-enum category) or Drain3 backup path (> 50K · 0 LLM cost · fixed-depth
+      prefix tree with sim_th=0.4), (4) returns top_n patterns + tail aggregate (long-tail with
+      severity distribution preserved so anomalies never get dropped).
+    </use_case>
+
+    <important_notes>
+      Plan mode (feat-027 elicitation) MUST approve before the LLM main path runs · fail-closed
+      deny when capability missing. force_path='main' rejects input over 200K tokens. trace_id
+      filter requires feat-036 v2 jsonlog · v1 阶段 returns feat_036_not_ready. Audit emits
+      'log_clustering_invoked' per call with path_used / cost_estimate_usd / cache_hit / model.
+      Three models supported (跨 model 一致性 ≥ 80% category): claude-opus-4-7 (default) /
+      claude-sonnet-4-6 (cheaper) / claude-haiku-4-5 (cheapest · terser semantic_name).
+    </important_notes>`,
+    inputSchema: clusterNeondbLogsInputSchema,
+    // LLM 调用涉 cost · 跟 generate_rca_report 一致.
+    readOnlySafe: false,
+    annotations: {
+      title: 'Cluster Neon Logs (feat-037 · L3 hybrid LLM + Drain3 pattern clustering)',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      // LLM 主路径 + 外部 log backend → openWorldHint=true
       openWorldHint: true,
     } satisfies ToolAnnotations,
   },

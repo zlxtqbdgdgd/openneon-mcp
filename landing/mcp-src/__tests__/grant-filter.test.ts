@@ -28,7 +28,7 @@ describe('filterToolsForGrant', () => {
       grant({ scopes: ['querying'] }),
     );
     const names = tools.map((t) => t.name);
-    expect(tools).toHaveLength(21); // 10 upstream + 2 day-one (T6 · T2) + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-066/#2 trace get/search · all scope='querying'
+    expect(tools).toHaveLength(21); // 10 upstream + 2 day-one (T6 · T2) + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-045 generate_rca_report + feat-037 cluster_neondb_logs · all scope='querying'
     expect(names).toContain('run_sql');
     expect(names).toContain('search');
     expect(names).toContain('fetch');
@@ -47,7 +47,7 @@ describe('filterToolsForGrant', () => {
       grant({ projectId: 'proj-123', scopes: null }),
     );
     const names = tools.map((t) => t.name);
-    expect(tools).toHaveLength(36); // 24 upstream + 3 day-one (T6/T8/T2) + feat-057 get_policy + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-042 branch_canary_ddl (require projectId · T1 hidden)
+    expect(tools).toHaveLength(37); // 24 upstream + 3 day-one (T6/T8/T2) + feat-057 get_policy + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-045 generate_rca_report + feat-037 cluster_neondb_logs (T1 hidden as project-agnostic)
     expect(names).not.toContain('list_projects');
     expect(names).not.toContain('create_project');
     expect(names).not.toContain('search');
@@ -62,7 +62,7 @@ describe('filterToolsForGrant', () => {
       NEON_TOOLS,
       grant({ projectId: 'proj-123', scopes: ['querying'] }),
     );
-    expect(tools).toHaveLength(19); // 8 upstream + 2 day-one (T6/T2) + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-066/#2 trace get/search · scope='querying' + require projectId
+    expect(tools).toHaveLength(19); // 8 upstream + 2 day-one (T6/T2) + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-045 generate_rca_report + feat-037 cluster_neondb_logs · scope='querying' (project-scoped)
     const names = tools.map((t) => t.name);
     expect(names).toContain('run_sql');
     expect(names).toContain('get_neondb_query_statement'); // T6 day-one

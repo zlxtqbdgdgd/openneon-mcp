@@ -1354,3 +1354,61 @@ export const branchCanaryDdlInputSchema = z.object({
     .optional()
     .describe('源 branch (canary 从此 fork · 默认 main · 跨 project 拒)。'),
 });
+
+// feat-037 cluster_neondb_logs input schema · L3 log pattern 聚类 hybrid path (LLM 主 + Drain3 备).
+// detail design: https://github.com/zlxtqbdgdgd/openneon-design/issues/51
+// sub-issues: openneon-mcp#157 (Drain3 TS) · #155 (LLM 主路径) · #158 (path-router + LogFetchAdapter) ·
+// #154 (mcp tool + obfuscator + plan mode + audit) · #156 (8 case fixture + 跨 model 一致性).
+export const clusterNeondbLogsInputSchema = z.object({
+  endpoint_id: z
+    .string()
+    .min(1)
+    .describe(
+      'Compute endpoint id (feat-060 claim binding · current_project_id 自动 filter).',
+    ),
+  time_range: z
+    .object({
+      start: z.string().describe('ISO8601 start inclusive.'),
+      end: z.string().describe('ISO8601 end exclusive.'),
+    })
+    .describe('Log fetch window · half-open [start, end).'),
+  trace_id: z
+    .string()
+    .regex(/^[0-9a-f]{32}$/i, 'trace_id must be 32 hex characters (W3C trace_id)')
+    .optional()
+    .describe(
+      'Optional W3C trace_id filter (32 hex). v1 阶段 (feat-036 v1 raw stderr 没字段) 返 feat_036_not_ready · 等 v2 jsonlog ship 后启用.',
+    ),
+  severity: z
+    .array(z.enum(['FATAL', 'ERROR', 'WARN', 'INFO', 'DEBUG']))
+    .optional()
+    .describe('Severity filter (e.g. ["ERROR","FATAL"]).'),
+  force_path: z
+    .enum(['auto', 'main', 'backup'])
+    .optional()
+    .describe(
+      'auto (default · 50K token 阈值切主备) · main (强制 LLM · 200K hard cap) · backup (强制 Drain3 · 0 LLM cost).',
+    ),
+  top_n: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe('Top N pattern · default 50 (matches drain3.top_n_patterns GUC).'),
+  cache: z
+    .boolean()
+    .optional()
+    .describe(
+      'Consult router cache · default true · ongoing trace 1h TTL · closed 24h (§3.5 · 跟 feat-066 一致).',
+    ),
+  trace_state: z
+    .enum(['ongoing', 'closed'])
+    .optional()
+    .describe('Trace state hint · default ongoing (conservative TTL).'),
+  model: z
+    .enum(['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5'])
+    .optional()
+    .describe(
+      'LLM model · default claude-opus-4-7. sonnet/haiku 也支持 (cost vs depth tradeoff · #156 跨 model 一致性).',
+    ),
+});
