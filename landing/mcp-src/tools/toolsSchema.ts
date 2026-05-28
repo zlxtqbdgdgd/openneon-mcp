@@ -1320,91 +1320,39 @@ export const getNeondbRecommendationsInputSchema = z.object({
   format: outputFormatField,
 });
 
-// feat-066/#2 get_neondb_trace input schema · 单 trace 全 span 检索 (W3C trace_id 32 hex)
-// detail design: features/feat-066-L3-mcp-tool-trace-read-seam.html §4
-const TRACE_ID_HEX_RE = /^[0-9a-f]{32}$/;
-
-export const getNeondbTraceInputSchema = z.object({
+// feat-042/#3 (#162) · branch_canary_ddl · DDL 自动 branch canary 预演 + 测量 + plan mode 复审。
+// 详设: https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-042-L3-mcp-server-branch-canary-ddl.html
+export const branchCanaryDdlInputSchema = z.object({
   projectId: z
     .string()
-    .describe(
-      'Neon project ID · cross-tenant boundary (hard-overridden by grant.projectId via route.ts injectProjectId + feat-060 claim-binding before reaching this tool · feat-066/#3).',
-    ),
-  trace_id: z
-    .string()
-    .refine((s) => TRACE_ID_HEX_RE.test(s), {
-      message:
-        "trace_id must be 32 lowercase hex chars (W3C trace-context · feat-066 §3.2)",
-    })
-    .describe(
-      'W3C trace_id · 32 lowercase hex chars (feat-033 libpq traceparent / feat-065 proxy traceparent emit this).',
-    ),
-  time_range: z
-    .object({
-      start: z.string().describe('Window start · ISO8601 (e.g. "2026-05-28T11:00:00Z").'),
-      end: z.string().describe('Window end · ISO8601.'),
-    })
-    .optional()
-    .describe(
-      "Optional ISO8601 time window. Narrows the backend query (Datadog APM scans a smaller window · faster). Omit → defaults to last 1h.",
-    ),
-  format: outputFormatField,
-});
-
-// feat-066/#2 search_neondb_traces input schema · 按 latency / component / endpoint / time_range 切 trace summary 列表
-// detail design: features/feat-066-L3-mcp-tool-trace-read-seam.html §4
-export const searchNeondbTracesInputSchema = z.object({
-  projectId: z
+    .describe('The ID of the project (claim-binding 强制覆盖 · 跨 tenant 拒).'),
+  sql: z
     .string()
     .describe(
-      'Neon project ID · cross-tenant boundary. Hard-overrides any filter.project_id supplied by the agent (audit-emit \'cross_tenant_blocked\' fires on mismatch · feat-066/#3 · feat-060 集成).',
+      '待预演 DDL 原文 (handler 内 sha256 用 audit · 不落明文)。risk-classifier 先判定 · HARD_CANARY 6 类或表 size > 1M (CANARY_TABLE_ROW_THRESHOLD GUC) 触发 canary。',
     ),
-  filter: z
-    .object({
-      min_latency_ms: z
-        .number()
-        .nonnegative()
-        .optional()
-        .describe(
-          'Minimum root-span wall-clock latency (ms). Surfaces slow traces — P95/P99 spelunking entry point.',
-        ),
-      component: z
-        .enum(['proxy', 'compute', 'safekeeper', 'pageserver'])
-        .optional()
-        .describe(
-          "Component slice · 'proxy' (Neon proxy entry) · 'compute' (Postgres compute) · 'safekeeper' (WAL receivers) · 'pageserver' (storage reads).",
-        ),
-      project_id: z
-        .string()
-        .optional()
-        .describe(
-          "Ignored at runtime — the handler hard-overwrites this to projectId (cross-tenant guard · feat-066/#3). Documented here so agents see the field exists; passing a different value emits a cross_tenant_blocked audit event.",
-        ),
-      endpoint_id: z
-        .string()
-        .optional()
-        .describe('Optional endpoint slice (sub-project · Neon endpoint_id).'),
-      time_range: z
-        .object({
-          start: z.string().describe('Window start · ISO8601.'),
-          end: z.string().describe('Window end · ISO8601.'),
-        })
-        .optional()
-        .describe(
-          "Optional ISO8601 time window. Omit → defaults to last 1h (token economy · narrow scan).",
-        ),
-    })
-    .optional()
-    .describe('Optional filter to narrow the search.'),
-  limit: z
+  table_size_estimate: z
     .number()
-    .int()
-    .positive()
     .optional()
     .describe(
-      'Max trace summaries to return. Default 20 · hard cap 50 (TRACE_SEARCH_LIMIT_MAX · token economy · OWASP LLM10 · 详设 §5). 超出 50 上限静默截断 (handler 层 Math.min) · 不报错 · 单源校验在 handler 避免与 zod .max 双重定义冲突 (R2 ⚠ 阻塞-4 修复).',
+      '可选 · 表行数估算 (T1 describe_table_schema / pg_class.reltuples)。配合表 size 兜底判定 · 大表 ALTER TABLE light / CREATE INDEX CONCURRENTLY 也走 canary 测 lock_contention。',
     ),
-  format: outputFormatField,
+  force_canary: z
+    .boolean()
+    .optional()
+    .describe(
+      'DBA 谨慎模式 · 强制 canary · 跳过 risk-classifier 判定。',
+    ),
+  timeout_seconds: z
+    .number()
+    .optional()
+    .describe(
+      'canary 内 DDL 执行超时秒 · 默认 1800 (30 min) · clamp 30 ~ 7200。超时 → high_risk_review。',
+    ),
+  parent_branch_id: z
+    .string()
+    .optional()
+    .describe('源 branch (canary 从此 fork · 默认 main · 跨 project 拒)。'),
 });
 
 // feat-037 cluster_neondb_logs input schema · L3 log pattern 聚类 hybrid path (LLM 主 + Drain3 备).
