@@ -3,7 +3,7 @@
  *
  * 覆盖 4 个 sub-issue 全部验收门:
  *
- *  case A · 正路径 attach (PG ExecutorRun 30s) → enriched 结果 + audit 完整 (#143 §7)
+ *  case A · 正路径 attach (Rust uprobe neon_pageserver::wal_lazy_apply 30s) → enriched 结果 + audit 完整 (#143 §7)
  *  case B · 恶意 bpftrace 模板 (template enum 越界) → schema 拒
  *  case C · 越权 pid (resolveTargetPid 返 0)        → sidecar 拒 (target-pid 显式)
  *  case D · 跨 tenant attach (G1 hard-deny)          → policy 拒
@@ -15,7 +15,7 @@
  * 跟现有测试边界:
  *   - 不重测 zod schema 细节 (留 dynamic-probe/__tests__/ 单测) · 这里走 handler 整体
  *   - 不真起 sidecar pod · MockDispatcher 注入 (单元 / e2e 边界 = 真集群)
- *   - feat-027 plan-mode elicitation 由 route.ts 跑 · 这里直接 planApproved=true 模拟过审
+ *   - feat-027 plan-mode elicitation 由 route.ts 跑 · 这里直接 _testOnlyPlanApprovedBypass=true 模拟过审
  */
 import {
   describe,
@@ -36,23 +36,54 @@ import {
 } from '../tools/handlers/dynamic-probe';
 import * as auditEmit from '../observability/audit-emit';
 
+/**
+ * Fixture · 跟 anchor #39 schema 同形 (version=1 · usdt[] + uprobe[] · denylist {usdt_probe_patterns, uprobe_symbol_patterns})。
+ *
+ * USDT 命名遵循 anchor pattern `^[a-z][a-z0-9_]*:[a-z][a-z0-9_]*(__[a-z][a-z0-9_]+)*$`:
+ *   - postgresql:executor__run  (executor 子系统 入口探针)
+ *   - postgresql:lwlock__acquire (lwlock 子系统 入口探针)
+ *
+ * uprobe Rust 符号:
+ *   - neon_pageserver::wal_lazy_apply (sync_fn / is_async=false)
+ */
 const FIXTURE_WHITELIST: Whitelist = {
-  version: 'test-fixture',
-  probes: [
+  version: 1,
+  usdt: [
     {
-      function: 'ExecutorRun',
-      kind: 'usdt',
-      binary: 'postgres',
-      description: 'PG executor run',
+      target: 'postgresql',
+      probe_name: 'postgresql:executor__run',
+      subsystem: 'executor',
+      pg_version_min: 14,
+      pg_version_max: null,
+      notes: 'PG executor run · 单点入口 (无 retprobe)',
     },
     {
-      function: 'LWLockAcquire',
-      kind: 'usdt',
-      binary: 'postgres',
-      description: 'PG LWLock',
+      target: 'postgresql',
+      probe_name: 'postgresql:lwlock__acquire',
+      subsystem: 'lwlock',
+      pg_version_min: 14,
+      pg_version_max: null,
+      notes: 'PG LWLock acquire · arg0=lock name',
     },
   ],
-  denylist: ['scram_*', '*_secret*', '*password*'],
+  uprobe: [
+    {
+      binary: 'pageserver',
+      symbol: 'neon_pageserver::wal_lazy_apply',
+      module: 'neon_pageserver',
+      type: 'sync_fn',
+      is_async: false,
+      notes: 'Rust uprobe · 同步函数 · 支持 latency_buckets 配对',
+    },
+  ],
+  denylist: {
+    usdt_probe_patterns: [
+      '^postgresql:scram_.*',
+      '.*__(secret|password)__.*',
+      '.*authenticate.*',
+    ],
+    uprobe_symbol_patterns: ['.*::scram_.*', '.*_secret_.*', '.*password.*'],
+  },
 };
 
 function buildCtx(over: Partial<AttachHandlerCtx> = {}): {
@@ -64,11 +95,11 @@ function buildCtx(over: Partial<AttachHandlerCtx> = {}): {
     dispatcher,
     resolveTargetPid: async () => 12345,
     // L4 ODD + 预审批 = 跳 plan-mode (feat-049 MRC 状态机正路径 · 详 #141 验收门)
-    // 8 case fixture 模拟"过审后的 attach 流" · 单独的 require_plan 路径见 case I (L3 + planApproved=false)
+    // 8 case fixture 模拟"过审后的 attach 流" · 单独的 require_plan 路径见 case I (L3 + _testOnlyPlanApprovedBypass=false)
     autonomyLevel: 'L4',
     tenant: 'tenant-A',
     whitelist: FIXTURE_WHITELIST,
-    planApproved: true,
+    _testOnlyPlanApprovedBypass: true,
     watchdogPollMs: 10,
     ...over,
   };
@@ -89,13 +120,14 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
   });
 
   // ─────────────────────────────────────────────────────────────
-  // case A · 正路径 attach (PG ExecutorRun 30s) → enriched + audit 完整
-  it('case A · 正路径 attach ExecutorRun → 拿到 enriched 结果 + audit attached/detached', async () => {
+  // case A · 正路径 attach (Rust uprobe neon_pageserver::wal_lazy_apply 30s) → enriched + audit 完整
+  //  · 用 uprobe + latency_buckets 配对 · 验证 retHead 正确生成 `uretprobe:` (BUG A 反向回归)
+  it('case A · 正路径 attach uprobe entry/exit → 拿到 enriched 结果 + audit attached/detached', async () => {
     const { ctx, dispatcher } = buildCtx();
     const out = await attachDynamicProbeHandler(
       {
         template: 'latency_buckets',
-        function: 'ExecutorRun',
+        function: 'neon_pageserver::wal_lazy_apply',
         duration_seconds: 30,
         max_overhead_pct: 2.0,
         endpoint_id: 'ep-A',
@@ -109,16 +141,39 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
     expect(out.result.status).toBe('completed');
     expect(out.result.output).toMatchObject({
       template: 'latency_buckets',
-      function: 'ExecutorRun',
+      function: 'neon_pageserver::wal_lazy_apply',
     });
-    // dispatcher 收到正确的 bpftrace 脚本 (含 target pid)
+    // dispatcher 收到正确的 bpftrace 脚本 (含 target pid · 入口 uprobe + 出口 uretprobe 都生成)
     expect(dispatcher.dispatches[0].targetPid).toBe(12345);
     expect(dispatcher.dispatches[0].bpftraceScript).toContain('pid == 12345');
     expect(dispatcher.dispatches[0].bpftraceScript).toContain('interval:s:30');
+    // BUG A 反向回归: 入口走 uprobe: · 出口必须走 uretprobe: · 不能是 usdt:/usdt: 同样的 no-op
+    expect(dispatcher.dispatches[0].bpftraceScript).toMatch(/uprobe:pageserver:/);
+    expect(dispatcher.dispatches[0].bpftraceScript).toMatch(/uretprobe:pageserver:/);
     // audit: attached + detached 都 emit (count >= 2)
     const types = emitSpy.mock.calls.map((c) => c[0].event_type);
     expect(types).toContain('probe_attached');
     expect(types).toContain('probe_detached');
+  });
+
+  // case A' · BUG A 正向回归 · USDT + latency_buckets 必须被 schema 拒
+  it("case A' · USDT + latency_buckets (entry/exit 配对) → schema 拒 · BUG A 修复", async () => {
+    const { ctx } = buildCtx();
+    const out = await attachDynamicProbeHandler(
+      {
+        template: 'latency_buckets',
+        function: 'postgresql:executor__run',
+        duration_seconds: 5,
+        max_overhead_pct: 2.0,
+        endpoint_id: 'ep-A',
+        project_id: 'tenant-A',
+      },
+      ctx,
+    );
+    expect(out.ok).toBe(false);
+    if (out.ok) throw new Error('unreachable');
+    expect(out.stage).toBe('schema');
+    expect(out.reason).toMatch(/entry\/exit 配对|uretprobe|USDT.*不支持/);
   });
 
   // ─────────────────────────────────────────────────────────────
@@ -129,7 +184,7 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
     const bad1 = await attachDynamicProbeHandler(
       {
         template: 'rm_rf_anything', // 不在 enum
-        function: 'ExecutorRun',
+        function: 'postgresql:executor__run', // function 合法 · 确保 fail 在 template enum 而非 whitelist
         duration_seconds: 30,
         max_overhead_pct: 2.0,
       },
@@ -160,8 +215,9 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
     const { ctx } = buildCtx({ resolveTargetPid: async () => 0 });
     const out = await attachDynamicProbeHandler(
       {
-        template: 'latency_buckets',
-        function: 'ExecutorRun',
+        // USDT + 单点模板 (无 retprobe 需求) · BUG A 修复后 USDT 仅支持 entry-only 模板
+        template: 'call_count',
+        function: 'postgresql:executor__run',
         duration_seconds: 30,
         max_overhead_pct: 2.0,
         endpoint_id: 'ep-A',
@@ -180,8 +236,8 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
     const { ctx } = buildCtx({ tenant: 'tenant-A' });
     const out = await attachDynamicProbeHandler(
       {
-        template: 'latency_buckets',
-        function: 'ExecutorRun',
+        template: 'call_count',
+        function: 'postgresql:executor__run',
         duration_seconds: 30,
         max_overhead_pct: 2.0,
         endpoint_id: 'ep-X',
@@ -202,8 +258,8 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
     dispatcher.forceFail = true;
     const out = await attachDynamicProbeHandler(
       {
-        template: 'latency_buckets',
-        function: 'ExecutorRun',
+        template: 'call_count',
+        function: 'postgresql:executor__run',
         duration_seconds: 30,
         max_overhead_pct: 2.0,
         endpoint_id: 'ep-A',
@@ -226,8 +282,8 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
     dispatcher.fakeDurationMs = 200; // 给 watchdog 时间触发
     const out = await attachDynamicProbeHandler(
       {
-        template: 'latency_buckets',
-        function: 'ExecutorRun',
+        template: 'call_count',
+        function: 'postgresql:executor__run',
         duration_seconds: 30,
         max_overhead_pct: 2.0,
         endpoint_id: 'ep-A',
@@ -260,8 +316,8 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
       const { ctx: ctxi } = buildCtx({ tenant: `tenant-${i}` });
       const ok = await attachDynamicProbeHandler(
         {
-          template: 'latency_buckets',
-          function: 'ExecutorRun',
+          template: 'call_count',
+          function: 'postgresql:executor__run',
           duration_seconds: 1,
           max_overhead_pct: 2.0,
           endpoint_id: 'ep-A',
@@ -273,8 +329,8 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
     // 第 6 次 (任何 tenant) → per-function 5min/5 拒
     const out = await attachDynamicProbeHandler(
       {
-        template: 'latency_buckets',
-        function: 'ExecutorRun',
+        template: 'call_count',
+        function: 'postgresql:executor__run',
         duration_seconds: 1,
         max_overhead_pct: 2.0,
         endpoint_id: 'ep-A',
@@ -298,8 +354,8 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
     dispatcher.fakeDurationMs = 0;
     const out = await attachDynamicProbeHandler(
       {
-        template: 'latency_buckets',
-        function: 'ExecutorRun',
+        template: 'call_count',
+        function: 'postgresql:executor__run',
         duration_seconds: 5,
         max_overhead_pct: 2.0,
         endpoint_id: 'ep-A',
@@ -318,12 +374,12 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
   it('附加 · L3 + 未审批 → policy 阶段返 require_plan verdict (调用方走 elicitInput)', async () => {
     const { ctx } = buildCtx({
       autonomyLevel: 'L3',
-      planApproved: false, // 未审批
+      _testOnlyPlanApprovedBypass: false, // 未审批
     });
     const out = await attachDynamicProbeHandler(
       {
-        template: 'latency_buckets',
-        function: 'ExecutorRun',
+        template: 'call_count',
+        function: 'postgresql:executor__run',
         duration_seconds: 30,
         max_overhead_pct: 2.0,
         endpoint_id: 'ep-A',
@@ -344,8 +400,8 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
       const { ctx } = buildCtx({ autonomyLevel: lvl });
       const out = await attachDynamicProbeHandler(
         {
-          template: 'latency_buckets',
-          function: 'ExecutorRun',
+          template: 'call_count',
+          function: 'postgresql:executor__run',
           duration_seconds: 30,
           max_overhead_pct: 2.0,
           endpoint_id: 'ep-A',
@@ -362,24 +418,24 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
 
   // ─────────────────────────────────────────────────────────────
   // 额外 · whitelist denylist (scram_*) 拒 · 跟 8 case 主线 case D 互补
-  it('附加 · denylist 命中 (scram_secret_*) → whitelist 阶段拒', async () => {
+  it('附加 · denylist 命中 (scram_*) → whitelist 阶段拒 (denylist 优先于 whitelist)', async () => {
     const wl: Whitelist = {
       ...FIXTURE_WHITELIST,
-      probes: [
-        ...FIXTURE_WHITELIST.probes,
-        // 故意把 scram_secret 同时放白名单 · 验证 denylist 优先
+      usdt: [
+        ...(FIXTURE_WHITELIST.usdt ?? []),
+        // 故意把 scram probe 同时放白名单 · 验证 denylist 优先
         {
-          function: 'scram_secret_check',
-          kind: 'usdt',
-          binary: 'postgres',
+          target: 'postgresql',
+          probe_name: 'postgresql:scram_init',
+          subsystem: 'other',
         },
       ],
     };
     const { ctx } = buildCtx({ whitelist: wl });
     const out = await attachDynamicProbeHandler(
       {
-        template: 'latency_buckets',
-        function: 'scram_secret_check',
+        template: 'call_count',
+        function: 'postgresql:scram_init',
         duration_seconds: 5,
         max_overhead_pct: 2.0,
         endpoint_id: 'ep-A',
@@ -389,7 +445,7 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
     expect(out.ok).toBe(false);
     if (out.ok) throw new Error('unreachable');
     expect(out.stage).toBe('whitelist');
-    expect(out.reason).toMatch(/denylist|scram_/);
+    expect(out.reason).toMatch(/denylist|scram/);
   });
 });
 
@@ -397,14 +453,20 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
 // 单测 · template 渲染 + escape (#144 验收门: 占位符 escape)
 describe('feat-068 templates · escape + render', () => {
   it('renderTemplate 5 个模板都正确渲染含 target pid + duration', async () => {
-    const { renderTemplate, TEMPLATE_NAMES } = await import(
-      '../tools/handlers/dynamic-probe/templates'
-    );
+    const {
+      renderTemplate,
+      TEMPLATE_NAMES,
+      USDT_INCOMPATIBLE_TEMPLATES,
+    } = await import('../tools/handlers/dynamic-probe/templates');
     for (const t of TEMPLATE_NAMES) {
+      // BUG A 修复: entry/exit 配对模板只能 kind=uprobe · 单点模板两种都行
+      const kind: 'usdt' | 'uprobe' = USDT_INCOMPATIBLE_TEMPLATES.has(t)
+        ? 'uprobe'
+        : 'usdt';
       const script = renderTemplate(t, {
         function: 'ExecutorRun',
         binary: 'postgres',
-        kind: 'usdt',
+        kind,
         pid: 9999,
         duration_seconds: 30,
       });
@@ -415,6 +477,41 @@ describe('feat-068 templates · escape + render', () => {
     }
   });
 
+  // BUG A 修复 (R2 元评 ⚠ 阻塞-A) · USDT + entry/exit 配对模板必须抛
+  it('renderTemplate · USDT + latency_buckets/lock_wait_histogram → 抛错 (BUG A)', async () => {
+    const { renderTemplate } = await import(
+      '../tools/handlers/dynamic-probe/templates'
+    );
+    for (const t of ['latency_buckets', 'lock_wait_histogram'] as const) {
+      expect(() =>
+        renderTemplate(t, {
+          function: 'ExecutorRun',
+          binary: 'postgres',
+          kind: 'usdt',
+          pid: 1234,
+          duration_seconds: 5,
+        }),
+      ).toThrow(/entry\/exit 配对|uretprobe|USDT.*不支持/);
+    }
+  });
+
+  it('renderTemplate · uprobe + latency_buckets → 入口 uprobe: + 出口 uretprobe: (BUG A 反向回归)', async () => {
+    const { renderTemplate } = await import(
+      '../tools/handlers/dynamic-probe/templates'
+    );
+    const script = renderTemplate('latency_buckets', {
+      function: 'neon_pageserver_wal_lazy_apply', // SAFE_SYMBOL_RE 允许的形式 (无 ::)
+      binary: 'pageserver',
+      kind: 'uprobe',
+      pid: 1234,
+      duration_seconds: 5,
+    });
+    expect(script).toMatch(/uprobe:pageserver:neon_pageserver_wal_lazy_apply/);
+    expect(script).toMatch(/uretprobe:pageserver:neon_pageserver_wal_lazy_apply/);
+    // 显式断言不能出现 retHead 错误替换 (usdt:/usdt: 同样 no-op)
+    expect(script).not.toMatch(/(?:^|\n)usdt:.*\{.*hist\(/);
+  });
+
   it('renderTemplate 拒绝注入字符 function 名 · 抛错', async () => {
     const { renderTemplate } = await import(
       '../tools/handlers/dynamic-probe/templates'
@@ -422,8 +519,8 @@ describe('feat-068 templates · escape + render', () => {
     expect(() =>
       renderTemplate('latency_buckets', {
         function: 'ExecutorRun; rm -rf /',
-        binary: 'postgres',
-        kind: 'usdt',
+        binary: 'pageserver',
+        kind: 'uprobe', // BUG A 修复后 entry/exit 配对模板只能 uprobe
         pid: 1234,
         duration_seconds: 5,
       }),
@@ -435,10 +532,10 @@ describe('feat-068 templates · escape + render', () => {
       '../tools/handlers/dynamic-probe/templates'
     );
     expect(() =>
-      renderTemplate('latency_buckets', {
+      renderTemplate('call_count', {
         function: 'ExecutorRun',
         binary: 'postgres',
-        kind: 'usdt',
+        kind: 'usdt', // 单点模板 USDT 合规
         pid: 0,
         duration_seconds: 5,
       }),

@@ -22,6 +22,18 @@ export const TEMPLATE_NAMES = [
 
 export type TemplateName = (typeof TEMPLATE_NAMES)[number];
 
+/**
+ * USDT 不兼容的模板集合 · 这些模板需要 entry/exit 配对 (uretprobe 语义) ·
+ * USDT 没有"return tracepoint"概念 (PG 端只声明入口 probe · stapsdt note 是单点) ·
+ * 因此一旦 kind=usdt 命中这些模板必须 schema 层拒 (BUG A 修复 · R2 元评 ⚠ 阻塞-A)。
+ *
+ * 走 entry-only 语义的模板 (call_count / stacktrace_top / lwlock_contention_top) 不受限。
+ */
+export const USDT_INCOMPATIBLE_TEMPLATES = new Set<TemplateName>([
+  'latency_buckets',
+  'lock_wait_histogram',
+]);
+
 /** 占位符 escape regex · 函数名 / binary 名只允许的字符 (defense in depth) */
 export const SAFE_SYMBOL_RE = /^[A-Za-z_][A-Za-z0-9_:]*$/;
 export const SAFE_BINARY_RE = /^[A-Za-z_][A-Za-z0-9_/.-]*$/;
@@ -84,6 +96,22 @@ function escapeDuration(d: number): number {
   return Math.floor(d);
 }
 
+/**
+ * 校验 kind 是否允许 entry/exit 配对模板 · 仅 uprobe 支持 uretprobe ·
+ * USDT 无 return tracepoint · kprobe 不在本批 PoC 支持。
+ * BUG A 修复 defense-in-depth · 主防线在 schema.ts USDT_INCOMPATIBLE_TEMPLATES。
+ */
+function requireUprobeEntryExit(
+  template: string,
+  kind: TemplateInputs['kind'],
+): void {
+  if (kind !== 'uprobe') {
+    throw new Error(
+      `[dynamic-probe/templates] template "${template}" 需 entry/exit 配对 (uretprobe) · kind=${kind} 不支持 · 仅 kind=uprobe 可用 (R2 元评 ⚠ 阻塞-A · USDT 无 return tracepoint)`,
+    );
+  }
+}
+
 /** probe 头 · kind/binary/function/pid → bpftrace probe 段 */
 function probeHead(inputs: TemplateInputs): string {
   const fn = escapeSymbol(inputs.function);
@@ -107,12 +135,17 @@ function probeHead(inputs: TemplateInputs): string {
  */
 export const TEMPLATES: Readonly<Record<TemplateName, TemplateDef>> = {
   // 1. latency_buckets · uprobe + uretprobe 配对 · log2 直方图
+  //    BUG A 修复 (R2 ⚠ 阻塞-A): USDT 没有 return tracepoint · 这个模板只能跟 kind=uprobe 配 ·
+  //    schema 层 (validateAttachInput) 已经在 USDT_INCOMPATIBLE_TEMPLATES 集合里拦截 USDT 命中 ·
+  //    这里再加 defense-in-depth assert · render 期收到 usdt 即抛 (避免曾经 retHead replace
+  //    `^usdt:/, 'usdt:'` no-op 导致 entry/exit 用同一个 probe 触发两次的脏数据)。
   latency_buckets: {
     name: 'latency_buckets',
-    description: '函数入口/出口配对 · log2 直方图统计 p50/p95/p99 延迟分布',
+    description: '函数入口/出口配对 · log2 直方图统计 p50/p95/p99 延迟分布 (仅 uprobe)',
     render: (inp) => {
+      requireUprobeEntryExit('latency_buckets', inp.kind);
       const head = probeHead(inp);
-      const retHead = head.replace(/^uprobe:/, 'uretprobe:').replace(/^usdt:/, 'usdt:');
+      const retHead = head.replace(/^uprobe:/, 'uretprobe:');
       const dur = escapeDuration(inp.duration_seconds);
       const pid = escapePid(inp.pid);
       return [
@@ -139,12 +172,15 @@ export const TEMPLATES: Readonly<Record<TemplateName, TemplateDef>> = {
   },
 
   // 3. lock_wait_histogram · 锁等待时间 log2 直方图 (feat-068 详设 §3.3 PG LWLock 用例)
+  //    BUG A 修复 · 同 latency_buckets · 只能 kind=uprobe (uretprobe 配对)。
+  //    要看 PG LWLock 用 lwlock_contention_top (USDT 单点) 或者 attach 同名 Rust uprobe。
   lock_wait_histogram: {
     name: 'lock_wait_histogram',
-    description: '锁等待 (LWLockAcquire 进/出配对) log2 直方图 · 看锁热点',
+    description: '锁等待 (进/出配对) log2 直方图 · 看锁热点 (仅 uprobe · USDT 用 lwlock_contention_top)',
     render: (inp) => {
+      requireUprobeEntryExit('lock_wait_histogram', inp.kind);
       const head = probeHead(inp);
-      const retHead = head.replace(/^uprobe:/, 'uretprobe:').replace(/^usdt:/, 'usdt:');
+      const retHead = head.replace(/^uprobe:/, 'uretprobe:');
       const dur = escapeDuration(inp.duration_seconds);
       const pid = escapePid(inp.pid);
       return [

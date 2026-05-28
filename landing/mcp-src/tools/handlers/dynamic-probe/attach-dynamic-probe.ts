@@ -54,8 +54,15 @@ export type AttachHandlerCtx = {
   tenant: string;
   /** whitelist 注入 (测试用 · 生产从 file load) */
   whitelist?: Whitelist;
-  /** plan-mode approval 是否已拿到 (route.ts 跑过 elicitInput 后置 true · 等价 confirm-token-store 但分离 · sub-issue scope) */
-  planApproved?: boolean;
+  /**
+   * **@internal @testOnly** plan-mode bypass · 测试 fixture 专用 ·
+   * route.ts wiring PR 接入后,真实链路必须用 ConfirmTokenSnapshot (feat-026/§4 issueConfirmToken)
+   * 而**不**走这个 boolean shortcut · 命名前缀 `_testOnly` 即合约:
+   *   1. 单测/集成测试用它跳 elicitInput → issueConfirmToken 副作用
+   *   2. 生产 route.ts 必须 sourceforge 真 ConfirmTokenSnapshot 注入 EnforcementCtx 重调 handler
+   *   3. 任何非 *.test.ts 引用本字段需 reviewer 显式签名 (R2 元评 ⚠ 阻塞-C)
+   */
+  _testOnlyPlanApprovedBypass?: boolean;
   /** 测试用 · watchdog poll 缩短 */
   watchdogPollMs?: number;
 };
@@ -152,7 +159,7 @@ export async function attachDynamicProbeHandler(
     //   issueConfirmToken 颁发 · feat-026/§4)。本 handler 走"orchestrator 已审批后重调"语义:
     //   route.ts 拿 require_plan verdict → 跑 elicitInput → approve 后由 orchestrator issueConfirmToken
     //   并把真 snapshot 注入 EnforcementCtx 重调 → 本 handler 透传给 pipeline。
-    //   单测 fixture 用 planApproved boolean shortcut 跳过该流 (避开 confirm-token-store 跨 stage 副作用)。
+    //   单测 fixture 用 _testOnlyPlanApprovedBypass boolean shortcut 跳过该流 (避开 confirm-token-store 跨 stage 副作用)。
   };
   const verdict = runPipeline(policyCtx);
   if (verdict.action === 'deny') {
@@ -169,8 +176,8 @@ export async function attachDynamicProbeHandler(
     return { ok: false, reason: verdict.reason, stage: 'policy', verdict };
   }
   if (verdict.action === 'require_plan') {
-    // L3/L4 require_plan · 调用方未带 planApproved → 返 verdict 给 orchestrator 跑 elicitInput
-    if (!ctx.planApproved) {
+    // L3/L4 require_plan · 调用方未带 _testOnlyPlanApprovedBypass → 返 verdict 给 orchestrator 跑 elicitInput
+    if (!ctx._testOnlyPlanApprovedBypass) {
       return {
         ok: false,
         reason: '需 DBA 审批 (plan mode · feat-027 elicitInput)',
@@ -178,7 +185,7 @@ export async function attachDynamicProbeHandler(
         verdict,
       };
     }
-    // 已带 planApproved · 视为 orchestrator 已跑过 elicit + 颁过真 confirm token (#141 §6)
+    // 已带 _testOnlyPlanApprovedBypass · 视为 orchestrator 已跑过 elicit + 颁过真 confirm token (#141 §6)
     // sub-issue scope: 不重跑 pipeline / 不重新 verify token · 由 route.ts 负责真链路 verification
   }
 

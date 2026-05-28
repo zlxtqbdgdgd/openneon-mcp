@@ -19,10 +19,15 @@ export {
   __setWhitelistForTest,
   type AttachDynamicProbeInput,
   type Whitelist,
+  type WhitelistProbe,
+  type UsdtEntry,
+  type UprobeEntry,
+  type WhitelistDenylist,
 } from './schema';
 export {
   TEMPLATE_NAMES,
   TEMPLATES,
+  USDT_INCOMPATIBLE_TEMPLATES,
   renderTemplate,
   type TemplateName,
   type TemplateInputs,
