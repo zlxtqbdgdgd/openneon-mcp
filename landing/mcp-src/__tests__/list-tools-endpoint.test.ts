@@ -140,7 +140,7 @@ describe('/api/list-tools endpoint', () => {
   it('include=invalid falls back to core default (strict whitelist)', async () => {
     const body = await callListTools({ include: 'optional' });
     expect(body.categoryInclude).toBe('core');
-    expect(body.tools).toHaveLength(7); // T1 + T2 + T6 + T8 (day-one core 满)
+    expect(body.tools).toHaveLength(4); // T1 + T2 + T6 + T8 (day-one core 4 个 · feat-005 #2 收紧到 4)
   });
 
   it('advertises supportsDepth + defaultDepth (feat-007 #4 · T6/T8 support depth · T1/T2 do not)', async () => {
@@ -203,7 +203,7 @@ describe('/api/list-tools endpoint', () => {
     );
 
     const bodies = await Promise.all(runs);
-    expect(bodies).toHaveLength(203);
+    expect(bodies).toHaveLength(200);
 
     for (const body of bodies) {
       expect(Array.isArray(body.tools)).toBe(true);
