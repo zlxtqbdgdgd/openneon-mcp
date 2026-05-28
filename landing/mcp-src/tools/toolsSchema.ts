@@ -1319,3 +1319,41 @@ export const getNeondbRecommendationsInputSchema = z.object({
     ),
   format: outputFormatField,
 });
+
+// feat-045 generate_rca_report input schema · L3 agent-native RCA 报告生成 (mcp tool form-shift)
+// detail design: https://github.com/zlxtqbdgdgd/openneon-design/issues/18
+// sub-issues: openneon-mcp#145 (handler + 7节模板 + 三原则) · #146 (4 mcp tool 并行 + plan mode) ·
+// #147 (6 fixture + token economy + cache + 跨 model robustness).
+export const generateRcaReportInputSchema = z.object({
+  trace_id: z
+    .string()
+    .regex(/^[0-9a-f]{32}$/i, 'trace_id must be 32 hex characters (W3C trace_id)')
+    .describe('W3C trace_id (32 hex chars) · identifies the incident to RCA.'),
+  audit_filter: z
+    .object({
+      start: z.string().describe('ISO8601 start time inclusive.'),
+      end: z.string().describe('ISO8601 end time exclusive.'),
+    })
+    .optional()
+    .describe(
+      'Optional time range for audit-event lookup (feat-031 query_audit_events). Defaults to ±10min around the trace.',
+    ),
+  cache: z
+    .boolean()
+    .optional()
+    .describe(
+      'When true (default) consult RCA cache · ongoing trace 60s TTL · closed trace 24h TTL (#147 §Cache 策略).',
+    ),
+  trace_state: z
+    .enum(['ongoing', 'closed'])
+    .optional()
+    .describe(
+      'Trace state hint · ongoing → 60s cache TTL · closed → 24h. Default ongoing (conservative).',
+    ),
+  model: z
+    .enum(['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5'])
+    .optional()
+    .describe(
+      'LLM model · default claude-opus-4-7. sonnet / haiku also supported for cost vs depth tradeoff (#147 跨 model robustness).',
+    ),
+});

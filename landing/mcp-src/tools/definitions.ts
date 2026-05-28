@@ -47,6 +47,7 @@ import {
   getNeondbRecommendationsInputSchema,
   searchPlansInputSchema,
   getNeondbPoolStatsInputSchema,
+  generateRcaReportInputSchema,
 } from './toolsSchema';
 
 type NeonToolDefinition = {
@@ -1666,6 +1667,52 @@ export const NEON_TOOLS = [
       destructiveHint: false,
       idempotentHint: true,
       openWorldHint: false,
+    } satisfies ToolAnnotations,
+  },
+  // feat-045 generate_rca_report · L3 agent-native RCA 报告生成 (Datadog APM RCA form-shift).
+  // 4 个 mcp tool 并行 (feat-066 get_neondb_trace + feat-068 dynamic probe + feat-031
+  // query_audit_events + feat-019 compute_explain_diff) + 7 节 markdown 模板 + LLM 三原则
+  // prompt + plan mode 集成. 详设:
+  // https://github.com/zlxtqbdgdgd/openneon-design/issues/18 + openneon-mcp#145/#146/#147.
+  // Contract dependencies (按 issue body 编程 · 真实 handler 集中修阶段接通):
+  //   - feat-066 (openneon-mcp#139): get_neondb_trace · search_neondb_traces
+  //   - feat-068 dynamic probe mcp tool
+  //   - feat-031 query_audit_events
+  //   - feat-019 compute_explain_diff
+  {
+    name: 'generate_rca_report' as const,
+    scope: 'querying',
+    category: 'optional',
+    description: `Generate an agent-native RCA report for an incident · the form-shift counterpart to Datadog APM RCA dashboard. Use after diagnosis + fix to write a postmortem the DBA can read directly.
+
+    <use_case>
+      Pass a trace_id (32 hex) and the tool: (1) parallel-fetches trace span / dynamic probe hotspots /
+      audit event timeline / explain diff (4 mcp tools via Promise.allSettled · any leg failing
+      degrades to [DATA_MISSING:*] without aborting), (2) renders a 7-section markdown template,
+      (3) runs an LLM with the 三原则 prompt to fill natural-language attribution sentences only
+      (server-computed tables stay verbatim), (4) caches by trace_id + state (ongoing 60s / closed
+      24h · ADR-0009 seam reuse).
+    </use_case>
+
+    <important_notes>
+      LLM call is the only cost. Plan mode (feat-027 elicitation) MUST approve before running ·
+      fail-closed deny when capability missing. Output ≤ 4500 tokens (hard cap) · single RCA stays
+      within the 5K token budget for agent context. Audit emits 'rca_generated' per call with
+      model / tokens / cached / duration_ms. Three models supported: claude-opus-4-7 (default · best
+      attribution) / sonnet-4-6 (3-5× cheaper · ~95% structure consistency) / haiku-4-5 (cheapest ·
+      same template, terser prose).
+    </important_notes>`,
+    inputSchema: generateRcaReportInputSchema,
+    // readOnly 在底层数据视角 (4 个数据源 tool 都 read-only) · 但本 tool 触发 LLM 调用涉及
+    // cost · 因此 readOnlySafe=false (按 openneon-mcp#145 §验收门 readOnlyHint=false).
+    readOnlySafe: false,
+    annotations: {
+      title: 'Generate RCA Report (feat-045 · L3 agent-native postmortem)',
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      // LLM 调用 + 多个下游 mcp tool · 诚实标 openWorldHint=true
+      openWorldHint: true,
     } satisfies ToolAnnotations,
   },
 ] as const satisfies readonly NeonToolDefinition[];
