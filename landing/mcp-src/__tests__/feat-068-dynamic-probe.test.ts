@@ -604,11 +604,10 @@ describe('feat-068 follow-up · risk=high + watchdog persistence (#181 + #182)',
     let pollCount = 0;
     const mockDispatcher = {
       dispatch: async () => ({
+        attachId: 'a1',
         status: 'completed' as const,
         observedOverheadPct: 0.5,
         elapsedMs: 0,
-        stdout: '',
-        stderr: '',
       }),
       detach: vi.fn(async () => undefined),
       getObservedOverhead: async () => {
@@ -637,11 +636,10 @@ describe('feat-068 follow-up · risk=high + watchdog persistence (#181 + #182)',
     );
     const mockDispatcher = {
       dispatch: async () => ({
+        attachId: 'a1',
         status: 'detached_early' as const,
         observedOverheadPct: 8.0,
         elapsedMs: 0,
-        stdout: '',
-        stderr: '',
       }),
       detach: vi.fn(async () => undefined),
       getObservedOverhead: async () => 8.0, // 持续超阈值

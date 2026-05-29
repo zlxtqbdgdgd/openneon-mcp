@@ -457,6 +457,21 @@ import {
   checkSlot,
   __resetPgVersionUnsupportedStampForTest,
 } from '../server-enrich/slot-monitor/slot-checker';
+import type { InactiveSlotRow } from '../server-enrich/slot-monitor/queries';
+
+// InactiveSlotRow 全字段 (active / detection_basis_at / restart_lsn) · 这些用例只关心
+// slot_name + inactive_seconds · factory 补默认值满足类型 · 不改 source (queries.ts InactiveSlotRow)。
+function mkSlotRow(
+  o: Pick<InactiveSlotRow, 'slot_name' | 'inactive_seconds'> &
+    Partial<InactiveSlotRow>,
+): InactiveSlotRow {
+  return {
+    active: false,
+    detection_basis_at: null,
+    restart_lsn: null,
+    ...o,
+  };
+}
 
 describe('feat-043 follow-up · PG < 16 silent skip emit warn (#177)', () => {
   beforeEach(() => {
@@ -465,11 +480,11 @@ describe('feat-043 follow-up · PG < 16 silent skip emit warn (#177)', () => {
   });
 
   it('PG < 16 endpoint 首次 skip → emit pg_version_unsupported warn + outcome=skip', () => {
-    const row = {
+    const row = mkSlotRow({
       slot_name: 'pg14_slot',
-      inactive_seconds: null as number | null,
+      inactive_seconds: null,
       restart_lsn: '0/0',
-    };
+    });
     const ctx = {
       endpoint_id: 'ep-pg14',
       project_id: 'proj-1',
@@ -499,7 +514,7 @@ describe('feat-043 follow-up · PG < 16 silent skip emit warn (#177)', () => {
   });
 
   it('同 endpoint 重复 skip → 仅首次 emit (per process emit-once)', () => {
-    const row = { slot_name: 's', inactive_seconds: null as number | null };
+    const row = mkSlotRow({ slot_name: 's', inactive_seconds: null });
     const ctx = {
       endpoint_id: 'ep-pg14',
       project_id: 'proj-1',
@@ -512,7 +527,7 @@ describe('feat-043 follow-up · PG < 16 silent skip emit warn (#177)', () => {
   });
 
   it('不同 endpoint 各自 emit 1 次 (per endpoint 独立 stamp)', () => {
-    const row = { slot_name: 's', inactive_seconds: null as number | null };
+    const row = mkSlotRow({ slot_name: 's', inactive_seconds: null });
     checkSlot(row, {
       endpoint_id: 'ep-a',
       project_id: 'proj-1',
@@ -536,7 +551,7 @@ describe('feat-043 follow-up · PG < 16 silent skip emit warn (#177)', () => {
   });
 
   it('PG >= 16 endpoint (inactive_seconds 有值) 不触发 pg_version_unsupported emit', () => {
-    const row = { slot_name: 's', inactive_seconds: 1000 };
+    const row = mkSlotRow({ slot_name: 's', inactive_seconds: 1000 });
     checkSlot(row, {
       endpoint_id: 'ep-pg16',
       project_id: 'proj-1',
@@ -547,7 +562,7 @@ describe('feat-043 follow-up · PG < 16 silent skip emit warn (#177)', () => {
   });
 
   it('process restart 等效 (__reset stamp) → 重新 emit', () => {
-    const row = { slot_name: 's', inactive_seconds: null as number | null };
+    const row = mkSlotRow({ slot_name: 's', inactive_seconds: null });
     const ctx = {
       endpoint_id: 'ep-pg14',
       project_id: 'proj-1',

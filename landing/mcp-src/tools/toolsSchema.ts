@@ -1418,3 +1418,10 @@ export const clusterNeondbLogsInputSchema = z.object({
 // 让 definitions.ts 跟其他 tool 一致用相对路径引 toolsSchema · 不破现有依赖图
 // (handler 在 tools/handlers/dynamic-probe/schema.ts · 实际 zod 单一定义点)。
 export { attachDynamicProbeInputSchema } from './handlers/dynamic-probe/schema';
+
+// feat-045 generate_rca_report · L3 RCA 报告生成
+// definitions.ts 从 toolsSchema 引 generateRcaReportInputSchema，但该 zod schema 的
+// 单一定义点在 handler 模块 (tools/handlers/generate-rca-report.ts)，此前漏 re-export →
+// `next build` TS 报 has no exported member，阻断 main + 所有 PR 的 l1-e2e。补回 re-export，
+// 跟上方 attachDynamicProbeInputSchema 同模式 (definitions.ts 统一走 toolsSchema 相对路径)。
+export { generateRcaReportInputSchema } from './handlers/generate-rca-report';
