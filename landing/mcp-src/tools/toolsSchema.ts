@@ -1412,3 +1412,9 @@ export const clusterNeondbLogsInputSchema = z.object({
       'LLM model · default claude-opus-4-7. sonnet/haiku 也支持 (cost vs depth tradeoff · #156 跨 model 一致性).',
     ),
 });
+
+// feat-068 attach_neondb_dynamic_probe · L3 ephemeral dynamic probe (USDT/uprobe)
+// follow-up #179 (sub-1 dispatcher wire): re-export zod schema from handler module ·
+// 让 definitions.ts 跟其他 tool 一致用相对路径引 toolsSchema · 不破现有依赖图
+// (handler 在 tools/handlers/dynamic-probe/schema.ts · 实际 zod 单一定义点)。
+export { attachDynamicProbeInputSchema } from './handlers/dynamic-probe/schema';
