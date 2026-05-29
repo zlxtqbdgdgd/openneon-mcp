@@ -26,6 +26,7 @@ import {
   type CanaryRunnerOptions,
 } from '../../server-enrich/canary/canary-runner';
 import { emitAuditEvent } from '../../observability/audit-emit';
+import { recordCanaryVerdict } from '../../server-enrich/canary-evidence-store';
 
 // ──────────────────────────────────────────────────────────────
 // 公开类型 (tool input/output)
@@ -190,6 +191,23 @@ export async function handleBranchCanaryDdl(
     rowsAffected: result.metrics?.rows_affected,
     errorKind: result.error?.kind,
   });
+
+  // feat-042 follow-up (#176): 记录 verdict 到 canary-evidence-store · 下一步 run_sql
+  // 同条 DDL 时 · route.ts orchestrator 调 consumeCanaryVerdict 注入 EnforcementCtx.canaryEvidence ·
+  // plan-mode renderPlan 渲染 canary 证据段给 DBA · 闭合 agent 自然流程的 plan-mode loop。
+  // skip_low_risk 不记 (本身就是"不必 canary"verdict · 下游 plan-mode 不需要证据段)。
+  if (verdict !== 'skip_low_risk') {
+    recordCanaryVerdict(input.projectId, input.sql, {
+      verdict,
+      risk_class: decision.risk_class,
+      branch_id: result.branch?.branch_id,
+      duration_ms: result.metrics?.duration_ms,
+      rows_affected: result.metrics?.rows_affected,
+      locks_acquired: result.metrics?.locks_acquired,
+      risk_reasons: result.risk_reasons,
+      error: result.error?.message,
+    });
+  }
 
   return response;
 }

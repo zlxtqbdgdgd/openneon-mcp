@@ -54,6 +54,17 @@ export type ProjectPolicy = {
   // feat-040 follow-up (#175): per-project baseline.min_valid_samples 覆盖 · 默认 DEFAULT_MIN_VALID_SAMPLES=100
   // 取值范围 50-500 · 越界 clamp + warn (跟 rate_counter 一致 fail-safe pattern)
   baseline?: { min_valid_samples?: number };
+  // feat-042 follow-up (#176): DDL canary 配置 · per-project 覆盖默认值
+  // 当前从 env GUC (CANARY_TABLE_ROW_THRESHOLD / CANARY_AUTO_PURGE / CANARY_RETENTION_DAYS) 读
+  // · 占位 schema 让 policy.yaml 可暴露同名字段 · loader 读到则透传给 canary handler。
+  canary?: {
+    /** 表 size 阈值 · 行数 >= 此值才进 canary 路径 (env CANARY_TABLE_ROW_THRESHOLD 默认 1M) */
+    table_row_threshold?: number;
+    /** canary branch 是否在 cron 7d retention 后自动 purge (env CANARY_AUTO_PURGE 默认 true) */
+    auto_purge?: boolean;
+    /** canary branch 保留天数 (env CANARY_RETENTION_DAYS 默认 7) */
+    retention_days?: number;
+  };
 };
 
 // feat-060/#1 (#129): per-call JWT 验证用的 OIDC authService 配置 · top-level 字典 · 多 project 共享。
@@ -92,6 +103,12 @@ export type ResolvedPolicy = {
   rate_counter: RateCounterConfig;
   // feat-040 follow-up (#175): per-project baseline.min_valid_samples 覆盖 · undefined = 走 DEFAULT_MIN_VALID_SAMPLES
   baseline_min_valid_samples?: number;
+  // feat-042 follow-up (#176): per-project canary 配置覆盖 · undefined = 走 env GUC 默认值
+  canary?: {
+    table_row_threshold?: number;
+    auto_purge?: boolean;
+    retention_days?: number;
+  };
   source: 'configured' | 'defaults';
 };
 
@@ -322,6 +339,90 @@ function validateBaseline(
   return { min_valid_samples: c.value };
 }
 
+/**
+ * 校验 + clamp project policy 的 canary 配置 (feat-042 follow-up · #176)。
+ *
+ * 缺段 → undefined (该 project 走 env GUC 默认值)。
+ * table_row_threshold: 正整数 · clamp 100..1e9 (越界 warn)
+ * auto_purge: boolean
+ * retention_days: 正整数 · clamp 1..90 (越界 warn)
+ */
+function validateCanary(
+  pid: string,
+  raw: unknown,
+):
+  | {
+      table_row_threshold?: number;
+      auto_purge?: boolean;
+      retention_days?: number;
+    }
+  | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== 'object') {
+    throw new Error(`project ${pid} canary 不是 object`);
+  }
+  const c = raw as Record<string, unknown>;
+  const out: {
+    table_row_threshold?: number;
+    auto_purge?: boolean;
+    retention_days?: number;
+  } = {};
+
+  if (c.table_row_threshold !== undefined) {
+    if (
+      typeof c.table_row_threshold !== 'number' ||
+      !Number.isFinite(c.table_row_threshold) ||
+      !Number.isInteger(c.table_row_threshold) ||
+      c.table_row_threshold <= 0
+    ) {
+      throw new Error(
+        `project ${pid} canary.table_row_threshold 非法 (须正整数): ${String(c.table_row_threshold)}`,
+      );
+    }
+    const clamped = clampNumber(c.table_row_threshold, {
+      min: 100,
+      max: 1_000_000_000,
+    });
+    if (clamped.clamped) {
+      logger.warn(
+        `project ${pid} canary.table_row_threshold=${c.table_row_threshold} 越界 · clamp 到 ${clamped.value} (100..1e9)`,
+      );
+    }
+    out.table_row_threshold = clamped.value;
+  }
+
+  if (c.auto_purge !== undefined) {
+    if (typeof c.auto_purge !== 'boolean') {
+      throw new Error(
+        `project ${pid} canary.auto_purge 非法 (须 boolean): ${String(c.auto_purge)}`,
+      );
+    }
+    out.auto_purge = c.auto_purge;
+  }
+
+  if (c.retention_days !== undefined) {
+    if (
+      typeof c.retention_days !== 'number' ||
+      !Number.isFinite(c.retention_days) ||
+      !Number.isInteger(c.retention_days) ||
+      c.retention_days <= 0
+    ) {
+      throw new Error(
+        `project ${pid} canary.retention_days 非法 (须正整数): ${String(c.retention_days)}`,
+      );
+    }
+    const clamped = clampNumber(c.retention_days, { min: 1, max: 90 });
+    if (clamped.clamped) {
+      logger.warn(
+        `project ${pid} canary.retention_days=${c.retention_days} 越界 · clamp 到 ${clamped.value} (1..90)`,
+      );
+    }
+    out.retention_days = clamped.value;
+  }
+
+  return out;
+}
+
 function validateProjectAuthServices(
   pid: string,
   raw: unknown,
@@ -387,6 +488,8 @@ export function validate(raw: unknown): PolicyConfig {
       authServices: validateProjectAuthServices(pid, p.authServices),
       // feat-040 follow-up (#175): per-project baseline.min_valid_samples · clamp 50-500 · 越界 warn
       baseline: validateBaseline(pid, p.baseline),
+      // feat-042 follow-up (#176): per-project canary 配置 · clamp + warn 越界
+      canary: validateCanary(pid, p.canary),
     };
   }
   return {
@@ -484,6 +587,8 @@ export function resolvePolicy(projectId?: string): ResolvedPolicy {
       rate_counter: p.rate_counter ?? { ...DEFAULT_RATE_COUNTER_CONFIG },
       // feat-040 follow-up (#175): per-project baseline.min_valid_samples · 调用方传 sample-filter.getMinValidSamples
       baseline_min_valid_samples: p.baseline?.min_valid_samples,
+      // feat-042 follow-up (#176): per-project canary 配置 · 调用方 (canary-runner / cron) 用
+      canary: p.canary,
       source: 'configured',
     };
   }
