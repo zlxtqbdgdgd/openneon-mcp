@@ -73,7 +73,11 @@ export type AuditEventType =
   | 'probe_overhead_exceeded'
   | 'probe_rate_limit_exceeded'
   | 'probe_attach_denied'
-  | 'probe_attach_failed';
+  | 'probe_attach_failed'
+  // feat-041 LLM 改写 SQL (#184) · DBA approve 后 emit invoked (含 model/tokens/cache/path/fallback) ·
+  // plan mode deny 路径 emit denied (区分 invoked·让 DBA 看清是 LLM 真跑过还是被拒前置)
+  | 'sql_rewrite_invoked'
+  | 'sql_rewrite_denied';
 
 export type AuditOutcome =
   | 'allow'
