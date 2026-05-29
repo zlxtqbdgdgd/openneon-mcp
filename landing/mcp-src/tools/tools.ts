@@ -65,6 +65,11 @@ import { handleGenerateRcaReport } from './handlers/generate-rca-report';
 // feat-037 cluster_neondb_logs · L3 log pattern 聚类 hybrid path (LLM 主 + Drain3 备).
 // 详设: https://github.com/zlxtqbdgdgd/openneon-design/issues/51 + openneon-mcp#154/#155/#157/#158/#156.
 import { handleClusterNeondbLogs } from './handlers/cluster-neondb-logs';
+// feat-068 attach_neondb_dynamic_probe · L3 ephemeral dynamic probe attach (sub-1 wire #179)
+import {
+  attachDynamicProbeHandler,
+  type AttachHandlerCtx,
+} from './handlers/dynamic-probe/attach-dynamic-probe';
 import { emitAuditEvent } from '../observability/audit-emit';
 import type { RcaFetcherDeps } from '../server-enrich/rca/data-fetcher';
 // feat-006 #2 day-one ship · token economy地基 · CSV default output
@@ -2281,6 +2286,42 @@ You MUST follow these steps:
         },
       },
     );
+    return {
+      content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+    };
+  },
+
+  // feat-068 attach_neondb_dynamic_probe · L3 ephemeral dynamic probe (sub-1 wire #179).
+  // PR167 §模块边界 自述 "out-of-scope · 留 follow-up" · 本 dispatch case 把 handler
+  // 真接到 NEON_HANDLERS · agent 经 mcp tools/call 可调到 attachDynamicProbeHandler。
+  //
+  // ⚠️ Sidecar dispatcher 当前仍是 MockDispatcher (生产 K8sDispatcher 接入留 sub-2 #180 ·
+  // 需 ops 团队 k8s 凭证 + RBAC + 镜像源)。本 dispatch wire 让 agent / fixture 路径
+  // 闭环 · 生产真 attach 需 #180 ship 完。
+  //
+  // ⚠️ resolveTargetPid 需 route.ts 真接通时注入真实 endpoint_id → compute PID 映射
+  // (跟 ops 控制面集成) · 当前 fallback null/throw 让 handler fail-closed deny。
+  attach_neondb_dynamic_probe: async ({ params }, _neonClient, extra) => {
+    // attachDynamicProbeHandler 自己 validate zod input · 这里只传 raw + ctx。
+    // ctx 真实 wire 在 route.ts orchestrator (跟踪 #176 evidence-store 同期 sub-issue)。
+    const ctx: AttachHandlerCtx = {
+      dispatcher: extra?.dispatcher as AttachHandlerCtx['dispatcher'],
+      resolveTargetPid: (extra?.resolveTargetPid ??
+        (async () => {
+          throw new Error(
+            'attach_neondb_dynamic_probe: resolveTargetPid not wired (跟踪 #179 follow-up: route.ts 真接通 + ops control-plane 注入 endpoint_id → PID)',
+          );
+        })) as AttachHandlerCtx['resolveTargetPid'],
+      autonomyLevel: (extra?.autonomyLevel ??
+        'L1') as AttachHandlerCtx['autonomyLevel'],
+      tenant: (extra?.tenant ?? '') as string,
+      whitelist: extra?.whitelist as AttachHandlerCtx['whitelist'],
+      _testOnlyPlanApprovedBypass:
+        extra?._testOnlyPlanApprovedBypass as boolean | undefined,
+      watchdogPollMs: extra?.watchdogPollMs as number | undefined,
+      watchdogPersistenceMs: extra?.watchdogPersistenceMs as number | undefined,
+    };
+    const result = await attachDynamicProbeHandler(params, ctx);
     return {
       content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
     };

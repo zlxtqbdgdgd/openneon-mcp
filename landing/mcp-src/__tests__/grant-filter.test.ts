@@ -47,7 +47,7 @@ describe('filterToolsForGrant', () => {
       grant({ projectId: 'proj-123', scopes: null }),
     );
     const names = tools.map((t) => t.name);
-    expect(tools).toHaveLength(37); // 24 upstream + 3 day-one (T6/T8/T2) + feat-057 get_policy + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-045 generate_rca_report + feat-037 cluster_neondb_logs (T1 hidden as project-agnostic)
+    expect(tools).toHaveLength(38); // 24 upstream + 3 day-one (T6/T8/T2) + feat-057 get_policy + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-045 generate_rca_report + feat-037 cluster_neondb_logs (T1 hidden as project-agnostic)
     expect(names).not.toContain('list_projects');
     expect(names).not.toContain('create_project');
     expect(names).not.toContain('search');
@@ -74,7 +74,7 @@ describe('filterToolsForGrant', () => {
 describe('getAvailableTools', () => {
   it('applies read-only filter after grant filtering', () => {
     const tools = getAvailableTools(grant({ scopes: ['querying'] }), true);
-    expect(tools).toHaveLength(17); // 6 upstream + 2 day-one (T6/T2) + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-066/#2 trace get/search · scope='querying' + readOnlySafe
+    expect(tools).toHaveLength(15); // 6 upstream + 2 day-one (T6/T2) + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-066/#2 trace get/search · scope='querying' + readOnlySafe
     for (const tool of tools) {
       expect(tool.readOnlySafe).toBe(true);
     }
