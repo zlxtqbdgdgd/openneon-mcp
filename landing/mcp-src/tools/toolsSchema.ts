@@ -1468,3 +1468,10 @@ export const rewriteNeondbSqlInputSchema = z.object({
       'Trace state hint · default ongoing (保守 1h TTL). closed 标 incident 已闭 · 永久 cache (LLM 输出对该 trace 不会变).',
     ),
 });
+
+// feat-045 generate_rca_report · L3 RCA 报告生成
+// definitions.ts 从 toolsSchema 引 generateRcaReportInputSchema，但该 zod schema 的
+// 单一定义点在 handler 模块 (tools/handlers/generate-rca-report.ts)，此前漏 re-export →
+// `next build` TS 报 has no exported member，阻断 main + 所有 PR 的 l1-e2e。补回 re-export，
+// 跟上方 attachDynamicProbeInputSchema 同模式 (definitions.ts 统一走 toolsSchema 相对路径)。
+export { generateRcaReportInputSchema } from './handlers/generate-rca-report';

@@ -139,7 +139,7 @@ describe('feat-068 schema mirror drift (R2 ⚠ 阻塞-B)', () => {
           symbol: 'neon::async_fn',
           module: 'neon',
           type: 'sync_fn',
-          // @ts-expect-error 显式触发屏障 2 · 测试用
+          // is_async 与 type:'sync_fn' 冲突 · 走运行时屏障 2 校验 (下方 toThrow) · 非类型层
           is_async: true,
         },
       ],
