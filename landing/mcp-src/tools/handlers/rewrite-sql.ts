@@ -13,7 +13,9 @@
  *
  * 模块边界 (sub-issue #184 范围):
  *   - 本文件 = handler framework (cache lookup / claim binding / plan mode wire / audit emit / response shape)
- *   - context-builder + llm-rewriter 是 DI deps · stub default (#185 ship 后注入真实) · #184 不实现 LLM call
+ *   - context-builder + llm-rewriter 是 DI deps · #185 已 ship 真实现 (server-enrich/sql-rewrite/) ·
+ *     默认 DEFAULT_CONTEXT_BUILDER (无 EXPLAIN runner → sql_only) + DEFAULT_LLM_REWRITER (走 feat-045
+ *     llm-client seam · 未注 backend 时 fail-closed llm_timeout) · 生产 wiring 在 tools.ts 注入
  *   - cache 默认 in-memory placeholder · #186 接通 feat-064 ttl-cache seam (state-aware TTL)
  *   - obfuscator 是 DI default = feat-024 T11 (已 ship)
  *   - feat-060 claim binding 走 middleware (route.ts 注入 currentProjectId · 本 handler 接收后强校)
@@ -23,6 +25,11 @@
 
 import { z } from 'zod/v3';
 import { rewriteNeondbSqlInputSchema } from '../toolsSchema';
+import {
+  buildRewriteContext,
+  type ExplainContextRunner,
+} from '../../server-enrich/sql-rewrite/context-builder';
+import { rewriteWithLlm } from '../../server-enrich/sql-rewrite/llm-rewriter';
 
 export type RewriteSqlInput = z.infer<typeof rewriteNeondbSqlInputSchema>;
 
@@ -107,7 +114,7 @@ export function estimateRewriteCostUsd(
 }
 
 // -----------------------------------------------------------------------------
-// Context (#185 will replace stub with real EXPLAIN pull via feat-019 tool)
+// Context · #185 wired real EXPLAIN pull via feat-019 (server-enrich/sql-rewrite/context-builder.ts)
 // -----------------------------------------------------------------------------
 
 export type RewriteContext = {
@@ -122,6 +129,25 @@ export type RewriteContextBuilder = (args: {
   level: 'auto' | 'sql_only' | 'with_explain';
 }) => Promise<RewriteContext> | RewriteContext;
 
+/**
+ * Real context-builder (#185 · feat-041/#2) · applies the §3.3 size guard + pulls obfuscated
+ * EXPLAIN via the injected feat-019 runner. Production wiring (tools.ts) calls this factory
+ * binding the real (un-obfuscated) SQL + endpoint→project/branch into `explainRunner` so EXPLAIN
+ * runs the actual query (an obfuscated SQL would not parse). The returned EXPLAIN text is
+ * force-obfuscated inside buildRewriteContext (feat-024 T11) before it ever reaches the LLM.
+ */
+export function makeRewriteContextBuilder(
+  explainRunner: ExplainContextRunner,
+): RewriteContextBuilder {
+  return ({ sql, endpoint_id, level }) =>
+    buildRewriteContext({ sql, endpoint_id, level }, { explainRunner });
+}
+
+/**
+ * Default builder · no EXPLAIN runner wired → always degrades to sql_only_simple (no plan fetched).
+ * Production injects the real builder via `deps.contextBuilder = makeRewriteContextBuilder(runner)`,
+ * which runs the §3.3 size guard and pulls/obfuscates EXPLAIN for complex queries.
+ */
 const DEFAULT_CONTEXT_BUILDER: RewriteContextBuilder = ({ sql }) => ({
   sql,
   explain: null,
@@ -129,7 +155,7 @@ const DEFAULT_CONTEXT_BUILDER: RewriteContextBuilder = ({ sql }) => ({
 });
 
 // -----------------------------------------------------------------------------
-// LLM rewriter (#185 will replace with feat-045 llm-prompt.ts framework reuse)
+// LLM rewriter · #185 wired feat-045 llm-prompt framework reuse (server-enrich/sql-rewrite/llm-rewriter.ts)
 // -----------------------------------------------------------------------------
 
 export type RewriteLlmCallResult = {
@@ -145,23 +171,16 @@ export type RewriteLlmRewriter = (args: {
   model: RewriteModelId;
 }) => Promise<RewriteLlmCallResult>;
 
-const DEFAULT_LLM_REWRITER: RewriteLlmRewriter = async () => {
-  // #184 stub · #185 replaces with real Anthropic SDK call.
-  // Fail-closed: returns self_validation_failed so handler short-circuits without faking data.
-  return {
-    best: {
-      rewritten_sql: '',
-      rationale: '',
-      expected_improvement: '',
-      risks: [],
-      confidence: 0,
-    },
-    backups: [],
-    input_tokens: 0,
-    output_tokens: 0,
-    fallback_reason: 'self_validation_failed',
-  };
-};
+/**
+ * Real LLM rewriter (#185 · feat-041/#2) · reuses the feat-045 llm-client seam + llm-prompt
+ * three-principle framework. Builds the三原则 system prompt (RewriteOutput JSON schema + 4
+ * mandatory risk categories), calls the LLM via `getLlmClient()`, runs self-validation, and does
+ * a single retry on missing/invalid fields (§3.5). When no LLM backend is registered (default
+ * not-configured client), the seam returns an error → fallback_reason='llm_timeout'. Production
+ * wiring registers the Anthropic adapter via `setLlmClient` (shared with generate-rca-report).
+ */
+const DEFAULT_LLM_REWRITER: RewriteLlmRewriter = (args) =>
+  rewriteWithLlm({ context: args.context, model: args.model });
 
 // -----------------------------------------------------------------------------
 // Cache (placeholder · #186 接通 feat-064 ttl-cache · state-aware TTL)
