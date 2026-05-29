@@ -32,6 +32,19 @@ vi.mock('../analytics/analytics', () => ({
   flushAnalytics: vi.fn().mockResolvedValue(undefined),
 }));
 
+// feat-060/#2-#3 (92a3b43): the dispatch path now runs the claim-binding
+// middleware before the tool handler. run_sql declares a `fromClaim` binding in
+// the side-table, so a project-scoped call against a project with no configured
+// authServices is denied (PROJECT_HAS_NO_AUTH_SERVICE · fail-closed) and never
+// reaches the handler. This composition test only exercises projectId injection
+// by variant — claim binding is an orthogonal concern with its own dedicated
+// suites (feat-060-claim-binding / feat-060-run-sql-claim-check). Returning no
+// fromClaim declarations here takes bindClaims' first-line bypass branch
+// (outcome: 'pass') so dispatch proceeds to the (mocked) run_sql handler.
+vi.mock('../auth/tool-claim-bindings', () => ({
+  getToolClaimBindings: vi.fn(() => undefined),
+}));
+
 vi.mock('../utils/logger', () => ({
   logger: {
     info: vi.fn(),
@@ -111,14 +124,31 @@ async function mcpCall(
   return { status: res.status, body };
 }
 
-async function listToolsForToken(token: string) {
-  await mcpCall(token, 'initialize', 1, {
-    protocolVersion: '2025-03-26',
-    capabilities: {},
-    clientInfo: { name: 'test-client', version: '1.0.0' },
-  });
+// feat-005 #3 (47bc1e7): tools/list defaults to the `core` listing tier (4
+// day-one tools) so the agent's listing budget isn't crowded out by the full
+// 30+ tool surface. Optional tools (run_sql, create_project, etc.) only appear
+// when the caller opts into the full surface with `?include=all`. These
+// integration tests exercise the full toolset, so they pass `?include=all` on
+// every request (initialize + tools/list + tools/call) — the per-request
+// StaticToolContext is rebuilt from the URL query on each POST, so the include
+// tier must be set consistently across the whole sequence for both the listing
+// and the registered (callable) handler set to include the optional tools.
+const INCLUDE_ALL = '?include=all';
 
-  const list = await mcpCall(token, 'tools/list', 2, {});
+async function listToolsForToken(token: string, queryString = INCLUDE_ALL) {
+  await mcpCall(
+    token,
+    'initialize',
+    1,
+    {
+      protocolVersion: '2025-03-26',
+      capabilities: {},
+      clientInfo: { name: 'test-client', version: '1.0.0' },
+    },
+    queryString,
+  );
+
+  const list = await mcpCall(token, 'tools/list', 2, {}, queryString);
   if (list.status !== 200) {
     throw new Error(
       `tools/list failed with status ${list.status}: ${JSON.stringify(list.body)}`,
@@ -173,17 +203,29 @@ describe('transport dynamic tool composition', () => {
     expect(scopedNames.has('list_projects')).toBe(false);
 
     // Unscoped variant still requires projectId from caller -> handler should not run.
-    await mcpCall(unscopedToken, 'tools/call', 3, {
-      name: 'run_sql',
-      arguments: { sql: 'select 1' },
-    });
+    await mcpCall(
+      unscopedToken,
+      'tools/call',
+      3,
+      {
+        name: 'run_sql',
+        arguments: { sql: 'select 1' },
+      },
+      INCLUDE_ALL,
+    );
     expect(runSqlSpy).toHaveBeenCalledTimes(0);
 
     // Project-scoped variant injects projectId from auth grant -> handler runs.
-    await mcpCall(scopedToken, 'tools/call', 4, {
-      name: 'run_sql',
-      arguments: { sql: 'select 1' },
-    });
+    await mcpCall(
+      scopedToken,
+      'tools/call',
+      4,
+      {
+        name: 'run_sql',
+        arguments: { sql: 'select 1' },
+      },
+      INCLUDE_ALL,
+    );
     expect(runSqlSpy).toHaveBeenCalledTimes(1);
   });
 
