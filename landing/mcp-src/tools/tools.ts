@@ -62,6 +62,9 @@ import { handleGetPoolStats } from './handlers/pool-stats';
 // feat-045 generate_rca_report · L3 agent-native RCA 报告生成 (mcp tool form-shift).
 // 详设: https://github.com/zlxtqbdgdgd/openneon-design/issues/18 + openneon-mcp#145/#146/#147.
 import { handleGenerateRcaReport } from './handlers/generate-rca-report';
+// feat-042/#3 branch_canary_ddl · DDL 自动 canary 预演 (handler 在 handlers/branch-canary-ddl.ts).
+// (此 import 曾在 cascade merge 中被误删 → tools.ts branch_canary_ddl case 引不到 handler · 阻断 build)
+import { handleBranchCanaryDdl } from './handlers/branch-canary-ddl';
 // feat-037 cluster_neondb_logs · L3 log pattern 聚类 hybrid path (LLM 主 + Drain3 备).
 // 详设: https://github.com/zlxtqbdgdgd/openneon-design/issues/51 + openneon-mcp#154/#155/#157/#158/#156.
 import { handleClusterNeondbLogs } from './handlers/cluster-neondb-logs';
@@ -2304,22 +2307,27 @@ You MUST follow these steps:
   attach_neondb_dynamic_probe: async ({ params }, _neonClient, extra) => {
     // attachDynamicProbeHandler 自己 validate zod input · 这里只传 raw + ctx。
     // ctx 真实 wire 在 route.ts orchestrator (跟踪 #176 evidence-store 同期 sub-issue)。
+    // route.ts orchestrator 把这些 ctx 字段注入 extra (当前未 wire → undefined → 各自 fallback / fail-closed)。
+    // extra 静态类型是 MCP SDK RequestHandlerExtra · 不含这些自定义注入字段 · 按 Partial<AttachHandlerCtx> 投射。
+    const injected = extra as unknown as Partial<AttachHandlerCtx> | undefined;
     const ctx: AttachHandlerCtx = {
-      dispatcher: extra?.dispatcher as AttachHandlerCtx['dispatcher'],
-      resolveTargetPid: (extra?.resolveTargetPid ??
+      dispatcher: injected?.dispatcher as AttachHandlerCtx['dispatcher'],
+      resolveTargetPid: (injected?.resolveTargetPid ??
         (async () => {
           throw new Error(
             'attach_neondb_dynamic_probe: resolveTargetPid not wired (跟踪 #179 follow-up: route.ts 真接通 + ops control-plane 注入 endpoint_id → PID)',
           );
         })) as AttachHandlerCtx['resolveTargetPid'],
-      autonomyLevel: (extra?.autonomyLevel ??
+      autonomyLevel: (injected?.autonomyLevel ??
         'L1') as AttachHandlerCtx['autonomyLevel'],
-      tenant: (extra?.tenant ?? '') as string,
-      whitelist: extra?.whitelist as AttachHandlerCtx['whitelist'],
+      tenant: (injected?.tenant ?? '') as string,
+      whitelist: injected?.whitelist as AttachHandlerCtx['whitelist'],
       _testOnlyPlanApprovedBypass:
-        extra?._testOnlyPlanApprovedBypass as boolean | undefined,
-      watchdogPollMs: extra?.watchdogPollMs as number | undefined,
-      watchdogPersistenceMs: extra?.watchdogPersistenceMs as number | undefined,
+        injected?._testOnlyPlanApprovedBypass as boolean | undefined,
+      watchdogPollMs: injected?.watchdogPollMs as number | undefined,
+      watchdogPersistenceMs: injected?.watchdogPersistenceMs as
+        | number
+        | undefined,
     };
     const result = await attachDynamicProbeHandler(params, ctx);
     return {

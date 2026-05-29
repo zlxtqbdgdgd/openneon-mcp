@@ -314,7 +314,19 @@ describe('feat-038 · STL ↔ autosuspend sample-filter wire (#174)', () => {
       const v = i >= 300 && i < 400 ? 0 : normal;
       points.push([ts, v]);
     }
-    return { history: { points }, bucketMs, startMs };
+    return {
+      history: {
+        points,
+        coverage: {
+          actual_points: N,
+          expected_points: N,
+          span_seconds: (N * bucketMs) / 1000,
+          latest_point_ts: (startMs + (N - 1) * bucketMs) / 1000,
+        },
+      },
+      bucketMs,
+      startMs,
+    };
   }
 
   it('注入 autosuspend windows → 排除 idle 段 · STL trend 不被 0 值污染', async () => {
