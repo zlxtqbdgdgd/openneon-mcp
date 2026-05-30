@@ -28,7 +28,7 @@ describe('filterToolsForGrant', () => {
       grant({ scopes: ['querying'] }),
     );
     const names = tools.map((t) => t.name);
-    expect(tools).toHaveLength(22); // +feat-041 rewrite_neondb_sql querying (21 + 1)
+    expect(tools).toHaveLength(23); // querying scope · 2026-05-29 实测 (feat-066 +2 trace · feat-041 rewrite 已删·#204)
     expect(names).toContain('run_sql');
     expect(names).toContain('search');
     expect(names).toContain('fetch');
@@ -47,7 +47,7 @@ describe('filterToolsForGrant', () => {
       grant({ projectId: 'proj-123', scopes: null }),
     );
     const names = tools.map((t) => t.name);
-    expect(tools).toHaveLength(39); // +feat-041 rewrite_neondb_sql project-scoped (38 + 1)
+    expect(tools).toHaveLength(40); // project-scoped · 2026-05-29 实测 (#204)
     expect(names).not.toContain('list_projects');
     expect(names).not.toContain('create_project');
     expect(names).not.toContain('search');
@@ -62,7 +62,7 @@ describe('filterToolsForGrant', () => {
       NEON_TOOLS,
       grant({ projectId: 'proj-123', scopes: ['querying'] }),
     );
-    expect(tools).toHaveLength(20); // +feat-041 rewrite_neondb_sql querying project-scoped (19 + 1)
+    expect(tools).toHaveLength(21); // querying project-scoped · 2026-05-29 实测 (#204)
     const names = tools.map((t) => t.name);
     expect(names).toContain('run_sql');
     expect(names).toContain('get_neondb_query_statement'); // T6 day-one
@@ -74,7 +74,7 @@ describe('filterToolsForGrant', () => {
 describe('getAvailableTools', () => {
   it('applies read-only filter after grant filtering', () => {
     const tools = getAvailableTools(grant({ scopes: ['querying'] }), true);
-    expect(tools).toHaveLength(15); // 6 upstream + 2 day-one (T6/T2) + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-066/#2 trace get/search · scope='querying' + readOnlySafe
+    expect(tools).toHaveLength(17); // querying + readOnlySafe · 2026-05-29 实测 (feat-066 +2 只读 trace·feat-041 rewrite 非只读不影响·#204)
     for (const tool of tools) {
       expect(tool.readOnlySafe).toBe(true);
     }
