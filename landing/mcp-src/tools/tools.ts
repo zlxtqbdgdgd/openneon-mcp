@@ -14,6 +14,10 @@ import { describeTable, formatTableDescription } from '../describeUtils';
 import { handleProvisionNeonAuth } from './handlers/neon-auth';
 import { handleConfigureNeonAuth } from './handlers/neon-auth-config';
 import { handleGetNeonAuthConfig } from './handlers/neon-auth-get-config';
+// feat-066/#2 get_neondb_trace · 单 trace 全 span 检索 (W3C trace_id 32 hex)
+import { handleGetNeondbTrace } from './handlers/get-neondb-trace';
+// feat-066/#2 search_neondb_traces · trace 列表检索 (按 latency / component / endpoint / time_range)
+import { handleSearchNeondbTraces } from './handlers/search-neondb-traces';
 import { handleProvisionNeonDataApi } from './handlers/data-api';
 import { handleSearch } from './handlers/search';
 import { handleGetPolicy } from './handlers/get-policy';
@@ -2397,4 +2401,95 @@ You MUST follow these steps:
       content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
     };
   },
+  // feat-066/#2 get_neondb_trace · trace 读 path β 基线 · projectId 跨 tenant 强制 boundary
+  // (route.ts injectProjectId 已硬覆盖 args.projectId · 我们再做 span attribute 级 cross-tenant guard · feat-066/#3)
+  get_neondb_trace: async ({ params }) => {
+    const result = await handleGetNeondbTrace({
+      projectId: params.projectId,
+      trace_id: params.trace_id,
+      time_range: params.time_range,
+    });
+    if (params.format === 'csv' || params.format === 'tsv') {
+      if ('error' in result) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        };
+      }
+      const header = JSON.stringify(
+        { summary: result.summary, cross_tenant_filtered: result.cross_tenant_filtered },
+        null,
+        2,
+      );
+      const flatRows = result.spans.map((sp) => ({
+        trace_id: sp.trace_id,
+        span_id: sp.span_id,
+        parent_span_id: sp.parent_span_id ?? '',
+        service_name: sp.service_name,
+        operation_name: sp.operation_name,
+        start_time: sp.start_time,
+        duration_us: sp.duration_us,
+        tracestate: sp.tracestate ?? '',
+        attributes: Object.entries(sp.attributes)
+          .map(([k, v]) => k + '=' + String(v))
+          .join('·'),
+      }));
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `${header}
+${formatToolResponse(flatRows, { format: params.format })}`,
+          },
+        ],
+      };
+    }
+    return {
+      content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+    };
+  },
+
+  // feat-066/#2 search_neondb_traces · trace summary 列表 · filter.project_id 硬覆盖 (feat-066/#3 cross-tenant)
+  search_neondb_traces: async ({ params }) => {
+    const result = await handleSearchNeondbTraces({
+      projectId: params.projectId,
+      filter: params.filter,
+      limit: params.limit,
+    });
+    if (params.format === 'csv' || params.format === 'tsv') {
+      if ('error' in result) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        };
+      }
+      const header = JSON.stringify(
+        { total: result.total, cross_tenant_filtered: result.cross_tenant_filtered },
+        null,
+        2,
+      );
+      const flatRows = result.traces.map((t) => ({
+        trace_id: t.trace_id,
+        span_count: t.span_count,
+        duration_us: t.duration_us,
+        root_service: t.root_service,
+        root_operation: t.root_operation,
+        start_time: t.start_time,
+        has_error: t.has_error,
+        tracestate: t.tracestate ?? '',
+        components: t.components.map((c) => c.service_name + ':' + c.duration_us + 'us').join('·'),
+      }));
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `${header}
+${formatToolResponse(flatRows, { format: params.format })}`,
+          },
+        ],
+      };
+    }
+    return {
+      content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+    };
+  },
+
 } satisfies ToolHandlers;
