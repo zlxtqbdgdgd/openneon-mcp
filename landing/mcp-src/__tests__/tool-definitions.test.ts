@@ -16,8 +16,8 @@ import {
 } from '../config/categories';
 
 describe('NEON_TOOLS definitions', () => {
-  it('has 49 tools (31 upstream + 4 day-one T1/T2/T6/T8 + feat-057 policy + feat-019 T3 + feat-020 T4 + feat-021 T5 + feat-022 T7 + feat-023 T10 + feat-024 T11 + feat-025 T12 + feat-045 get_neondb_rca_evidence + feat-037 cluster_neondb_logs + feat-041 rewrite_neondb_sql + feat-066/#2 trace 读 get/search)', () => {
-    expect(NEON_TOOLS).toHaveLength(49);
+  it('has 48 tools (31 upstream + 4 day-one T1/T2/T6/T8 + feat-057 policy + feat-019 T3 + feat-020 T4 + feat-021 T5 + feat-022 T7 + feat-023 T10 + feat-024 T11 + feat-025 T12 + feat-045 get_neondb_rca_evidence + feat-037 cluster_neondb_logs + feat-066/#2 trace 读 get/search · feat-041 rewrite_neondb_sql removed · LLM 全出 mcp 规则 P4)', () => {
+    expect(NEON_TOOLS).toHaveLength(48);
   });
 
   it('every tool has a name, scope (or null), and readOnlySafe flag', () => {
@@ -151,9 +151,9 @@ describe('tool category field (feat-005 #2 · narrative #3 ecosystem-friendly)',
     expect(coreTools.length).toBe(4);
   });
 
-  it('current optional count = 45 (49 total - 4 core · feat-045 RCA +1 optional + feat-037 cluster_neondb_logs +1 + feat-041 rewrite_neondb_sql +1 + feat-066 trace 读 +2 · keeps 26+ listing budget for ecosystem MCPs)', () => {
+  it('current optional count = 44 (48 total - 4 core · feat-045 RCA +1 optional + feat-037 cluster_neondb_logs +1 + feat-066 trace 读 +2 · feat-041 rewrite_neondb_sql removed · keeps 26+ listing budget for ecosystem MCPs)', () => {
     const optional = NEON_TOOLS.filter((t) => t.category === 'optional');
-    expect(optional.length).toBe(45);
+    expect(optional.length).toBe(44);
   });
 
   it('T1 find_neondb_instances is core (sales 剧本入口 · narrative §3 demo spine 第 1 步)', () => {

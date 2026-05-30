@@ -53,7 +53,6 @@ import {
   branchCanaryDdlInputSchema,
   clusterNeondbLogsInputSchema,
   attachDynamicProbeInputSchema,
-  rewriteNeondbSqlInputSchema,
 } from './toolsSchema';
 
 type NeonToolDefinition = {
@@ -1809,55 +1808,6 @@ export const NEON_TOOLS = [
       destructiveHint: false,
       idempotentHint: false,
       // attach sidecar + 跟 k8s API 交互 → openWorldHint=true
-      openWorldHint: true,
-    } satisfies ToolAnnotations,
-  },
-  // feat-041 rewrite_neondb_sql · L3 LLM 改写 SQL (skill form-shift).
-  // 详设: https://github.com/zlxtqbdgdgd/openneon-design/issues/56
-  // sub-issues: openneon-mcp#184 (handler + plan mode · 本 sub-1) · #185 (context-builder + llm-rewriter) · #186 (cache + 9 case fixture).
-  {
-    name: 'rewrite_neondb_sql' as const,
-    scope: 'querying',
-    category: 'optional',
-    description: `Rewrite a slow / awkward SQL into a semantically-equivalent faster form. Uses EXPLAIN context + LLM with 4-class risk warnings + JSON self-validation + state-aware cache.
-
-    <use_case>
-      Pass sql + endpoint_id and the tool: (1) feat-060 claim binding hardens cross-tenant access
-      (agent project ≠ endpoint project → cross_tenant_blocked, no LLM call), (2) context-builder
-      decides EXPLAIN pull (auto/sql_only/with_explain · short SQL or no-table SQL skips EXPLAIN to
-      save token), (3) feat-024 T11 obfuscator REDACTS PII before LLM call (mandatory · cannot
-      disable), (4) feat-027 plan mode shows DBA model + token estimate + cost + cache hit · DBA
-      approve / deny, (5) LLM rewrites with 4 required risk categories (null_handling /
-      case_sensitivity / index_dependency / transaction_isolation), (6) self-validation enforces
-      all 4 risks filled + confidence ∈ [0,1] + single retry on miss, (7) state-aware cache (closed
-      trace → permanent · ongoing → 1h), (8) audit emits sql_rewrite_invoked per call (model /
-      tokens / cache_hit / path_used / fallback_reason / project_id / endpoint_id).
-    </use_case>
-
-    <important_notes>
-      Plan mode (feat-027 elicitation) MUST approve before LLM call · fail-closed deny when
-      capability missing (returns fallback_reason='dba_denied' · sql_rewrite_denied audit). Three
-      models supported (cost vs quality · #186 跨 model 100 incident 跑批 ≥ 85% 语义等价率):
-      claude-opus-4-7 (default · < \$0.10) · claude-sonnet-4-6 (< \$0.03) · claude-haiku-4-5
-      (< \$0.01). LLM输出 JSON 时 risks 数组必须含全 4 类 category (description 可填 "N/A" 但 category
-      必填) · self_validation_failed → single retry → cache 不写. ORM-generated SQL (e.g.
-      LOWER(x) LIKE LOWER(?) → x ILIKE ?) is the common-case · null_handling/case_sensitivity
-      risks ALWAYS examined. SQL ≤ 20K char · output ≤ 1000 token · cache hit p99 < 5ms · LLM
-      call p99 < 10s. Cross-tenant calls (agent project ≠ endpoint project) blocked at claim
-      binding · no LLM call · cross_tenant_blocked + sql_rewrite_denied audit emitted.
-    </important_notes>`,
-    inputSchema: rewriteNeondbSqlInputSchema,
-    // LLM 调用涉 cost (op-class LLM_INVOCATION 隐含类) · feat-041 mcp 侧暂未 form-shift (独立未来任务).
-    readOnlySafe: false,
-    annotations: {
-      title: 'Rewrite Neon DB SQL (feat-041 · L3 LLM SQL rewrite + plan mode + 4-class risk + state-aware cache)',
-      // LLM 调用涉 cost · 跟 feat-045/feat-037 同 stance · 走 plan mode 严格 DBA 审批
-      readOnlyHint: false,
-      // 不改 schema/data · 仅产出建议 (DBA 手工 apply rewritten_sql)
-      destructiveHint: false,
-      // 同 SQL + EXPLAIN + model 走 cache → 输出 stable · idempotent
-      idempotentHint: true,
-      // LLM 主路径 + EXPLAIN 拉取 + Anthropic SDK 出站 → openWorldHint=true
       openWorldHint: true,
     } satisfies ToolAnnotations,
   },

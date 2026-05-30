@@ -7,7 +7,7 @@
  * buildUserPayload + output-token cap) moved to the cc skill — the mcp tool only does deterministic
  * evidence gathering + template pre-fill and never calls an LLM. What remains here is the pure,
  * deterministic token-size estimator + the input-size guard the取证器 uses to budget its output
- * (and that feat-041 `sql-rewrite/llm-rewriter.ts` also reuses · same chars/4 启发式).
+ * (also reused by feat-037 pattern path-router · same chars/4 启发式).
  */
 
 /**
