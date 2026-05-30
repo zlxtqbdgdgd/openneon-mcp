@@ -91,7 +91,7 @@ export type RewriteRequestApproval = (
 export const DEFAULT_REWRITE_REQUEST_APPROVAL: RewriteRequestApproval = () =>
   'unavailable';
 
-/** Per-model USD per 1M tokens · same source as feat-045 rca/plan-mode.ts PRICE_TABLE. */
+/** Per-model USD per 1M tokens · stable as of 2026-05 (update when Anthropic changes pricing). */
 const PRICE_TABLE: Record<
   RewriteModelId,
   { inputPer1M: number; outputPer1M: number }

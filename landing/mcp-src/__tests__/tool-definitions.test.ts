@@ -16,7 +16,7 @@ import {
 } from '../config/categories';
 
 describe('NEON_TOOLS definitions', () => {
-  it('has 49 tools (31 upstream + 4 day-one T1/T2/T6/T8 + feat-057 policy + feat-019 T3 + feat-020 T4 + feat-021 T5 + feat-022 T7 + feat-023 T10 + feat-024 T11 + feat-025 T12 + feat-045 generate_rca_report + feat-037 cluster_neondb_logs + feat-041 rewrite_neondb_sql + feat-066/#2 trace 读 get/search)', () => {
+  it('has 49 tools (31 upstream + 4 day-one T1/T2/T6/T8 + feat-057 policy + feat-019 T3 + feat-020 T4 + feat-021 T5 + feat-022 T7 + feat-023 T10 + feat-024 T11 + feat-025 T12 + feat-045 get_neondb_rca_evidence + feat-037 cluster_neondb_logs + feat-041 rewrite_neondb_sql + feat-066/#2 trace 读 get/search)', () => {
     expect(NEON_TOOLS).toHaveLength(49);
   });
 

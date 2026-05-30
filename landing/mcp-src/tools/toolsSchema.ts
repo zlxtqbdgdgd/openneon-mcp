@@ -1466,12 +1466,11 @@ export const rewriteNeondbSqlInputSchema = z.object({
     ),
 });
 
-// feat-045 generate_rca_report · L3 RCA 报告生成
-// definitions.ts 从 toolsSchema 引 generateRcaReportInputSchema，但该 zod schema 的
-// 单一定义点在 handler 模块 (tools/handlers/generate-rca-report.ts)，此前漏 re-export →
-// `next build` TS 报 has no exported member，阻断 main + 所有 PR 的 l1-e2e。补回 re-export，
-// 跟上方 attachDynamicProbeInputSchema 同模式 (definitions.ts 统一走 toolsSchema 相对路径)。
-export { generateRcaReportInputSchema } from './handlers/generate-rca-report';
+// feat-045 get_neondb_rca_evidence · L3 RCA 取证器 (form-shift · 规则 P4 · LLM-out-of-mcp).
+// mcp 只做确定性取证 + 模板预填 · 不调 LLM · 7 段叙事由 cc skill 写. zod schema 单一定义点在
+// handler 模块 (tools/handlers/get-neondb-rca-evidence.ts) · definitions.ts 统一走 toolsSchema
+// 相对路径引 (跟上方 attachDynamicProbeInputSchema 同模式)。
+export { getNeondbRcaEvidenceInputSchema } from './handlers/get-neondb-rca-evidence';
 
 // feat-066/#2 get_neondb_trace input schema · 单 trace 全 span 检索 (W3C trace_id 32 hex)
 // detail design: features/feat-066-L3-mcp-tool-trace-read-seam.html §4
