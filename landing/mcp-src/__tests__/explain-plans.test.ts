@@ -195,6 +195,22 @@ describe('parsePlanSignals (feat-019/#2 · 防幻觉摘要 · 详设 §4)', () =
     });
   });
 
+  it('#202: run_sql 列包装形态 [{ "QUERY PLAN": [{ Plan }] }] 也提取 signals + total_cost (此前 extractRootPlan 只认裸形态 → 真数据恒 0)', () => {
+    const wrapped = [{ 'QUERY PLAN': SLOW_SELECT_PLAN }];
+    const { signals, total_cost } = parsePlanSignals(wrapped);
+    expect(total_cost).toBe(20000.5);
+    expect(signals).toContainEqual({
+      type: 'seq_scan',
+      table: 'sales',
+      est_rows: 1000000,
+    });
+    expect(signals).toContainEqual({
+      type: 'expensive_node',
+      node: 'Aggregate',
+      cost: 20000.5,
+    });
+  });
+
   it('Seq Scan 无 Filter → 不出 missing_index_hint', () => {
     const { signals } = parsePlanSignals([
       {
