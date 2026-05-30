@@ -339,8 +339,10 @@ function toPattern(c: Cluster, totalCount: number): LogPattern {
     severity_distribution: { ...c.severity },
     first_seen: c.firstSeen,
     last_seen: c.lastSeen,
-    semantic_name: null, // 备路径不填 · LLM 主路径才填
-    semantic_category: 'other', // 备路径默认 other · LLM 主路径才精细分类
+    // form-shift (规则 P4): mcp 确定性 Drain3 不做语义命名/分类 · 全填 null · 由 cc skill 补.
+    semantic_name: null,
+    semantic_category: null,
+    semantic_summary: null,
   };
 }
 

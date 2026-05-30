@@ -4,20 +4,24 @@
  * Detail design:
  *   - Parent: https://github.com/zlxtqbdgdgd/openneon-design/issues/51
  *   - #1: openneon-mcp#157 (Drain3 TS 手写)
- *   - #2: openneon-mcp#155 (LLM 主路径)
  *   - #3: openneon-mcp#158 (path-router + LogFetchAdapter)
- *   - #4: openneon-mcp#154 (本文件 · mcp tool + obfuscator + plan mode + audit)
- *   - #5: openneon-mcp#156 (8 case fixture + 跨 model 一致性)
+ *   - #4: openneon-mcp#154 (本文件 · mcp tool + obfuscator + audit)
+ *   - #5: openneon-mcp#156 (8 case fixture)
  *
- * 一句话: agent 调本 tool · server 拉 log (LogFetchAdapter) → 强制 obfuscate → path-router 主备
- * 切换 → 出 PatternClusterResult (top N + tail aggregate) · 主路径走 plan mode + audit.
+ * **feat-037 form-shift (规则 P4 · LLM-out-of-mcp)**: 本 tool 只跑确定性聚类 (Drain3) · 不调 LLM。
+ * 旧版"LLM 主路径 + plan mode + 跨 model 一致性"已下线 —— 语义命名 (semantic_*) 由 cc skill
+ * 拉 enriched cluster 后用 LLM 补全。本 handler 返回 semantic_* = null + cluster_requires_llm_enrichment
+ * hint (token 阈值算出 · 给 skill 看)。
+ *
+ * 一句话: agent 调本 tool · server 拉 log (LogFetchAdapter) → 强制 obfuscate → path-router (Drain3)
+ * → cache → 出 PatternClusterResult (top N + tail aggregate · semantic_* null) + audit。
  *
  * Sibling contract dependencies:
  *   - feat-036 (v2 jsonlog) · trace_id filter 真生效需要 v2 jsonlog · v1 阶段返 feat_036_not_ready
- *   - feat-027 plan mode · LLM 主路径调用前 DBA approve · 备路径 Drain3 零 LLM 成本不走 plan mode
  *   - feat-060 claim binding · current_project_id filter (caller 上下文 · 此处接受 projectId 注入)
  *   - feat-024 T11 obfuscator · obfuscateLogLine 强制复用 · raw log 不出 mcp 边界
  *   - feat-031 audit-emit · log_clustering_invoked event
+ *   - cc skill · 拉本 tool 出的 deterministic cluster 后做 LLM 语义补全 (plan mode 也归 skill)
  */
 
 import { z } from 'zod/v3';
@@ -33,12 +37,6 @@ import {
   type LogFetchSuccess,
 } from '../../server-enrich/metrics-history/log-fetch';
 import { obfuscateLogLine } from '../../server-enrich/samples-store/obfuscator';
-import {
-  buildClusterPlanPayload,
-  DEFAULT_CLUSTER_REQUEST_APPROVAL,
-  type ClusterRequestApproval,
-} from '../../server-enrich/pattern/plan-mode';
-import type { RcaModelId } from '../../server-enrich/rca/llm-client';
 import type {
   ForcePath,
   LogLine,
@@ -48,12 +46,6 @@ import type {
 // ------------------------------------------------------------------------------------------------
 // Input schema (zod) · re-exported via toolsSchema.ts for tools registry
 // ------------------------------------------------------------------------------------------------
-
-const MODEL_ENUM = z.enum([
-  'claude-opus-4-7',
-  'claude-sonnet-4-6',
-  'claude-haiku-4-5',
-]);
 
 export const clusterNeondbLogsInputSchema = z.object({
   endpoint_id: z
@@ -81,7 +73,9 @@ export const clusterNeondbLogsInputSchema = z.object({
     .enum(['auto', 'main', 'backup'])
     .optional()
     .describe(
-      'auto (default · 50K token 阈值切主备) · main (强制 LLM · 200K hard cap) · backup (强制 Drain3 · 0 LLM cost).',
+      'Controls the cluster_requires_llm_enrichment hint for the cc skill (mcp itself never calls LLM). ' +
+        'auto (default · ≤50K tokens → hint=true) · main (force hint=true · 200K hard cap) · ' +
+        'backup (force hint=false · skill stays deterministic-only).',
     ),
   top_n: z
     .number()
@@ -97,9 +91,6 @@ export const clusterNeondbLogsInputSchema = z.object({
     .enum(['ongoing', 'closed'])
     .optional()
     .describe('Trace state hint · default ongoing (conservative TTL).'),
-  model: MODEL_ENUM.optional().describe(
-    'LLM model for 主路径 · default claude-opus-4-7 · sonnet/haiku 也支持 (cost vs depth).',
-  ),
 });
 
 export type ClusterNeondbLogsInput = z.infer<typeof clusterNeondbLogsInputSchema>;
@@ -109,15 +100,16 @@ export type ClusterNeondbLogsInput = z.infer<typeof clusterNeondbLogsInputSchema
 // ------------------------------------------------------------------------------------------------
 
 export type ClusterNeondbLogsResult = {
-  decision: 'main' | 'backup';
+  /** form-shift: mcp 永远跑确定性 Drain3 · decision 恒为 'deterministic' */
+  decision: 'deterministic';
   reason: string;
   estimated_tokens: number;
-  fallback_reason: string | null;
   cluster: PatternClusterResult;
-  /** 主路径填 · 备路径 0 */
-  input_tokens: number;
-  output_tokens: number;
-  model: RcaModelId | null;
+  /**
+   * form-shift hint (规则 P4): cc skill 是否被建议对这批 cluster 做 LLM 语义补全.
+   * mcp 不调 LLM · 这只是 token 阈值算出的建议 · skill 决定要不要真补。
+   */
+  cluster_requires_llm_enrichment: boolean;
   cached: boolean;
   duration_ms: number;
   /** Log fetch coverage · 让 DBA 知道 tail 是否被 limit 截断 */
@@ -140,10 +132,6 @@ export type ClusterNeondbLogsDeps = {
   logFetchAdapter?: LogFetchAdapter;
   /** feat-060 claim binding 注入 project_id · audit + tenant isolation */
   projectId?: string;
-  /** feat-027 plan mode approval callback · LLM 主路径调用前 DBA approve · default fail-closed deny */
-  requestApproval?: ClusterRequestApproval;
-  /** Test hook · skip plan mode entirely · prod 走 DEFAULT (fail-closed unavailable) */
-  skipPlanMode?: boolean;
   now?: () => Date;
   /** Audit emission · default no-op · prod 由 tools.ts 注入 emitAuditEvent from observability/audit-emit */
   emitAudit?: (event: ClusterAuditEvent) => void;
@@ -154,12 +142,16 @@ export type ClusterAuditEvent = {
   outcome: 'allow' | 'deny';
   endpoint_id: string;
   project_id: string | null;
-  path_used: 'main' | 'backup';
+  /** form-shift: mcp 只跑确定性 Drain3 · path 恒为 'deterministic' */
+  path_used: 'deterministic';
+  /** mcp 不调 LLM · cost 恒为 0 (语义补全成本归 cc skill) */
   cost_estimate_usd: number;
   cache_hit: boolean;
-  model: RcaModelId | null;
+  /** cc skill 是否被建议补语义 (token 阈值算出 hint) */
+  requires_llm_enrichment: boolean;
   total_lines: number;
   duration_ms: number;
+  /** staged-delivery / fetch degrade 原因 (e.g. feat_036_not_ready) · 否则 null */
   fallback_reason: string | null;
 };
 
@@ -194,10 +186,10 @@ export async function handleClusterNeondbLogs(
       outcome: 'deny',
       endpoint_id: input.endpoint_id,
       project_id: projectId,
-      path_used: 'backup',
+      path_used: 'deterministic',
       cost_estimate_usd: 0,
       cache_hit: false,
-      model: null,
+      requires_llm_enrichment: false,
       total_lines: 0,
       duration_ms: duration,
       fallback_reason: reason,
@@ -221,45 +213,9 @@ export async function handleClusterNeondbLogs(
     message: obfuscateLogLine(l.message),
   }));
 
-  // -- 3. Plan mode (LLM 主路径 only · 备路径零 LLM cost · skip)
-  // 提前预判走哪条路径 · 只在 main 时 elicit approval
+  // -- 3. Route + cluster (path-router · 永远跑确定性 Drain3 + cache + enrichment hint)
+  // form-shift (规则 P4): mcp 不调 LLM · 无 plan mode (审批归 cc skill) · force=main > 200K 仍拒。
   const force: ForcePath = (input.force_path ?? 'auto') as ForcePath;
-  const willCallLlm =
-    force === 'main' ||
-    (force === 'auto' && estimateBatchTokens(obfuscated) <= 50_000);
-
-  if (willCallLlm && !deps.skipPlanMode) {
-    const approve = deps.requestApproval ?? DEFAULT_CLUSTER_REQUEST_APPROVAL;
-    const plan = buildClusterPlanPayload({
-      endpointId: input.endpoint_id,
-      model: input.model ?? 'claude-opus-4-7',
-      estimatedInputTokens: estimateBatchTokens(obfuscated),
-      estimatedMaxOutputTokens: 4500,
-      totalLines: obfuscated.length,
-    });
-    const decision = await approve(plan);
-    if (decision !== 'approved') {
-      const duration = Date.now() - t0;
-      emit({
-        event_type: 'log_clustering_invoked',
-        outcome: 'deny',
-        endpoint_id: input.endpoint_id,
-        project_id: projectId,
-        path_used: 'main',
-        cost_estimate_usd: plan.estimatedCostUsd,
-        cache_hit: false,
-        model: plan.model,
-        total_lines: obfuscated.length,
-        duration_ms: duration,
-        fallback_reason: `plan_mode_${decision}`,
-      });
-      throw new Error(
-        `plan_mode_${decision}: DBA did not approve LLM clustering for endpoint=${input.endpoint_id} (estimated_cost=$${plan.estimatedCostUsd})`,
-      );
-    }
-  }
-
-  // -- 4. Route + cluster (path-router 主备切换 + cache + fallback)
   let routerPayload: RouterPayload;
   try {
     routerPayload = await routeAndCluster({
@@ -267,7 +223,6 @@ export async function handleClusterNeondbLogs(
       lines: obfuscated,
       forcePath: force,
       topN: input.top_n,
-      model: input.model,
       traceId: input.trace_id ?? null,
       severityFilter: input.severity,
       timeRange: input.time_range,
@@ -282,10 +237,10 @@ export async function handleClusterNeondbLogs(
         outcome: 'deny',
         endpoint_id: input.endpoint_id,
         project_id: projectId,
-        path_used: 'main',
+        path_used: 'deterministic',
         cost_estimate_usd: 0,
         cache_hit: false,
-        model: input.model ?? 'claude-opus-4-7',
+        requires_llm_enrichment: false,
         total_lines: obfuscated.length,
         duration_ms: duration,
         fallback_reason: `force_main_over_limit:${err.estimatedTokens}`,
@@ -294,33 +249,29 @@ export async function handleClusterNeondbLogs(
     throw err;
   }
 
-  // -- 5. Audit (allow path · success)
+  // -- 4. Audit (allow path · success) · mcp 不调 LLM · cost 恒 0
   const duration = Date.now() - t0;
-  const costUsd = estimateLlmCostUsd(routerPayload);
   emit({
     event_type: 'log_clustering_invoked',
     outcome: 'allow',
     endpoint_id: input.endpoint_id,
     project_id: projectId,
-    path_used: routerPayload.router.decision,
-    cost_estimate_usd: costUsd,
+    path_used: 'deterministic',
+    cost_estimate_usd: 0,
     cache_hit: routerPayload.cached,
-    model: routerPayload.model,
+    requires_llm_enrichment: routerPayload.router.requires_llm_enrichment,
     total_lines: obfuscated.length,
     duration_ms: duration,
-    fallback_reason: routerPayload.router.fallback_reason,
+    fallback_reason: null,
   });
 
-  // -- 6. Result
+  // -- 5. Result
   return {
     decision: routerPayload.router.decision,
     reason: routerPayload.router.reason,
     estimated_tokens: routerPayload.router.estimated_tokens,
-    fallback_reason: routerPayload.router.fallback_reason,
     cluster: routerPayload.cluster,
-    input_tokens: routerPayload.input_tokens,
-    output_tokens: routerPayload.output_tokens,
-    model: routerPayload.model,
+    cluster_requires_llm_enrichment: routerPayload.router.requires_llm_enrichment,
     cached: routerPayload.cached,
     duration_ms: duration,
     coverage: {
@@ -329,33 +280,6 @@ export async function handleClusterNeondbLogs(
       truncated: (fetchResult as LogFetchSuccess).coverage.truncated,
       latest_line_ts: (fetchResult as LogFetchSuccess).coverage.latest_line_ts,
     },
-    degraded:
-      routerPayload.router.reason === 'fallback_from_main'
-        ? ['llm']
-        : [],
+    degraded: [],
   };
-}
-
-// ------------------------------------------------------------------------------------------------
-// helpers
-// ------------------------------------------------------------------------------------------------
-
-function estimateBatchTokens(lines: LogLine[]): number {
-  let total = 0;
-  for (const l of lines) total += (l.message?.length ?? 0) + 16;
-  return Math.ceil(total / 4);
-}
-
-function estimateLlmCostUsd(payload: RouterPayload): number {
-  if (payload.router.decision === 'backup' || payload.model === null) return 0;
-  const PRICE_PER_1M: Record<RcaModelId, { input: number; output: number }> = {
-    'claude-opus-4-7': { input: 15, output: 75 },
-    'claude-sonnet-4-6': { input: 3, output: 15 },
-    'claude-haiku-4-5': { input: 0.8, output: 4 },
-  };
-  const p = PRICE_PER_1M[payload.model];
-  const usd =
-    (payload.input_tokens / 1_000_000) * p.input +
-    (payload.output_tokens / 1_000_000) * p.output;
-  return Math.round(usd * 10_000) / 10_000;
 }

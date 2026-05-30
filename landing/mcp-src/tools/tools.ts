@@ -2256,9 +2256,10 @@ You MUST follow these steps:
     };
   },
 
-  // feat-037 cluster_neondb_logs · L3 log pattern 聚类 hybrid path (LLM 主 + Drain3 备).
-  // 50K token 阈值切主备 · 强制 obfuscateLogLine (raw log 不出 mcp 边界 · feat-024 T11) ·
-  // LLM 主路径过 feat-027 plan mode · cache 走 ADR-0009 ttl-cache 收口.
+  // feat-037 cluster_neondb_logs · L3 确定性 log pattern 聚类 (form-shift · 规则 P4 · LLM-out-of-mcp).
+  // mcp 只跑确定性 Drain3 · 不调 LLM · 语义命名 (semantic_*) 由 cc skill 拉 enriched cluster 后补.
+  // 强制 obfuscateLogLine (raw log 不出 mcp 边界 · feat-024 T11) · cache 走 ADR-0009 ttl-cache 收口.
+  // token 阈值算 cluster_requires_llm_enrichment hint 给 skill (≤50K → true). plan mode 归 cc skill.
   // LogFetchAdapter (feat-064 seam) 默认走 stub (feat-036 v2 jsonlog 接通前返 feat_036_not_ready).
   cluster_neondb_logs: async ({ params }, _neonClient, _extra) => {
     const result = await handleClusterNeondbLogs(
@@ -2271,12 +2272,8 @@ You MUST follow these steps:
         top_n: params.top_n,
         cache: params.cache,
         trace_state: params.trace_state,
-        model: params.model,
       },
       {
-        // skipPlanMode=true · feat-027 elicitation orchestrator 接通前默认跳过 (DEFAULT_CLUSTER_REQUEST_APPROVAL
-        // 返 'unavailable' fail-closed deny · 跟 generate_rca_report 同 stance).
-        skipPlanMode: true,
         emitAudit: (event) => {
           emitAuditEvent({
             event_type: 'log_clustering_invoked',
@@ -2287,7 +2284,7 @@ You MUST follow these steps:
               path_used: event.path_used,
               cost_estimate_usd: event.cost_estimate_usd,
               cache_hit: event.cache_hit,
-              model: event.model,
+              requires_llm_enrichment: event.requires_llm_enrichment,
               total_lines: event.total_lines,
               duration_ms: event.duration_ms,
               fallback_reason: event.fallback_reason,
