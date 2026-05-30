@@ -63,13 +63,13 @@ describe('/api/list-tools endpoint', () => {
   it('returns NEON_TOOLS.length tools when include=all (full listing opt-in · backward-compat for clients wanting upstream tools)', async () => {
     const body = await callListTools({ include: 'all' });
     expect(body.categoryInclude).toBe('all');
-    expect(body.tools).toHaveLength(47); // +feat-041 rewrite_neondb_sql (46 + 1)
+    expect(body.tools).toHaveLength(48); // 全量 listing = NEON_TOOLS.length · 2026-05-29 实测 (#204)
   });
 
   it('filters by scopes when category param is present (with include=all to isolate grant filter)', async () => {
     const body = await callListTools({ category: 'querying', include: 'all' });
     expect(body.grant.scopes).toEqual(['querying']);
-    expect(body.tools).toHaveLength(22); // +feat-041 rewrite_neondb_sql querying (21 + 1)
+    expect(body.tools).toHaveLength(23); // querying · 2026-05-29 实测 (#204)
   });
 
   it('returns only always-available tools when scopes are all invalid (with include=all)', async () => {
@@ -85,7 +85,7 @@ describe('/api/list-tools endpoint', () => {
       include: 'all',
     });
     expect(body.grant.projectId).toBe('proj-123');
-    expect(body.tools).toHaveLength(39); // +feat-041 rewrite_neondb_sql querying project-scoped (38 + 1)
+    expect(body.tools).toHaveLength(40); // querying project-scoped · 2026-05-29 实测 (#204)
     const names = body.tools.map((t) => t.name);
     expect(names).not.toContain('list_projects');
     expect(names).not.toContain('create_project');
@@ -96,7 +96,7 @@ describe('/api/list-tools endpoint', () => {
   it('filters to readOnlySafe tools with readonly=true (with include=all)', async () => {
     const body = await callListTools({ readonly: 'true', include: 'all' });
     expect(body.readOnly).toBe(true);
-    expect(body.tools).toHaveLength(31); // 19 upstream + 4 day-one (T1/T2/T6/T8) + feat-057 get_policy + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-066/#2 trace 读 (get/search trace · readOnlySafe) · all readOnlySafe
+    expect(body.tools).toHaveLength(33); // readOnlySafe 全量 · 2026-05-29 实测 (feat-066 +2 只读 trace·feat-041 rewrite 非只读·#204)
     for (const tool of body.tools) {
       expect(tool.readOnlySafe).toBe(true);
     }
@@ -111,7 +111,7 @@ describe('/api/list-tools endpoint', () => {
     const res = await GET(req);
     const body = (await res.json()) as ListToolsResponse;
     expect(body.readOnly).toBe(true);
-    expect(body.tools).toHaveLength(31); // 19 upstream + 4 day-one (T1/T2/T6/T8) + feat-057 + feat-019 explain_plans + feat-020 T4 + feat-021 T5 + feat-025 T12 + feat-066/#2 trace 读 (readOnlySafe) · readOnlySafe
+    expect(body.tools).toHaveLength(33); // readOnlySafe 全量 (legacy x-read-only header path) · 2026-05-29 实测 (#204)
   });
 
   it('readonly query param takes precedence over x-read-only header (with include=all)', async () => {
@@ -124,7 +124,7 @@ describe('/api/list-tools endpoint', () => {
     const res = await GET(req);
     const body = (await res.json()) as ListToolsResponse;
     expect(body.readOnly).toBe(false);
-    expect(body.tools).toHaveLength(47); // +feat-041 rewrite_neondb_sql (46 + 1)
+    expect(body.tools).toHaveLength(48); // 全量 listing = NEON_TOOLS.length · 2026-05-29 实测 (#204)
   });
 
   it('include=core explicit returns the same as default (4 day-one core tools · full · sales 4-step 完整)', async () => {
