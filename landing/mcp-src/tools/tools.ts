@@ -63,9 +63,10 @@ import {
 } from '../server-enrich/plan-store';
 // feat-025 T12 get_neondb_pool_stats · pgcat / PgBouncer 连接池 snapshot (External-component)
 import { handleGetPoolStats } from './handlers/pool-stats';
-// feat-045 generate_rca_report · L3 agent-native RCA 报告生成 (mcp tool form-shift).
+// feat-045 get_neondb_rca_evidence · L3 RCA 取证器 (form-shift · 规则 P4 · LLM-out-of-mcp).
+// mcp 只做确定性取证 + 模板预填 · 不调 LLM · 7 段叙事由 cc skill 写.
 // 详设: https://github.com/zlxtqbdgdgd/openneon-design/issues/18 + openneon-mcp#145/#146/#147.
-import { handleGenerateRcaReport } from './handlers/generate-rca-report';
+import { handleGetNeondbRcaEvidence } from './handlers/get-neondb-rca-evidence';
 // feat-042/#3 branch_canary_ddl · DDL 自动 canary 预演 (handler 在 handlers/branch-canary-ddl.ts).
 // (此 import 曾在 cascade merge 中被误删 → tools.ts branch_canary_ddl case 引不到 handler · 阻断 build)
 import { handleBranchCanaryDdl } from './handlers/branch-canary-ddl';
@@ -2341,7 +2342,7 @@ You MUST follow these steps:
 
   // feat-041 rewrite_neondb_sql · L3 LLM 改写 SQL (sub-1 #184 handler + plan mode 集成).
   // contextBuilder + llmRewriter 走 default stub (#185 ship 后注入真实 EXPLAIN 拉取 + Anthropic SDK).
-  // requestApproval 默认 fail-closed deny (DEFAULT_REWRITE_REQUEST_APPROVAL · 跟 generate_rca_report 同 stance).
+  // requestApproval 默认 fail-closed deny (DEFAULT_REWRITE_REQUEST_APPROVAL · plan mode 缺 capability 即拒).
   // currentProjectId / resolveEndpointProject 需 route.ts orchestrator 注入 (feat-060 claim binding · 集中
   // wire 时跟 cross_tenant_blocked audit 一并真接 · #184 范围内 dispatcher 留接口).
   rewrite_neondb_sql: async ({ params }, _neonClient, extra) => {
@@ -2371,7 +2372,7 @@ You MUST follow these steps:
         // 不填时 handler 跳过跨 tenant 校 (本 dispatch case 不强制 · 让 #184 单测路径独立可跑).
         resolveEndpointProject: extraAny?.resolveEndpointProject,
         // skipPlanMode=true · feat-027 elicitation orchestrator 接通前默认跳过 (DEFAULT_REWRITE_REQUEST_APPROVAL
-        // 返 'unavailable' fail-closed deny · 跟 generate_rca_report / cluster_neondb_logs 同 stance).
+        // 返 'unavailable' fail-closed deny · 跟 cluster_neondb_logs deterministic-by-default 同 stance).
         skipPlanMode: true,
         emitAudit: (event) => {
           emitAuditEvent({

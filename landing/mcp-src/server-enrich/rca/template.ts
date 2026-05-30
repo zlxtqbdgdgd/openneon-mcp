@@ -5,17 +5,18 @@
  * openneon-mcp#145 §验收门 (7 节固定 markdown 模板 ~100 LOC).
  *
  * 7 sections (固定顺序 · 与 design #18 issue body 给出的模板对齐):
- *   1. Header                      — trace_id · timestamp · model · cache hit · tokens
+ *   1. Header                      — trace_id · timestamp · cache hit · estimated input tokens
  *   2. Trace 链路图                — ASCII span tree across proxy/compute/safekeeper/pageserver
  *   3. 跨组件耗时分布              — table: component / ms / pct
  *   4. 函数级归因 (动态探针)       — table: function / p95 / hotspot pct  (degrade → [DATA_MISSING:probe])
  *   5. 修复时间线                  — audit-event-sourced timeline (感知/定位/假设/修复/验证)
  *   6. 验证结果                    — before vs after metrics + explain diff
- *   7. LLM 归因 (footer)           — server stamps model + verification hint; LLM fills NL prose
+ *   7. 归因 (footer)               — placeholder + 三原则 reminder; the cc skill fills NL prose here
  *
  * **Pure**: no I/O, no clock, no randomness. Inputs come from data-fetcher (#146). The renderer
  * pre-fills every server-computed value and inserts `[DATA_MISSING:<source>]` whenever a fetcher
- * leg failed. The LLM then writes attribution sentences AROUND those tables (never INSIDE them).
+ * leg failed. form-shift (规则 P4): the mcp tool never calls an LLM — the cc skill consumes this
+ * skeleton + evidence bundle and writes attribution sentences AROUND those tables (never INSIDE them).
  *
  * Order is load-bearing: tests assert against H2 headers in this exact sequence to detect
  * 跨 model robustness 漂移 (§ openneon-mcp#147 §跨 model 一致性 ≥ 95%).
@@ -29,7 +30,7 @@ export const RCA_SECTION_HEADERS = [
   '## 函数级归因 (动态探针)',
   '## 修复时间线',
   '## 验证结果',
-  '## LLM 归因',
+  '## 归因',
 ] as const;
 
 export type RcaSectionHeader = (typeof RCA_SECTION_HEADERS)[number];
@@ -43,20 +44,18 @@ export function renderTemplate(input: RcaSection7Input): string {
     renderFunctionAttribution(input),
     renderTimeline(input),
     renderValidation(input),
-    renderLlmFooter(input),
+    renderAttributionFooter(),
   ].join('\n\n');
 }
 
-/** §1 Header — trace_id + timestamp + model + cache + tokens. */
+/** §1 Header — trace_id + timestamp + cache + server-estimated input tokens. */
 function renderHeader(input: RcaSection7Input): string {
   const cacheTag = input.cacheHit ? 'cached' : 'fresh';
   return [
     `# RCA · trace_id=${input.traceId} · ${input.generatedAt}`,
     '',
-    `- model: ${input.model}`,
     `- cache: ${cacheTag}`,
     `- input_tokens (server-estimated): ${input.estimatedInputTokens}`,
-    `- max_output_tokens: ${input.maxOutputTokens}`,
   ].join('\n');
 }
 
@@ -130,12 +129,15 @@ function renderValidation(input: RcaSection7Input): string {
   ].join('\n');
 }
 
-/** §7 LLM 归因 footer — server stamps; LLM fills NL prose in OUTPUT, not here. */
-function renderLlmFooter(input: RcaSection7Input): string {
+/**
+ * §7 归因 footer — placeholder for the cc skill (form-shift · 规则 P4 · mcp never calls an LLM).
+ * The skill consumes this skeleton + evidence bundle and writes the NL attribution prose here.
+ */
+function renderAttributionFooter(): string {
   return [
-    '## LLM 归因',
+    '## 归因',
     '',
-    `- 模型: ${input.model}`,
+    '[ATTRIBUTION_PENDING] (cc skill fills natural-language attribution prose here)',
     '- 三原则: 证据优先 · `[DATA_MISSING:*]` 占位 · 双层 token cap',
     '- 未引用证据的归因句应以 `[UNVERIFIED]` 前缀标注',
   ].join('\n');

@@ -11,14 +11,19 @@
  *       60s 缓冲让连续重试不重算, 但保证拿到的不会过期 > 1 分钟。
  *
  * 走 ADR-0009 通用 `TtlCache` 收口 · 复用 `landing/mcp-src/server-enrich/ttl-cache.ts`。
- * Key 编码 trace_id + model · 同 trace_id 跨模型分桶 (#147 跨 model robustness 需要分别比较)。
+ * Key 编码 trace_id · cross-tenant isolation 已由 trace_id 提供 (form-shift 后 mcp 不再选 model ·
+ * model 选择 + LLM 调用归 cc skill · 见 get-neondb-rca-evidence.ts)。
  *
- * **NOT cached on error**: any leg失败 (data-fetcher 返回 ok=false) → 走真实 LLM 调用且不入 cache ·
- * 避免把 degrade 状态固化成"看起来稳定"的假报告 (§ feat-031 fail-closed 一致)。
+ * **NOT cached on error**: any leg失败 (data-fetcher 返回 ok=false) → 不入 cache · 避免把 degrade
+ * 状态固化成"看起来稳定"的假证据 bundle (§ feat-031 fail-closed 一致)。
+ *
+ * **缓的是确定性取证产物** (预填模板 + 证据 bundle) · 不是 LLM 叙事 (那归 cc skill)。trace 演化期
+ * (ongoing) 60s TTL · 收尾 (closed) 24h —— form-shift 后 mcp 入口无 trace_state hint, 默认保守
+ * ongoing 60s (cc skill 若需长缓由 skill 侧自管)。
  */
 
 import { TtlCache } from '../ttl-cache';
-import type { RcaModelId } from './llm-client';
+import type { RcaDataBundle } from './types';
 
 export type TraceState = 'ongoing' | 'closed';
 
@@ -26,11 +31,15 @@ const TTL_ONGOING_MS = 60 * 1000; // 60s
 const TTL_CLOSED_MS = 24 * 60 * 60 * 1000; // 24h
 
 export type RcaCacheEntry = {
-  markdown: string;
+  /** 7-section markdown skeleton (server pre-filled · cc skill fills NL prose later). */
+  templateMarkdown: string;
+  /** Raw 4-leg evidence bundle the cc skill cites. */
+  evidenceBundle: RcaDataBundle;
   generatedAt: string; // ISO8601
-  inputTokens: number;
-  outputTokens: number;
-  model: RcaModelId;
+  /** Server-estimated input token size of (template + evidence). */
+  estimatedInputTokens: number;
+  /** Leg names that fell back to [DATA_MISSING:*] (cached only when empty · NOT cached on error). */
+  degradedLegs: Array<'trace' | 'probe' | 'audit' | 'validation'>;
 };
 
 export class RcaCache {
@@ -40,25 +49,20 @@ export class RcaCache {
     this.store = new TtlCache<RcaCacheEntry>(now);
   }
 
-  /** Build the cache key · trace_id × model · cross-tenant isolation already comes from trace_id. */
-  static keyFor(traceId: string, model: RcaModelId): string {
-    return `${traceId}::${model}`;
+  /** Build the cache key · trace_id · cross-tenant isolation already comes from trace_id. */
+  static keyFor(traceId: string): string {
+    return traceId;
   }
 
   /** Return cached entry if present + not expired · else undefined. */
-  get(traceId: string, model: RcaModelId): RcaCacheEntry | undefined {
-    return this.store.get(RcaCache.keyFor(traceId, model));
+  get(traceId: string): RcaCacheEntry | undefined {
+    return this.store.get(RcaCache.keyFor(traceId));
   }
 
-  /** Store with TTL determined by trace state. */
-  set(
-    traceId: string,
-    model: RcaModelId,
-    entry: RcaCacheEntry,
-    state: TraceState,
-  ): void {
+  /** Store with TTL determined by trace state (default ongoing · conservative 60s). */
+  set(traceId: string, entry: RcaCacheEntry, state: TraceState = 'ongoing'): void {
     const ttlMs = state === 'closed' ? TTL_CLOSED_MS : TTL_ONGOING_MS;
-    this.store.set(RcaCache.keyFor(traceId, model), entry, ttlMs);
+    this.store.set(RcaCache.keyFor(traceId), entry, ttlMs);
   }
 
   /** Test helper. */

@@ -1,14 +1,14 @@
 /**
- * feat-045 6 case fixtures · openneon-mcp#147 §验收门.
+ * feat-045 case fixtures · openneon-mcp#147 §验收门 · form-shift (规则 P4 · LLM-out-of-mcp).
  *
- * 6 case:
- *   1. standard         — 4 数据源齐 → 7 节完整 markdown
- *   2. probe_degraded   — probe leg 失败 → [DATA_MISSING:probe] 占位
- *   3. token_truncated  — evidence 过大 → 截断 + [DATA_MISSING:evidence_truncated]
- *   4. cache_hit        — 同 trace_id 第二次调用零 LLM
- *   5. plan_deny        — DBA reject elicitation → throw plan_mode_rejected
- *   6. cross_model      — opus / sonnet / haiku 三轮 → 7 节结构一致 (≥ 95%)
+ * get_neondb_rca_evidence 是确定性取证器 (不调 LLM)。case 集对齐确定性行为:
+ *   1. standard       — 4 数据源齐 → 7 节预填模板 + 证据 bundle
+ *   2. probe_degraded — probe leg 失败 → [DATA_MISSING:probe] 占位 · NOT cached
+ *   3. token_estimate — evidence 越大 → estimatedInputTokens 越大 (server 估算 · cc skill 据此 budget)
+ *   4. cache_hit      — 同 trace_id 第二次调用零 fetch (缓 template + evidence)
+ *   5. multi_degrade  — 多 leg 失败 → degradedLegs + 取证 audit degraded_legs 反映
  *
+ * LLM 叙事 / plan mode / 跨 model robustness 归 cc skill · 不在 mcp case 集。
  * 每个 case 一个 self-contained scenario · 测试 import 并断言。
  */
 
@@ -63,16 +63,14 @@ export const SAMPLE_VALIDATION: RcaValidationView = {
 export type CaseName =
   | 'standard'
   | 'probe_degraded'
-  | 'token_truncated'
+  | 'token_estimate'
   | 'cache_hit'
-  | 'plan_deny'
-  | 'cross_model';
+  | 'multi_degrade';
 
 export const CASE_NAMES: readonly CaseName[] = [
   'standard',
   'probe_degraded',
-  'token_truncated',
+  'token_estimate',
   'cache_hit',
-  'plan_deny',
-  'cross_model',
+  'multi_degrade',
 ] as const;

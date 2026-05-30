@@ -1,13 +1,14 @@
 /**
- * feat-045/#1 unit tests · 7-section template renderer + LLM prompt 三原则 engine.
+ * feat-045/#1 unit tests · 7-section template renderer + token-estimation helpers.
  *
- * Detail design: openneon-mcp#145 §验收门.
+ * Detail design: openneon-mcp#145 §验收门 · form-shift (规则 P4 · LLM-out-of-mcp).
  *
  * Covers:
  *   - 7 节结构完整 (固定 H2 顺序)
  *   - [DATA_MISSING:probe] 占位 (degrade gracefully)
- *   - input cap 触发后 [DATA_MISSING:evidence_truncated]
- *   - 跨 model 模板渲染一致 (≥ 95% · structural identity)
+ *   - §7 归因 footer 留 [ATTRIBUTION_PENDING] 占位 (cc skill 填叙事 · mcp 不调 LLM)
+ *   - estimateTokens 单调 + RCA_MAX_INPUT_TOKENS 参考上限
+ *   - 模板渲染对 input 纯函数 (no model · form-shift 后无 model 字段)
  */
 
 import { describe, it, expect } from 'vitest';
@@ -16,10 +17,7 @@ import {
   RCA_SECTION_HEADERS,
 } from '../server-enrich/rca/template';
 import {
-  RCA_SYSTEM_PROMPT,
-  RCA_MAX_OUTPUT_TOKENS,
   RCA_MAX_INPUT_TOKENS,
-  buildUserPayload,
   estimateTokens,
 } from '../server-enrich/rca/llm-prompt';
 import {
@@ -30,16 +28,13 @@ import {
   SAMPLE_TRACE_ID,
 } from './fixtures/feat-045-rca-cases';
 import type { RcaSection7Input } from '../server-enrich/rca/types';
-import type { RcaModelId } from '../server-enrich/rca/llm-client';
 
 function makeInput(overrides: Partial<RcaSection7Input> = {}): RcaSection7Input {
   return {
     traceId: SAMPLE_TRACE_ID,
     generatedAt: '2026-05-28T12:00:00Z',
-    model: 'claude-opus-4-7',
     cacheHit: false,
     estimatedInputTokens: 1500,
-    maxOutputTokens: RCA_MAX_OUTPUT_TOKENS,
     trace: SAMPLE_TRACE,
     probe: SAMPLE_PROBE,
     audit: SAMPLE_AUDIT,
@@ -59,11 +54,18 @@ describe('feat-045/#1 · 7-section template structure', () => {
     }
   });
 
-  it('header section pre-fills trace_id + model + token budget', () => {
+  it('header section pre-fills trace_id + server-estimated tokens (no model · form-shift)', () => {
     const md = renderTemplate(makeInput());
     expect(md).toContain(`trace_id=${SAMPLE_TRACE_ID}`);
-    expect(md).toContain('model: claude-opus-4-7');
-    expect(md).toContain(`max_output_tokens: ${RCA_MAX_OUTPUT_TOKENS}`);
+    expect(md).toContain('input_tokens (server-estimated): 1500');
+    // form-shift: mcp tool never picks a model · header carries no model line
+    expect(md).not.toContain('model:');
+  });
+
+  it('§7 归因 footer leaves an [ATTRIBUTION_PENDING] placeholder for the cc skill', () => {
+    const md = renderTemplate(makeInput());
+    expect(md).toContain('## 归因');
+    expect(md).toContain('[ATTRIBUTION_PENDING]');
   });
 
   it('component latency table contains every component row in declaration order', () => {
@@ -116,61 +118,27 @@ describe('feat-045/#1 · [DATA_MISSING:*] graceful degrade', () => {
   });
 });
 
-describe('feat-045/#1 · LLM prompt 三原则 engine', () => {
-  it('system prompt mentions all 3 rules verbatim by number', () => {
-    expect(RCA_SYSTEM_PROMPT).toMatch(/RULE 1/);
-    expect(RCA_SYSTEM_PROMPT).toMatch(/RULE 2/);
-    expect(RCA_SYSTEM_PROMPT).toMatch(/RULE 3/);
-  });
-
-  it('rule 2 explicitly names the [DATA_MISSING:*] placeholder', () => {
-    expect(RCA_SYSTEM_PROMPT).toContain('[DATA_MISSING:');
-  });
-
-  it('rule 3 names a hard token cap aligned with RCA_MAX_OUTPUT_TOKENS', () => {
-    expect(RCA_SYSTEM_PROMPT).toContain(String(RCA_MAX_OUTPUT_TOKENS));
-  });
-
-  it('buildUserPayload concatenates template + evidence with a separator', () => {
-    const payload = buildUserPayload({
-      templateMarkdown: '# T',
-      evidenceAppendix: 'E',
-    });
-    expect(payload).toContain('# T');
-    expect(payload).toContain('# Evidence Appendix');
-    expect(payload).toContain('E');
-  });
-
+describe('feat-045/#1 · token-estimation helpers (deterministic · no LLM)', () => {
   it('estimateTokens grows with string length', () => {
     expect(estimateTokens('aaaa')).toBeLessThanOrEqual(estimateTokens('aaaaaaaaaaaa'));
   });
 
-  it('input cap is < 5K output budget (rule 3 double-guard)', () => {
+  it('RCA_MAX_INPUT_TOKENS is a positive reference cap', () => {
     expect(RCA_MAX_INPUT_TOKENS).toBeGreaterThan(0);
-    expect(RCA_MAX_OUTPUT_TOKENS).toBeLessThan(5000);
   });
 });
 
-describe('feat-045/#1 · cross-model template robustness (#147)', () => {
-  const models: RcaModelId[] = [
-    'claude-opus-4-7',
-    'claude-sonnet-4-6',
-    'claude-haiku-4-5',
-  ];
-
-  it('renders identical H2 structure across all 3 models (≥ 95%)', () => {
-    const structures = models.map((m) => {
-      const md = renderTemplate(makeInput({ model: m }));
-      return md.match(/^##? .+$/gm)?.join('\n') ?? '';
-    });
-    expect(structures[0]).toBe(structures[1]);
-    expect(structures[1]).toBe(structures[2]);
+describe('feat-045/#1 · template render is a pure function of input', () => {
+  it('same input → byte-identical markdown (no clock / randomness / model)', () => {
+    const input = makeInput();
+    expect(renderTemplate(input)).toBe(renderTemplate(input));
   });
 
-  it('header stamps each model id distinctly', () => {
-    for (const m of models) {
-      const md = renderTemplate(makeInput({ model: m }));
-      expect(md).toContain(`model: ${m}`);
-    }
+  it('H2 structure is stable regardless of which legs are present', () => {
+    const full = renderTemplate(makeInput());
+    const degraded = renderTemplate(makeInput({ probe: undefined }));
+    const fullHeaders = full.match(/^##? .+$/gm)?.join('\n') ?? '';
+    const degradedHeaders = degraded.match(/^##? .+$/gm)?.join('\n') ?? '';
+    expect(fullHeaders).toBe(degradedHeaders);
   });
 });

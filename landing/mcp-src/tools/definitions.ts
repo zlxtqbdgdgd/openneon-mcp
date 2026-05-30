@@ -47,7 +47,7 @@ import {
   getNeondbRecommendationsInputSchema,
   searchPlansInputSchema,
   getNeondbPoolStatsInputSchema,
-  generateRcaReportInputSchema,
+  getNeondbRcaEvidenceInputSchema,
   getNeondbTraceInputSchema,
   searchNeondbTracesInputSchema,
   branchCanaryDdlInputSchema,
@@ -1766,7 +1766,7 @@ export const NEON_TOOLS = [
   },
   // feat-068 attach_neondb_dynamic_probe · L3 ephemeral dynamic probe attach (USDT/uprobe).
   // follow-up #179 (sub-1 dispatcher wire): handler 之前没注册到 NEON_TOOLS (PR167 §模块边界 自述
-  // 'out-of-scope · 留 follow-up') · agent 调不到 · feat-045 generate_rca_report fetcher 拿 stub。
+  // 'out-of-scope · 留 follow-up') · agent 调不到 · feat-045 get_neondb_rca_evidence fetcher 拿 stub。
   // 本 entry 补齐 tool def + risk=high (跟设计 §3.1 RISK_BY_OP 一致 · #181 已 ship) · plan-mode
   // 走 require_plan path · DBA 审批后才 attach。
   // 详设: https://github.com/zlxtqbdgdgd/openneon-design/issues/13 + openneon-mcp#141/#142/#143/#144.
@@ -1847,7 +1847,7 @@ export const NEON_TOOLS = [
       binding · no LLM call · cross_tenant_blocked + sql_rewrite_denied audit emitted.
     </important_notes>`,
     inputSchema: rewriteNeondbSqlInputSchema,
-    // LLM 调用涉 cost · 跟 generate_rca_report / cluster_neondb_logs 一致 (op-class LLM_INVOCATION 隐含类).
+    // LLM 调用涉 cost (op-class LLM_INVOCATION 隐含类) · feat-041 mcp 侧暂未 form-shift (独立未来任务).
     readOnlySafe: false,
     annotations: {
       title: 'Rewrite Neon DB SQL (feat-041 · L3 LLM SQL rewrite + plan mode + 4-class risk + state-aware cache)',

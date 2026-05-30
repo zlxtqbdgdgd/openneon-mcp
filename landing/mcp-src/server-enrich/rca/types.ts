@@ -9,8 +9,6 @@
  * `[DATA_MISSING:<source>]` placeholder (degrade gracefully).
  */
 
-import type { RcaModelId } from './llm-client';
-
 /** Trace data view (compacted from A6 `get_neondb_trace` output). */
 export type RcaTraceView = {
   spanTree: Array<{
@@ -51,14 +49,17 @@ export type RcaValidationView = {
   explainDiffSha256: string;
 };
 
-/** Aggregate input to the 7-section template renderer. */
+/**
+ * Aggregate input to the 7-section template renderer.
+ *
+ * form-shift (规则 P4): no `model` / `maxOutputTokens` here — the mcp tool only pre-fills server
+ * facts; model selection + LLM output budget live in the cc skill.
+ */
 export type RcaSection7Input = {
   traceId: string;
   generatedAt: string; // ISO8601
-  model: RcaModelId;
   cacheHit: boolean;
   estimatedInputTokens: number;
-  maxOutputTokens: number;
   trace?: RcaTraceView;
   probe?: RcaProbeView;
   audit?: RcaAuditView;
