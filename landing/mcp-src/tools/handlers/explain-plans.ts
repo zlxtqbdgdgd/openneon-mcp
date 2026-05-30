@@ -81,13 +81,27 @@ export type ExplainPlansResult = {
 
 type PlanNode = Record<string, unknown>;
 
-/** EXPLAIN (FORMAT JSON) 输出 = `[{ "Plan": {...} }]` → 取根 Plan 节点。 */
+/**
+ * 取根 Plan 节点 · 支持两种 EXPLAIN (FORMAT JSON) 形态 (#202 fix):
+ *  (a) 裸:                 `[{ "Plan": {...} }]`
+ *  (b) run_sql 列包装:     `[{ "QUERY PLAN": [{ "Plan": {...} }] }]`  ← 上游 explain_sql_statement
+ *      经 run_sql 返回的实际形态 (EXPLAIN 结果是名为 "QUERY PLAN" 的列)。此前只认 (a) →
+ *      真数据 (b) 取不到 root → shallow signals/total_cost 恒 0 (#202)。
+ */
 function extractRootPlan(plan: unknown): PlanNode | null {
   const first = Array.isArray(plan) && plan.length > 0 ? plan[0] : null;
-  const root =
-    first && typeof first === 'object'
-      ? (first as PlanNode)['Plan']
-      : null;
+  if (!first || typeof first !== 'object') return null;
+  const obj = first as Record<string, unknown>;
+  let root: unknown = obj['Plan'];
+  if (!root) {
+    // (b) 解 "QUERY PLAN" 列包装一层
+    const qp = obj['QUERY PLAN'];
+    const qpFirst = Array.isArray(qp) && qp.length > 0 ? qp[0] : null;
+    root =
+      qpFirst && typeof qpFirst === 'object'
+        ? (qpFirst as Record<string, unknown>)['Plan']
+        : undefined;
+  }
   return root && typeof root === 'object' ? (root as PlanNode) : null;
 }
 
