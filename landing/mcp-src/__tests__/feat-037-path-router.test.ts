@@ -1,71 +1,66 @@
 /**
- * feat-037/#3 · path-router 主备切换 + fallback unit tests · openneon-mcp#158.
+ * feat-037/#3 · path-router 确定性聚类 + enrichment-hint + cache unit tests · openneon-mcp#158.
+ *
+ * **form-shift (规则 P4 · LLM-out-of-mcp)**: mcp 只跑确定性 Drain3 · 不调 LLM。旧版"≤50K LLM 主路径 /
+ * fallback"已下线 —— path-router 永远跑 Drain3 · 只用 token 阈值给 skill 一个 enrichment hint。
  *
  * 验收门:
- *   1. 50K token 阈值切换 · auto path 决策正确
- *   2. agent override · force=main / backup / auto
+ *   1. 50K token 阈值 → requires_llm_enrichment hint (auto)
+ *   2. agent override · force=main / backup / auto → hint
  *   3. force=main + input > 200K → ForceMainOverLimitError
- *   4. 主路径 LLM 失败 → fallback Drain3 + fallback_reason
- *   5. ttl-cache 命名空间 · 主备分桶 · 不互相 contaminate
+ *   4. 永远跑 Drain3 · semantic_* 全 null (mcp 不语义命名)
+ *   5. ttl-cache 命名空间 · key = deterministic 单桶 · 不带 model
  *   6. cache hit · ongoing 1h / closed 24h
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
   routeAndCluster,
   resetRouterCache,
   buildCacheKey,
   estimateLines,
   ForceMainOverLimitError,
-  PATH_ROUTER_AUTO_THRESHOLD_TOKENS,
 } from '../server-enrich/pattern/path-router';
-import {
-  setLlmClient,
-  resetLlmClient,
-} from '../server-enrich/rca/llm-client';
 import {
   genStandardLogs,
   genLogsByTokenSize,
-  MOCK_LLM_OUTPUT_OPUS,
 } from './fixtures/feat-037-cluster-cases';
 
-describe('feat-037/#3 · auto-path threshold (50K token)', () => {
+describe('feat-037/#3 · auto-path enrichment hint (50K token threshold)', () => {
   beforeEach(() => {
     resetRouterCache();
-    resetLlmClient();
   });
-  afterEach(() => resetLlmClient());
 
-  it('routes small input (< 50K tokens) to main when LLM is configured', async () => {
-    setLlmClient({
-      call: async () => ({
-        text: MOCK_LLM_OUTPUT_OPUS,
-        inputTokens: 1200,
-        outputTokens: 800,
-        model: 'claude-opus-4-7',
-      }),
-    });
+  it('small input (< 50K tokens) → requires_llm_enrichment=true · always deterministic Drain3', async () => {
     const payload = await routeAndCluster({
       endpointId: 'ep-1',
       lines: genStandardLogs(50),
       cache: false,
     });
-    expect(payload.router.decision).toBe('main');
+    expect(payload.router.decision).toBe('deterministic');
     expect(payload.router.reason).toBe('auto_under_threshold');
-    expect(payload.model).toBe('claude-opus-4-7');
+    expect(payload.router.requires_llm_enrichment).toBe(true);
+    expect(payload.cluster.cluster_requires_llm_enrichment).toBe(true);
+    // Drain3 跑出 cluster · semantic_* 全 null (mcp 不语义命名 · skill 补)
+    expect(payload.cluster.patterns.length).toBeGreaterThan(0);
+    for (const p of payload.cluster.patterns) {
+      expect(p.semantic_name).toBeNull();
+      expect(p.semantic_category).toBeNull();
+      expect(p.semantic_summary).toBeNull();
+    }
   });
 
-  it('routes large input (> 50K tokens) to backup', async () => {
+  it('large input (> 50K tokens) → requires_llm_enrichment=false · still deterministic', async () => {
     const big = genLogsByTokenSize(80_000);
     const payload = await routeAndCluster({
       endpointId: 'ep-1',
       lines: big,
       cache: false,
     });
-    expect(payload.router.decision).toBe('backup');
+    expect(payload.router.decision).toBe('deterministic');
     expect(payload.router.reason).toBe('auto_over_threshold');
-    expect(payload.model).toBeNull();
-    // backup 跑 Drain3 → cluster 必须出
+    expect(payload.router.requires_llm_enrichment).toBe(false);
+    expect(payload.cluster.cluster_requires_llm_enrichment).toBe(false);
     expect(payload.cluster.patterns.length).toBeGreaterThan(0);
   });
 
@@ -78,48 +73,33 @@ describe('feat-037/#3 · auto-path threshold (50K token)', () => {
   });
 });
 
-describe('feat-037/#3 · force_path override', () => {
+describe('feat-037/#3 · force_path override (enrichment hint only · mcp 不调 LLM)', () => {
   beforeEach(() => {
     resetRouterCache();
-    resetLlmClient();
   });
-  afterEach(() => resetLlmClient());
 
-  it('force=backup skips LLM entirely · 0 input/output tokens', async () => {
-    setLlmClient({
-      call: async () => {
-        throw new Error('LLM should not be called when force=backup');
-      },
-    });
+  it('force=backup → hint=false regardless of size · deterministic', async () => {
     const payload = await routeAndCluster({
       endpointId: 'ep-1',
       lines: genStandardLogs(5),
       forcePath: 'backup',
       cache: false,
     });
-    expect(payload.router.decision).toBe('backup');
-    expect(payload.router.reason).toBe('force_backup');
-    expect(payload.input_tokens).toBe(0);
-    expect(payload.output_tokens).toBe(0);
+    expect(payload.router.decision).toBe('deterministic');
+    expect(payload.router.reason).toBe('force_no_enrich');
+    expect(payload.router.requires_llm_enrichment).toBe(false);
   });
 
-  it('force=main calls LLM even when input over 50K', async () => {
-    setLlmClient({
-      call: async () => ({
-        text: MOCK_LLM_OUTPUT_OPUS,
-        inputTokens: 60_000,
-        outputTokens: 800,
-        model: 'claude-opus-4-7',
-      }),
-    });
+  it('force=main → hint=true even when input over 50K (≤ 200K)', async () => {
     const payload = await routeAndCluster({
       endpointId: 'ep-1',
       lines: genLogsByTokenSize(80_000),
       forcePath: 'main',
       cache: false,
     });
-    expect(payload.router.decision).toBe('main');
-    expect(payload.router.reason).toBe('force_main');
+    expect(payload.router.decision).toBe('deterministic');
+    expect(payload.router.reason).toBe('force_enrich');
+    expect(payload.router.requires_llm_enrichment).toBe(true);
   });
 
   it('force=main + input > 200K throws ForceMainOverLimitError', async () => {
@@ -135,114 +115,33 @@ describe('feat-037/#3 · force_path override', () => {
   });
 });
 
-describe('feat-037/#3 · fallback from main to backup', () => {
+describe('feat-037/#3 · cache namespace (§3.5 · deterministic single bucket)', () => {
   beforeEach(() => {
     resetRouterCache();
-    resetLlmClient();
-  });
-  afterEach(() => resetLlmClient());
-
-  it('falls back to Drain3 when LLM returns rate_limited (auto path)', async () => {
-    setLlmClient({
-      call: async () => ({
-        error: { reason: 'rate_limited', detail: '429 throttle' },
-      }),
-    });
-    const payload = await routeAndCluster({
-      endpointId: 'ep-1',
-      lines: genStandardLogs(20),
-      cache: false,
-    });
-    expect(payload.router.decision).toBe('backup');
-    expect(payload.router.reason).toBe('fallback_from_main');
-    expect(payload.router.fallback_reason).toContain('llm_rate_limited');
-    expect(payload.cluster.patterns.length).toBeGreaterThan(0);
   });
 
-  it('does NOT fallback when force=main · throws instead', async () => {
-    setLlmClient({
-      call: async () => ({
-        error: { reason: 'rate_limited', detail: '429' },
-      }),
-    });
-    await expect(
-      routeAndCluster({
-        endpointId: 'ep-1',
-        lines: genStandardLogs(5),
-        forcePath: 'main',
-        cache: false,
-      }),
-    ).rejects.toThrow(/refuse to fallback/);
-  });
-
-  it('does not cache the fallback result (avoids固化 degrade state)', async () => {
-    setLlmClient({
-      call: async () => ({ error: { reason: 'rate_limited' } }),
-    });
-    const a = await routeAndCluster({
-      endpointId: 'ep-1',
-      lines: genStandardLogs(5),
-      cache: true,
-    });
-    // 第二次仍走真实路径 (cache miss · 因为 fallback 不入 cache)
-    const b = await routeAndCluster({
-      endpointId: 'ep-1',
-      lines: genStandardLogs(5),
-      cache: true,
-    });
-    expect(a.cached).toBe(false);
-    expect(b.cached).toBe(false);
-  });
-});
-
-describe('feat-037/#3 · cache namespace (§3.5)', () => {
-  beforeEach(() => {
-    resetRouterCache();
-    resetLlmClient();
-  });
-
-  it('main/backup buckets are isolated · key includes decision', () => {
-    const mainKey = buildCacheKey({
-      decision: 'main',
-      endpointId: 'ep-1',
-      model: 'claude-opus-4-7',
-    });
-    const backupKey = buildCacheKey({
-      decision: 'backup',
-      endpointId: 'ep-1',
-    });
-    expect(mainKey).not.toBe(backupKey);
-    expect(mainKey).toContain(':main:');
-    expect(backupKey).toContain(':backup:');
-  });
-
-  it('key encodes endpoint / time_range / trace_id / severity / model', () => {
+  it('key uses deterministic decision · no model segment', () => {
     const k = buildCacheKey({
-      decision: 'main',
+      decision: 'deterministic',
+      endpointId: 'ep-1',
+    });
+    expect(k).toContain(':deterministic:');
+    expect(k).toContain('cluster_logs:deterministic:ep-1');
+  });
+
+  it('key encodes endpoint / time_range / trace_id / severity', () => {
+    const k = buildCacheKey({
+      decision: 'deterministic',
       endpointId: 'ep-9',
       timeRange: { start: '2026-05-28T10:00:00Z', end: '2026-05-28T10:10:00Z' },
       traceId: 'a1b2c3d4e5f60718293a4b5c6d7e8f90',
       severityFilter: ['ERROR', 'FATAL'],
-      model: 'claude-sonnet-4-6',
     });
-    expect(k).toContain('cluster_logs:main:ep-9');
+    expect(k).toContain('cluster_logs:deterministic:ep-9');
     expect(k).toContain('a1b2c3d4e5f60718293a4b5c6d7e8f90');
-    expect(k).toContain('claude-sonnet-4-6');
   });
 
   it('cache hit second call · cached=true · same result', async () => {
-    let llmCallCount = 0;
-    setLlmClient({
-      call: async () => {
-        llmCallCount += 1;
-        return {
-          text: MOCK_LLM_OUTPUT_OPUS,
-          inputTokens: 1200,
-          outputTokens: 800,
-          model: 'claude-opus-4-7',
-        };
-      },
-    });
     const first = await routeAndCluster({
       endpointId: 'ep-cache',
       lines: genStandardLogs(50),
@@ -255,6 +154,21 @@ describe('feat-037/#3 · cache namespace (§3.5)', () => {
     });
     expect(first.cached).toBe(false);
     expect(second.cached).toBe(true);
-    expect(llmCallCount).toBe(1);
+    expect(second.cluster.total_clusters).toBe(first.cluster.total_clusters);
+  });
+
+  it('cache disabled · both calls recompute (cached=false)', async () => {
+    const a = await routeAndCluster({
+      endpointId: 'ep-nocache',
+      lines: genStandardLogs(5),
+      cache: false,
+    });
+    const b = await routeAndCluster({
+      endpointId: 'ep-nocache',
+      lines: genStandardLogs(5),
+      cache: false,
+    });
+    expect(a.cached).toBe(false);
+    expect(b.cached).toBe(false);
   });
 });

@@ -27,18 +27,8 @@ export {
   tokenize,
 } from './drain3';
 
-export {
-  LLM_CLUSTERING_SYSTEM_PROMPT,
-  LLM_CLUSTERING_SYSTEM_PROMPT_VERSION,
-  LLM_CLUSTERING_MAX_INPUT_TOKENS,
-  LLM_CLUSTERING_MAX_OUTPUT_TOKENS,
-  buildClusteringUserPayload,
-  llmClusterLogs,
-  type LlmClusteringResult,
-  type LlmClusteringSuccess,
-  type LlmClusteringError,
-} from './llm-clustering';
-
+// feat-037 form-shift (规则 P4 · LLM-out-of-mcp): LLM 聚类主路径 + plan-mode 已迁 cc skill ·
+// mcp 只保留确定性 Drain3 + path-router (enrichment hint) backbone。
 export {
   routeAndCluster,
   buildCacheKey,
@@ -52,12 +42,3 @@ export {
   type RouterPayload,
   type ClusterTraceState,
 } from './path-router';
-
-export {
-  buildClusterPlanPayload,
-  estimateClusterCostUsd,
-  DEFAULT_CLUSTER_REQUEST_APPROVAL,
-  type ClusterPlanPayload,
-  type ClusterPlanDecision,
-  type ClusterRequestApproval,
-} from './plan-mode';

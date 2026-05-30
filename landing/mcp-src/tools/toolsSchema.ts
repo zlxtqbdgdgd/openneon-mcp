@@ -1355,10 +1355,11 @@ export const branchCanaryDdlInputSchema = z.object({
     .describe('源 branch (canary 从此 fork · 默认 main · 跨 project 拒)。'),
 });
 
-// feat-037 cluster_neondb_logs input schema · L3 log pattern 聚类 hybrid path (LLM 主 + Drain3 备).
+// feat-037 cluster_neondb_logs input schema · L3 确定性 log pattern 聚类 (form-shift · 规则 P4 · LLM-out-of-mcp).
+// mcp 只跑确定性 Drain3 · 不调 LLM · semantic_* 由 cc skill 补 · plan mode 归 skill.
 // detail design: https://github.com/zlxtqbdgdgd/openneon-design/issues/51
-// sub-issues: openneon-mcp#157 (Drain3 TS) · #155 (LLM 主路径) · #158 (path-router + LogFetchAdapter) ·
-// #154 (mcp tool + obfuscator + plan mode + audit) · #156 (8 case fixture + 跨 model 一致性).
+// sub-issues: openneon-mcp#157 (Drain3 TS) · #158 (path-router + LogFetchAdapter) ·
+// #154 (mcp tool + obfuscator + audit) · #156 (8 case fixture).
 export const clusterNeondbLogsInputSchema = z.object({
   endpoint_id: z
     .string()
@@ -1387,7 +1388,9 @@ export const clusterNeondbLogsInputSchema = z.object({
     .enum(['auto', 'main', 'backup'])
     .optional()
     .describe(
-      'auto (default · 50K token 阈值切主备) · main (强制 LLM · 200K hard cap) · backup (强制 Drain3 · 0 LLM cost).',
+      'Controls the cluster_requires_llm_enrichment hint for the cc skill (mcp itself never calls LLM). ' +
+        'auto (default · ≤50K tokens → hint=true) · main (force hint=true · 200K hard cap) · ' +
+        'backup (force hint=false · skill stays deterministic-only).',
     ),
   top_n: z
     .number()
@@ -1405,12 +1408,6 @@ export const clusterNeondbLogsInputSchema = z.object({
     .enum(['ongoing', 'closed'])
     .optional()
     .describe('Trace state hint · default ongoing (conservative TTL).'),
-  model: z
-    .enum(['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5'])
-    .optional()
-    .describe(
-      'LLM model · default claude-opus-4-7. sonnet/haiku 也支持 (cost vs depth tradeoff · #156 跨 model 一致性).',
-    ),
 });
 
 // feat-068 attach_neondb_dynamic_probe · L3 ephemeral dynamic probe (USDT/uprobe)

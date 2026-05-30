@@ -1,10 +1,14 @@
 /**
- * Shared types · feat-037 log pattern 聚类 hybrid path.
+ * Shared types · feat-037 log pattern 聚类 (mcp 确定性 backbone · LLM 语义补全归 skill).
  *
  * Detail design: zlxtqbdgdgd/openneon-design#51 §4 schema.
  *
- * Two-tier 命名 (Q5A) + 5 fixed enum (Q5B) 在这里统一定义 · drain3 / llm-clustering / path-router /
- * mcp tool 都引用本文件 · 避免主备两路径漂移。
+ * **feat-037 form-shift (规则 P4 · LLM-out-of-mcp)**: mcp 只跑确定性 Drain3 聚类 · 不调 LLM ·
+ * 二级语义命名 (semantic_name / semantic_category / semantic_summary) 由 cc skill 拉 enriched
+ * cluster 后补全。本文件因此把 semantic_* 全部建模成 nullable · mcp 永填 null · 不再有 LLM 主路径。
+ *
+ * Two-tier 命名契约 (Q5A) + 5 fixed enum (Q5B) 仍在这里统一定义 · 供 skill 端复用 schema ·
+ * 避免 mcp 出的 deterministic backbone 跟 skill 出的 semantic 层漂移。
  */
 
 // ------------------------------------------------------------------------------------------------
@@ -66,12 +70,23 @@ export type LogPattern = {
   last_seen: string | null;
   /**
    * Q5A two-tier 命名 · 二级精模板 (strict format): "[Resource] [Operation]" e.g.
-   * "WAL Replay Lag" / "Vacuum Skipped Tuples". `null` 表示备路径 Drain3 不参与命名.
+   * "WAL Replay Lag" / "Vacuum Skipped Tuples".
+   *
+   * **mcp 永填 `null`** (form-shift · 规则 P4): 确定性 Drain3 不参与语义命名 ·
+   * 由 cc skill 拉 enriched cluster 后用 LLM 补全。`null` = "尚未语义标注 · 等 skill 补".
    */
-  semantic_name: string | null;
-  /** Q5B 5 enum + other 兜底 · 备路径默认 other · LLM 主路径才填精确分类 */
-  semantic_category: SemanticCategory;
-  /** 二级自由 · 1-2 句话 · LLM 主路径填 · 备路径 null */
+  semantic_name?: string | null;
+  /**
+   * Q5B 5 enum + other 兜底.
+   *
+   * **mcp 永填 `null`** (form-shift): Drain3 不分类 · skill 端用 LLM 才填精确 enum。
+   */
+  semantic_category?: SemanticCategory | null;
+  /**
+   * 二级自由 · 1-2 句话.
+   *
+   * **mcp 永填 `null`** (form-shift): skill 端 LLM 补全。
+   */
   semantic_summary?: string | null;
 };
 
@@ -91,25 +106,48 @@ export type PatternClusterResult = {
   total_lines: number;
   /** 总 cluster 数 (top + tail) */
   total_clusters: number;
+  /**
+   * form-shift 标记 (规则 P4): cluster 集小到值得 cc skill 做 LLM 语义补全.
+   *
+   * mcp 只跑确定性 Drain3 · 用 token 阈值 (≤ 50K · {@link PATH_ROUTER_AUTO_THRESHOLD_TOKENS})
+   * 判断这批 log 是否足够小 · 小则 `true` (skill 拉去补 semantic_*) · 大则 `false`
+   * (skill 默认只用 deterministic template · 不烧 token)。`undefined` = 路由器未标注。
+   */
+  cluster_requires_llm_enrichment?: boolean;
 };
 
 // ------------------------------------------------------------------------------------------------
-// path-router output schema · Q2 路径选择 · 主备切换决策对外可见 (debug + audit)
+// path-router output schema · Q2 路径选择 · enrichment-hint 决策对外可见 (debug + audit)
 // ------------------------------------------------------------------------------------------------
 
-export type PathDecision = 'main' | 'backup';
+/**
+ * mcp 只跑确定性 Drain3 · 不再有 LLM 主路径 (form-shift · 规则 P4) · 所以 decision 永远
+ * `'deterministic'`。保留字段是为了 audit / debug 可见 path-router 跑过 + 是否标了 enrichment hint。
+ */
+export type PathDecision = 'deterministic';
 
-/** path-router 的 force_path · agent 可强制走主或备 · default 'auto' */
+/**
+ * path-router 的 force_path · default 'auto'.
+ *
+ * **form-shift 后语义** (规则 P4 · mcp 不调 LLM): force_path 不再切换"LLM 主 vs Drain3 备" ·
+ * 现在只控制 {@link PatternClusterResult.cluster_requires_llm_enrichment} 这个给 skill 的 hint:
+ *   - `auto`:   enrich = estimated_tokens ≤ 50K (集小才值得 skill 补语义)
+ *   - `main`:   enrich = true (强制建议 skill 补语义 · 但 > 200K 仍拒 · 保留 hard cap 契约)
+ *   - `backup`: enrich = false (强制只用 deterministic template · skill 不烧 token)
+ */
 export type ForcePath = 'auto' | 'main' | 'backup';
 
 export type RouterResult = {
   decision: PathDecision;
-  /** 路径选择原因 (debug + audit) */
-  reason: 'auto_under_threshold' | 'auto_over_threshold' | 'force_main' | 'force_backup' | 'fallback_from_main';
+  /** enrichment-hint 决策原因 (debug + audit) */
+  reason: 'auto_under_threshold' | 'auto_over_threshold' | 'force_enrich' | 'force_no_enrich';
   /** 估算的 input token (chars/4 heuristic · 跟 feat-045 estimateTokens 同源) */
   estimated_tokens: number;
-  /** 主路径 LLM 失败时填 · 否则 null */
-  fallback_reason: string | null;
+  /**
+   * cc skill 是否被建议对这批 cluster 做 LLM 语义补全 (= cluster_requires_llm_enrichment).
+   * mirror 到 router 层方便 audit。
+   */
+  requires_llm_enrichment: boolean;
 };
 
 // ------------------------------------------------------------------------------------------------

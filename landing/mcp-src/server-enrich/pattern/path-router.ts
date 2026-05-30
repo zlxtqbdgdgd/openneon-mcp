@@ -1,35 +1,32 @@
 /**
- * path-router · feat-037/#3 (L3) · 主备双路径切换 + fallback + cache 命名空间.
+ * path-router · feat-037/#3 (L3) · 确定性聚类 + enrichment-hint + cache 命名空间.
  *
  * Detail design: zlxtqbdgdgd/openneon-design#51 §3.2 path-router + §3.5 cache + Q2 路径选择.
  *
- * 决策表 (Q2 路径选择):
+ * **feat-037 form-shift (规则 P4 · LLM-out-of-mcp)**: mcp 只跑确定性 Drain3 · 不调 LLM。
+ * 旧版"≤ 50K 走 LLM 主路径 · > 50K 走 Drain3 备路径 + fallback"已下线 —— LLM 语义补全职责
+ * 迁到 cc skill。path-router 现在永远跑 Drain3 · 只用 token 阈值给 skill 一个 enrichment hint:
  *
- *   force_path | estimated_tokens | decision  | reason
- *   -----------|------------------|-----------|--------------------------
- *   auto       | ≤ 50K            | main      | auto_under_threshold
- *   auto       | > 50K            | backup    | auto_over_threshold
- *   main       | ≤ 200K           | main      | force_main
+ *   force_path | estimated_tokens | requires_llm_enrichment | reason
+ *   -----------|------------------|-------------------------|--------------------------
+ *   auto       | ≤ 50K            | true                    | auto_under_threshold
+ *   auto       | > 50K            | false                   | auto_over_threshold
+ *   main       | ≤ 200K           | true                    | force_enrich
  *   main       | > 200K           | THROW · reject + log warn (强制 main 上限 · §3.2)
- *   backup     | any              | backup    | force_backup
+ *   backup     | any              | false                   | force_no_enrich
  *
- * Fallback (主路径 LLM 失败时):
- *   - LLM unreachable / rate_limited / token_cap / not_configured / invalid_json / schema_violation
- *     → 自动 fallback Drain3 + decision='backup' + reason='fallback_from_main' + fallback_reason
- *       填具体 LLM error reason · 整个 cluster_neondb_logs 不阻塞
+ * enrichment hint = "cluster 集小到值得 cc skill 拉去做 LLM 语义补全" · mcp 自己不补 ·
+ * skill 拿 enriched cluster (deterministic template + tail) 后决定是否调 LLM 填 semantic_*。
  *
  * Cache 命名空间 (§3.5 跟 feat-066 一致):
- *   key = cluster_logs:{main|backup}:{endpoint_id}:{time_range_hash}:{trace_id||'*'}:{severity_hash}:{model?}
+ *   key = cluster_logs:deterministic:{endpoint_id}:{time_range_hash}:{trace_id||'*'}:{severity_hash}
  *   ttl: trace_id state=closed → 永久 (24h) · ongoing → 1h · 无 trace_id → 1h
  *   走 ADR-0009 通用 ttl-cache.ts 收口。
  */
 
 import { createHash } from 'node:crypto';
 import { TtlCache } from '../ttl-cache';
-import { estimateTokens } from '../rca/llm-prompt';
-import type { RcaModelId } from '../rca/llm-client';
 import { Drain3, readDrain3ConfigFromEnv } from './drain3';
-import { llmClusterLogs } from './llm-clustering';
 import type {
   ForcePath,
   LogLine,
@@ -42,7 +39,7 @@ import type {
 // Thresholds (Q2 锁定值 · GUC 暴露)
 // ------------------------------------------------------------------------------------------------
 
-/** auto → main 上限 (input ≤ 50K 走 main · § Q2). */
+/** auto → enrichment hint 上限 (input ≤ 50K → 建议 skill 补语义 · § Q2). */
 export const PATH_ROUTER_AUTO_THRESHOLD_TOKENS = 50_000;
 
 /** force=main 强制上限 (input > 200K + force=main → 拒绝 + warn · §3.2). */
@@ -61,12 +58,10 @@ export type RouterRequest = {
   endpointId: string;
   /** Obfuscated log lines (mcp tool 边界已保证脱敏 · path-router 不重复 obfuscate) */
   lines: LogLine[];
-  /** auto · main · backup · default 'auto' */
+  /** auto · main · backup · default 'auto' · 现在只控制 enrichment hint (form-shift) */
   forcePath?: ForcePath;
-  /** Top N · 跟 drain3 / llm-clustering 共用 · default 50 */
+  /** Top N · 跟 drain3 共用 · default 50 */
   topN?: number;
-  /** LLM 主路径 model · default opus · 备路径忽略 */
-  model?: RcaModelId;
   /** trace_id filter (v1 阶段交由 mcp tool handler 处理 staged delivery) · cache key 一部分 */
   traceId?: string | null;
   /** Severity filter sig · cache key 一部分 */
@@ -81,10 +76,6 @@ export type RouterRequest = {
 export type RouterPayload = {
   router: RouterResult;
   cluster: PatternClusterResult;
-  /** LLM token usage (主路径成功才填 · 备路径填 0) */
-  input_tokens: number;
-  output_tokens: number;
-  model: RcaModelId | null;
   cached: boolean;
 };
 
@@ -96,7 +87,7 @@ export class ForceMainOverLimitError extends Error {
   readonly estimatedTokens: number;
   constructor(estimatedTokens: number) {
     super(
-      `force_path='main' but estimated_tokens=${estimatedTokens} > ${PATH_ROUTER_FORCE_MAIN_LIMIT_TOKENS}; refuse to call LLM (feat-037 §3.2 强制 main 上限).`,
+      `force_path='main' but estimated_tokens=${estimatedTokens} > ${PATH_ROUTER_FORCE_MAIN_LIMIT_TOKENS}; refuse enrichment hint (feat-037 §3.2 强制 main 上限).`,
     );
     this.name = 'ForceMainOverLimitError';
     this.estimatedTokens = estimatedTokens;
@@ -124,13 +115,11 @@ export function getRouterCache(): TtlCache<RouterPayload> {
 export async function routeAndCluster(req: RouterRequest): Promise<RouterPayload> {
   const useCache = req.cache ?? true;
   const force: ForcePath = req.forcePath ?? 'auto';
-  const topN = req.topN ?? 50;
-  const model: RcaModelId = req.model ?? 'claude-opus-4-7';
 
   // 1. estimate tokens (chars/4 heuristic · 跟 feat-045 同源)
   const estTokens = estimateLines(req.lines);
 
-  // 2. force=main 上限校验
+  // 2. force=main 上限校验 (保留 hard cap 契约 · > 200K + force=main → 拒绝)
   if (force === 'main' && estTokens > PATH_ROUTER_FORCE_MAIN_LIMIT_TOKENS) {
     console.warn(
       `[feat-037 path-router] force_path='main' but estimated_tokens=${estTokens} > ${PATH_ROUTER_FORCE_MAIN_LIMIT_TOKENS}, refusing.`,
@@ -138,11 +127,11 @@ export async function routeAndCluster(req: RouterRequest): Promise<RouterPayload
     throw new ForceMainOverLimitError(estTokens);
   }
 
-  // 3. 决策
-  const decision = decidePathInitial(force, estTokens);
+  // 3. enrichment-hint 决策 (form-shift: 不再切换 LLM/Drain3 · 只决定 skill 是否补语义)
+  const { requiresEnrichment, reason } = decideEnrichment(force, estTokens);
 
-  // 4. cache lookup (decision 也是 key 一部分 · 主备分桶 · 防漂移)
-  const cacheKey = buildCacheKey({ decision, ...req, model });
+  // 4. cache lookup (decision 也是 key 一部分 · 防漂移)
+  const cacheKey = buildCacheKey({ decision: 'deterministic', ...req });
   if (useCache) {
     const hit = cacheStore.get(cacheKey);
     if (hit) {
@@ -150,64 +139,18 @@ export async function routeAndCluster(req: RouterRequest): Promise<RouterPayload
     }
   }
 
-  // 5. 走主路径 or 备路径
-  if (decision === 'main') {
-    const llm = await llmClusterLogs({ lines: req.lines, topN, model });
-    if (llm.ok) {
-      const payload: RouterPayload = {
-        router: {
-          decision: 'main',
-          reason: force === 'main' ? 'force_main' : 'auto_under_threshold',
-          estimated_tokens: estTokens,
-          fallback_reason: null,
-        },
-        cluster: llm.result,
-        input_tokens: llm.input_tokens,
-        output_tokens: llm.output_tokens,
-        model: llm.model,
-        cached: false,
-      };
-      cacheSet(useCache, cacheKey, payload, req.traceState);
-      return payload;
-    }
-    // LLM 失败 → fallback Drain3 (除非 force=main 明确禁止 fallback · default 允许)
-    if (force === 'main') {
-      // force=main 时不 fallback · 直接抛 · 让 caller 决定怎么 degrade
-      throw new Error(
-        `force_path='main' but LLM clustering failed (${llm.error.reason}); refuse to fallback to Drain3.`,
-      );
-    }
-    const fb = runDrain3(req.lines);
-    const payload: RouterPayload = {
-      router: {
-        decision: 'backup',
-        reason: 'fallback_from_main',
-        estimated_tokens: estTokens,
-        fallback_reason: llm.error.reason + (llm.error.detail ? `: ${llm.error.detail}` : ''),
-      },
-      cluster: fb,
-      input_tokens: 0,
-      output_tokens: 0,
-      model: null,
-      cached: false,
-    };
-    cacheSet(useCache, cacheKey, payload, req.traceState);
-    return payload;
-  }
+  // 5. 永远跑确定性 Drain3 (mcp 不调 LLM · 语义补全归 skill)
+  const cluster = runDrain3(req.lines);
+  cluster.cluster_requires_llm_enrichment = requiresEnrichment;
 
-  // backup 路径
-  const fb = runDrain3(req.lines);
   const payload: RouterPayload = {
     router: {
-      decision: 'backup',
-      reason: force === 'backup' ? 'force_backup' : 'auto_over_threshold',
+      decision: 'deterministic',
+      reason,
       estimated_tokens: estTokens,
-      fallback_reason: null,
+      requires_llm_enrichment: requiresEnrichment,
     },
-    cluster: fb,
-    input_tokens: 0,
-    output_tokens: 0,
-    model: null,
+    cluster,
     cached: false,
   };
   cacheSet(useCache, cacheKey, payload, req.traceState);
@@ -218,10 +161,15 @@ export async function routeAndCluster(req: RouterRequest): Promise<RouterPayload
 // helpers (pure)
 // ------------------------------------------------------------------------------------------------
 
-function decidePathInitial(force: ForcePath, estTokens: number): PathDecision {
-  if (force === 'main') return 'main';
-  if (force === 'backup') return 'backup';
-  return estTokens <= PATH_ROUTER_AUTO_THRESHOLD_TOKENS ? 'main' : 'backup';
+function decideEnrichment(
+  force: ForcePath,
+  estTokens: number,
+): { requiresEnrichment: boolean; reason: RouterResult['reason'] } {
+  if (force === 'main') return { requiresEnrichment: true, reason: 'force_enrich' };
+  if (force === 'backup') return { requiresEnrichment: false, reason: 'force_no_enrich' };
+  return estTokens <= PATH_ROUTER_AUTO_THRESHOLD_TOKENS
+    ? { requiresEnrichment: true, reason: 'auto_under_threshold' }
+    : { requiresEnrichment: false, reason: 'auto_over_threshold' };
 }
 
 function runDrain3(lines: LogLine[]): PatternClusterResult {
@@ -245,7 +193,9 @@ export function estimateLines(lines: LogLine[]): number {
 
 /**
  * Cache key (§3.5 与 feat-066 一致):
- *   cluster_logs:{decision}:{endpoint_id}:{time_range_hash}:{trace_id||'*'}:{severity_hash}:{model?}
+ *   cluster_logs:{decision}:{endpoint_id}:{time_range_hash}:{trace_id||'*'}:{severity_hash}
+ *
+ * form-shift 后 decision 永远 'deterministic' · model 段去掉 (mcp 不调 LLM · 无 model 维度)。
  */
 export function buildCacheKey(args: {
   decision: PathDecision;
@@ -253,7 +203,6 @@ export function buildCacheKey(args: {
   timeRange?: { start: string; end: string };
   traceId?: string | null;
   severityFilter?: string[];
-  model?: RcaModelId;
 }): string {
   const trh = args.timeRange
     ? sha8(`${args.timeRange.start}|${args.timeRange.end}`)
@@ -262,8 +211,7 @@ export function buildCacheKey(args: {
     ? sha8([...args.severityFilter].sort().join(','))
     : 'no-sev';
   const tid = args.traceId ? args.traceId : '*';
-  const modelSeg = args.decision === 'main' && args.model ? `:${args.model}` : '';
-  return `cluster_logs:${args.decision}:${args.endpointId}:${trh}:${tid}:${sevh}${modelSeg}`;
+  return `cluster_logs:${args.decision}:${args.endpointId}:${trh}:${tid}:${sevh}`;
 }
 
 function sha8(s: string): string {
@@ -277,8 +225,6 @@ function cacheSet(
   state: ClusterTraceState | undefined,
 ): void {
   if (!enabled) return;
-  // fail-closed: 主路径有 fallback (router.reason='fallback_from_main') 不入 cache · 跟 feat-045 一致
-  if (payload.router.reason === 'fallback_from_main') return;
   const ttl = state === 'closed' ? TTL_CLOSED_MS : TTL_ONGOING_MS;
   cacheStore.set(key, payload, ttl);
 }
