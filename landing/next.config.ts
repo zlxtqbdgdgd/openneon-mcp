@@ -1,6 +1,10 @@
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
+  // feat-028 PG parser wasm: externalize libpg-query so turbopack does not bundle it.
+  // (turbopack 生产构建会把 wasm 路径改写成不存在的 /ROOT/... · externalize 后运行时 require 真实 node_modules · loader 自找 wasm)
+  serverExternalPackages: ['libpg-query'],
+
   // Serverless deployment on Vercel - do not use 'export' mode
   // API routes require dynamic server-side rendering
 
