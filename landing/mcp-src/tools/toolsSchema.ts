@@ -1416,56 +1416,6 @@ export const clusterNeondbLogsInputSchema = z.object({
 // (handler 在 tools/handlers/dynamic-probe/schema.ts · 实际 zod 单一定义点)。
 export { attachDynamicProbeInputSchema } from './handlers/dynamic-probe/schema';
 
-// feat-041 rewrite_neondb_sql input schema · L3 LLM 改写 SQL (sub-1 handler + zod schema + plan mode 集成).
-// detail design: https://github.com/zlxtqbdgdgd/openneon-design/issues/56 §4.1 input schema.
-// sub-issues: openneon-mcp#184 (handler + plan mode · 本) · #185 (context-builder + llm-rewriter) · #186 (cache state-aware + 9 case fixture).
-export const rewriteNeondbSqlInputSchema = z.object({
-  sql: z
-    .string()
-    .min(1)
-    .max(20000)
-    .describe(
-      'SQL to rewrite · ≤ 20K char (防超大输入耗 token). PII redacted by feat-024 T11 obfuscator before LLM call.',
-    ),
-  endpoint_id: z
-    .string()
-    .min(1)
-    .describe(
-      'Compute endpoint id · feat-019 EXPLAIN tool 拉 cost · feat-060 claim binding 校 current_project_id (跨 tenant 拒).',
-    ),
-  trace_id: z
-    .string()
-    .regex(/^[0-9a-f]{32}$/i, 'trace_id must be 32 hex characters (W3C trace_id)')
-    .optional()
-    .describe(
-      'Optional W3C trace_id · 关联具体 incident · cache TTL 跟 trace_state 联动 (closed → 永久 · ongoing → 1h).',
-    ),
-  context_level: z
-    .enum(['auto', 'sql_only', 'with_explain'])
-    .optional()
-    .describe(
-      'auto (default · size guard) · sql_only (跳 EXPLAIN 拉取 · 短查询用) · with_explain (强制拉 EXPLAIN · 即使短查询也评 cost).',
-    ),
-  model: z
-    .enum(['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5'])
-    .optional()
-    .describe(
-      'LLM model · default claude-opus-4-7. sonnet/haiku 也支持 (cost vs quality trade-off · #186 跨 model 100 incident 跑批验 ≥ 85% 语义等价率).',
-    ),
-  cache: z
-    .boolean()
-    .optional()
-    .describe(
-      'Consult rewrite cache · default true · ongoing trace 1h TTL · closed 永久 · 命中后 < 5ms 零 LLM cost.',
-    ),
-  trace_state: z
-    .enum(['ongoing', 'closed'])
-    .optional()
-    .describe(
-      'Trace state hint · default ongoing (保守 1h TTL). closed 标 incident 已闭 · 永久 cache (LLM 输出对该 trace 不会变).',
-    ),
-});
-
 // feat-045 get_neondb_rca_evidence · L3 RCA 取证器 (form-shift · 规则 P4 · LLM-out-of-mcp).
 // mcp 只做确定性取证 + 模板预填 · 不调 LLM · 7 段叙事由 cc skill 写. zod schema 单一定义点在
 // handler 模块 (tools/handlers/get-neondb-rca-evidence.ts) · definitions.ts 统一走 toolsSchema

@@ -73,9 +73,6 @@ import { handleBranchCanaryDdl } from './handlers/branch-canary-ddl';
 // feat-037 cluster_neondb_logs · L3 log pattern 聚类 hybrid path (LLM 主 + Drain3 备).
 // 详设: https://github.com/zlxtqbdgdgd/openneon-design/issues/51 + openneon-mcp#154/#155/#157/#158/#156.
 import { handleClusterNeondbLogs } from './handlers/cluster-neondb-logs';
-// feat-041 rewrite_neondb_sql · L3 LLM 改写 SQL (skill form-shift).
-// 详设: https://github.com/zlxtqbdgdgd/openneon-design/issues/56 + openneon-mcp#184/#185/#186.
-import { handleRewriteNeondbSql } from './handlers/rewrite-sql';
 // feat-068 attach_neondb_dynamic_probe · L3 ephemeral dynamic probe attach (sub-1 wire #179)
 import {
   attachDynamicProbeHandler,
@@ -2335,66 +2332,6 @@ You MUST follow these steps:
         | undefined,
     };
     const result = await attachDynamicProbeHandler(params, ctx);
-    return {
-      content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-    };
-  },
-
-  // feat-041 rewrite_neondb_sql · L3 LLM 改写 SQL (sub-1 #184 handler + plan mode 集成).
-  // contextBuilder + llmRewriter 走 default stub (#185 ship 后注入真实 EXPLAIN 拉取 + Anthropic SDK).
-  // requestApproval 默认 fail-closed deny (DEFAULT_REWRITE_REQUEST_APPROVAL · plan mode 缺 capability 即拒).
-  // currentProjectId / resolveEndpointProject 需 route.ts orchestrator 注入 (feat-060 claim binding · 集中
-  // wire 时跟 cross_tenant_blocked audit 一并真接 · #184 范围内 dispatcher 留接口).
-  rewrite_neondb_sql: async ({ params }, _neonClient, extra) => {
-    // route.ts orchestrator 注入 currentProjectId + resolveEndpointProject (feat-060 claim binding)
-    // 未来集中 wire 时 ToolHandlerExtraParams 加字段;当前跟 attach_dynamic_probe / branch_canary_ddl
-    // 同样走 ad-hoc extra 字段路径 (pre-existing pattern · #190/#191 follow-up 一并集中规范).
-    const extraAny = extra as
-      | {
-          currentProjectId?: string;
-          resolveEndpointProject?: (id: string) => Promise<string> | string;
-        }
-      | undefined;
-    const currentProjectId = extraAny?.currentProjectId ?? '';
-    const result = await handleRewriteNeondbSql(
-      {
-        sql: params.sql,
-        endpoint_id: params.endpoint_id,
-        trace_id: params.trace_id,
-        context_level: params.context_level,
-        model: params.model,
-        cache: params.cache,
-        trace_state: params.trace_state,
-      },
-      {
-        currentProjectId,
-        // route.ts 真接通时填 endpoint → project_id resolver (feat-060 claim binding 集成路径).
-        // 不填时 handler 跳过跨 tenant 校 (本 dispatch case 不强制 · 让 #184 单测路径独立可跑).
-        resolveEndpointProject: extraAny?.resolveEndpointProject,
-        // skipPlanMode=true · feat-027 elicitation orchestrator 接通前默认跳过 (DEFAULT_REWRITE_REQUEST_APPROVAL
-        // 返 'unavailable' fail-closed deny · 跟 cluster_neondb_logs deterministic-by-default 同 stance).
-        skipPlanMode: true,
-        emitAudit: (event) => {
-          emitAuditEvent({
-            event_type: event.event_type,
-            outcome: event.outcome,
-            endpoint_id: event.endpoint_id,
-            project_id: event.project_id || undefined,
-            extra: {
-              model: event.model,
-              cache_hit: event.cache_hit,
-              path_used: event.path_used,
-              tokens_used: event.tokens_used,
-              fallback_reason: event.fallback_reason,
-              duration_ms: event.duration_ms,
-              ...(event.trace_id
-                ? { 'openneon.audit.trace_id': event.trace_id }
-                : {}),
-            },
-          });
-        },
-      },
-    );
     return {
       content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
     };
