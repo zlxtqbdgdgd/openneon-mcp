@@ -1,21 +1,20 @@
 /**
- * feat-068-dynamic-probe.test.ts · feat-068/#4 (#143) · 8 case fixture 端到端
+ * feat-068-dynamic-probe.test.ts · feat-068 重设计 (#210 · ADR-0017) · SQL 驱动 pg_uprobe
  *
- * 覆盖 4 个 sub-issue 全部验收门:
+ * 重设计前: bpftrace 模板 + ephemeral sidecar (MockDispatcher) + whitelist 强制。
+ * 重设计后: pg_uprobe SQL 驱动 (mock PgClientLike) + denylist FLOOR。
  *
- *  case A · 正路径 attach (Rust uprobe neon_pageserver::wal_lazy_apply 30s) → enriched 结果 + audit 完整 (#143 §7)
- *  case B · 恶意 bpftrace 模板 (template enum 越界) → schema 拒
- *  case C · 越权 pid (resolveTargetPid 返 0)        → sidecar 拒 (target-pid 显式)
- *  case D · 跨 tenant attach (G1 hard-deny)          → policy 拒
- *  case E · 容器 capability 缺失 (sidecar.forceFail) → sidecar 拒 + post-condition fail
- *  case F · watchdog 超时 (overhead 超阈值)          → 提前 detach + overhead_exceeded audit high
- *  case G · 限流触发 (per-function 5min 内 5+ 次)     → rate-limit 拒
- *  case H · post-condition fail (跑完后 obs > max)   → post-condition fail + audit
- *
- * 跟现有测试边界:
- *   - 不重测 zod schema 细节 (留 dynamic-probe/__tests__/ 单测) · 这里走 handler 整体
- *   - 不真起 sidecar pod · MockDispatcher 注入 (单元 / e2e 边界 = 真集群)
- *   - feat-027 plan-mode elicitation 由 route.ts 跑 · 这里直接 _testOnlyPlanApprovedBypass=true 模拟过审
+ * 覆盖:
+ *  case A  · 正路径 TIME probe → enriched (calls/avg_time_ns) + audit attached/detached + SQL 参数化
+ *  case A2 · 正路径 HIST probe → 直方图行集
+ *  case B  · 恶意 input (probe_type 越界 / function 含 SQL 注入字符) → schema 拒
+ *  case C  · denylist FLOOR (scram_sha256 / get_role_password / rust ::scram_) → denylist 拒
+ *  case D  · 跨 tenant attach (G1 hard-deny) → policy 拒
+ *  case E  · sql-driver 抛 (set_uprobe 失败) → sql-driver 阶段拒 + probe_attach_failed audit
+ *  case F  · post-condition fail (stat 没采到 calls = 探针没真挂上) → post-condition 拒
+ *  case G  · 限流 (per-function 5min/5) → rate-limit 拒
+ *  附加    · L3 require_plan / L1-L2 deny / risk=high
+ *  sql-driver 单测 · parseTimeStat / 同连接时序 / delete best-effort / 参数化绑定
  */
 import {
   describe,
@@ -27,91 +26,105 @@ import {
 } from 'vitest';
 import {
   attachDynamicProbeHandler,
-  MockDispatcher,
   __resetRateLimitForTest,
-  __setWhitelistForTest,
+  __setDenylistForTest,
   RATE_LIMITS,
+  runProbe,
+  parseTimeStat,
   type AttachHandlerCtx,
-  type Whitelist,
+  type Denylist,
+  type PgClientLike,
 } from '../tools/handlers/dynamic-probe';
 import * as auditEmit from '../observability/audit-emit';
 
 /**
- * Fixture · 跟 anchor #39 schema 同形 (version=1 · usdt[] + uprobe[] · denylist {usdt_probe_patterns, uprobe_symbol_patterns})。
- *
- * USDT 命名遵循 anchor pattern `^[a-z][a-z0-9_]*:[a-z][a-z0-9_]*(__[a-z][a-z0-9_]+)*$`:
- *   - postgresql:executor__run  (executor 子系统 入口探针)
- *   - postgresql:lwlock__acquire (lwlock 子系统 入口探针)
- *
- * uprobe Rust 符号:
- *   - neon_pageserver::wal_lazy_apply (sync_fn / is_async=false)
+ * Fixture denylist FLOOR · 跟 openneon mirror 同形 (version=1 · denylist {usdt_probe_patterns, uprobe_symbol_patterns})。
+ * pattern 走 re.fullmatch (整串匹配 · case-sensitive)。
  */
-const FIXTURE_WHITELIST: Whitelist = {
+const FIXTURE_DENYLIST: Denylist = {
   version: 1,
-  usdt: [
-    {
-      target: 'postgresql',
-      probe_name: 'postgresql:executor__run',
-      subsystem: 'executor',
-      pg_version_min: 14,
-      pg_version_max: null,
-      notes: 'PG executor run · 单点入口 (无 retprobe)',
-    },
-    {
-      target: 'postgresql',
-      probe_name: 'postgresql:lwlock__acquire',
-      subsystem: 'lwlock',
-      pg_version_min: 14,
-      pg_version_max: null,
-      notes: 'PG LWLock acquire · arg0=lock name',
-    },
-  ],
-  uprobe: [
-    {
-      binary: 'pageserver',
-      symbol: 'neon_pageserver::wal_lazy_apply',
-      module: 'neon_pageserver',
-      type: 'sync_fn',
-      is_async: false,
-      notes: 'Rust uprobe · 同步函数 · 支持 latency_buckets 配对',
-    },
-  ],
   denylist: {
     usdt_probe_patterns: [
-      '^postgresql:scram_.*',
-      '.*__(secret|password)__.*',
-      '.*authenticate.*',
+      'scram_.*',
+      'get_role_password',
+      'be_tls_.*',
+      'pg_md5_.*',
     ],
-    uprobe_symbol_patterns: ['.*::scram_.*', '.*_secret_.*', '.*password.*'],
+    uprobe_symbol_patterns: ['.*::scram_.*', '.*::password::.*'],
   },
 };
 
-function buildCtx(over: Partial<AttachHandlerCtx> = {}): {
-  ctx: AttachHandlerCtx;
-  dispatcher: MockDispatcher;
-} {
-  const dispatcher = new MockDispatcher();
-  const ctx: AttachHandlerCtx = {
-    dispatcher,
-    resolveTargetPid: async () => 12345,
-    // L4 ODD + 预审批 = 跳 plan-mode (feat-049 MRC 状态机正路径 · 详 #141 验收门)
-    // 8 case fixture 模拟"过审后的 attach 流" · 单独的 require_plan 路径见 case I (L3 + _testOnlyPlanApprovedBypass=false)
-    autonomyLevel: 'L4',
-    tenant: 'tenant-A',
-    whitelist: FIXTURE_WHITELIST,
-    _testOnlyPlanApprovedBypass: true,
-    watchdogPollMs: 10,
-    ...over,
+/** 记录所有 SQL 调用 (test inspect 参数化绑定 + 时序 + 同连接) */
+type SqlCall = { sql: string; params: unknown[] };
+
+/**
+ * mock PgClientLike · 单连接 (同一实例 = 同 session · 验证 set/stat/delete 同连接) ·
+ * 按 SQL 形状返 stat 行 (可配置)。
+ */
+function mockPgClient(opts: {
+  timeStat?: string; // stat_time_uprobe 返回串
+  histRows?: Array<{ time_range: string; hist_entry: string; percent: number }>;
+  throwOnSet?: boolean;
+  throwOnStat?: boolean;
+} = {}): { client: PgClientLike; calls: SqlCall[] } {
+  const calls: SqlCall[] = [];
+  const client: PgClientLike = {
+    async query<R = unknown>(sql: string, params: unknown[] = []) {
+      calls.push({ sql, params });
+      if (/set_uprobe/.test(sql)) {
+        if (opts.throwOnSet) throw new Error('mock set_uprobe failed (capability missing)');
+        return { rows: [{ set_uprobe: 'ok' }] as unknown as R[] };
+      }
+      if (/stat_time_uprobe/.test(sql)) {
+        if (opts.throwOnStat) throw new Error('mock stat_time_uprobe failed');
+        return {
+          rows: [
+            { stat_time_uprobe: opts.timeStat ?? 'calls: 1234  avg time: 567 ns' },
+          ] as unknown as R[],
+        };
+      }
+      if (/stat_hist_uprobe/.test(sql)) {
+        if (opts.throwOnStat) throw new Error('mock stat_hist_uprobe failed');
+        return {
+          rows: (opts.histRows ?? [
+            { time_range: '(12.6 us, 17.1 us)', hist_entry: '@@@', percent: 66.666 },
+            { time_range: '(17.1 us, 21.7 us)', hist_entry: '@', percent: 16.666 },
+          ]) as unknown as R[],
+        };
+      }
+      if (/delete_uprobe/.test(sql)) {
+        return { rows: [] as unknown as R[] };
+      }
+      return { rows: [] as unknown as R[] };
+    },
   };
-  return { ctx, dispatcher };
+  return { client, calls };
 }
 
-describe('feat-068 dynamic-probe · 8 case fixture', () => {
+function buildCtx(
+  over: Partial<AttachHandlerCtx> = {},
+  pgOpts: Parameters<typeof mockPgClient>[0] = {},
+): { ctx: AttachHandlerCtx; calls: SqlCall[] } {
+  const { client, calls } = mockPgClient(pgOpts);
+  const ctx: AttachHandlerCtx = {
+    pgClient: client,
+    autonomyLevel: 'L4',
+    tenant: 'tenant-A',
+    denylist: FIXTURE_DENYLIST,
+    _testOnlyPlanApprovedBypass: true,
+    // 跳过真实 duration 等待 · 单测不卡时长
+    _testOnlySleep: async () => {},
+    ...over,
+  };
+  return { ctx, calls };
+}
+
+describe('feat-068 dynamic-probe · SQL 驱动 pg_uprobe (#210)', () => {
   let emitSpy: MockedFunction<typeof auditEmit.emitAuditEvent>;
 
   beforeEach(() => {
     __resetRateLimitForTest();
-    __setWhitelistForTest(FIXTURE_WHITELIST);
+    __setDenylistForTest(FIXTURE_DENYLIST);
     emitSpy = vi
       .spyOn(auditEmit, 'emitAuditEvent')
       .mockImplementation(() => undefined) as MockedFunction<
@@ -120,14 +133,14 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
   });
 
   // ─────────────────────────────────────────────────────────────
-  // case A · 正路径 attach (Rust uprobe neon_pageserver::wal_lazy_apply 30s) → enriched + audit 完整
-  //  · 用 uprobe + latency_buckets 配对 · 验证 retHead 正确生成 `uretprobe:` (BUG A 反向回归)
-  it('case A · 正路径 attach uprobe entry/exit → 拿到 enriched 结果 + audit attached/detached', async () => {
-    const { ctx, dispatcher } = buildCtx();
+  // case A · 正路径 TIME probe → enriched + audit + 参数化 SQL
+  it('case A · 正路径 TIME probe → 拿到 calls/avg_time_ns + audit attached/detached + 参数化 SQL', async () => {
+    const { ctx, calls } = buildCtx();
     const out = await attachDynamicProbeHandler(
       {
-        template: 'latency_buckets',
-        function: 'neon_pageserver::wal_lazy_apply',
+        probe_type: 'TIME',
+        function: 'PortalStart',
+        target: 'pg',
         duration_seconds: 30,
         max_overhead_pct: 2.0,
         endpoint_id: 'ep-A',
@@ -139,52 +152,70 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
     if (!out.ok) throw new Error('unreachable');
     expect(out.attachId).toMatch(/^probe-/);
     expect(out.result.status).toBe('completed');
-    expect(out.result.output).toMatchObject({
-      template: 'latency_buckets',
-      function: 'neon_pageserver::wal_lazy_apply',
-    });
-    // dispatcher 收到正确的 bpftrace 脚本 (含 target pid · 入口 uprobe + 出口 uretprobe 都生成)
-    expect(dispatcher.dispatches[0].targetPid).toBe(12345);
-    expect(dispatcher.dispatches[0].bpftraceScript).toContain('pid == 12345');
-    expect(dispatcher.dispatches[0].bpftraceScript).toContain('interval:s:30');
-    // BUG A 反向回归: 入口走 uprobe: · 出口必须走 uretprobe: · 不能是 usdt:/usdt: 同样的 no-op
-    expect(dispatcher.dispatches[0].bpftraceScript).toMatch(/uprobe:pageserver:/);
-    expect(dispatcher.dispatches[0].bpftraceScript).toMatch(/uretprobe:pageserver:/);
-    // audit: attached + detached 都 emit (count >= 2)
+    expect(out.result.output.probe_type).toBe('TIME');
+    if (out.result.output.probe_type === 'HIST') throw new Error('unreachable');
+    expect(out.result.output.calls).toBe(1234);
+    expect(out.result.output.avg_time_ns).toBe(567);
+
+    // 时序: set → stat → delete (同一 client 连接 · 顺序正确)
+    const sqls = calls.map((c) => c.sql);
+    const setIdx = sqls.findIndex((s) => /set_uprobe/.test(s));
+    const statIdx = sqls.findIndex((s) => /stat_time_uprobe/.test(s));
+    const delIdx = sqls.findIndex((s) => /delete_uprobe/.test(s));
+    expect(setIdx).toBeGreaterThanOrEqual(0);
+    expect(statIdx).toBeGreaterThan(setIdx);
+    expect(delIdx).toBeGreaterThan(statIdx);
+
+    // 参数化绑定 (防注入 · #210): 函数名走 $1 · probe_type 走 $2 · 不出现在 SQL 字符串里
+    const setCall = calls[setIdx];
+    expect(setCall.sql).toMatch(/\$1.*\$2|\$2.*\$1/);
+    expect(setCall.sql).not.toContain('PortalStart');
+    expect(setCall.params).toEqual(['PortalStart', 'TIME']);
+    expect(calls[statIdx].params).toEqual(['PortalStart']);
+    expect(calls[delIdx].params).toEqual(['PortalStart']);
+
     const types = emitSpy.mock.calls.map((c) => c[0].event_type);
     expect(types).toContain('probe_attached');
     expect(types).toContain('probe_detached');
   });
 
-  // case A' · BUG A 正向回归 · USDT + latency_buckets 必须被 schema 拒
-  it("case A' · USDT + latency_buckets (entry/exit 配对) → schema 拒 · BUG A 修复", async () => {
-    const { ctx } = buildCtx();
+  // case A2 · HIST probe → 直方图行集
+  it('case A2 · 正路径 HIST probe → 直方图行集 + 参数化 stat_hist_uprobe', async () => {
+    const { ctx, calls } = buildCtx();
     const out = await attachDynamicProbeHandler(
       {
-        template: 'latency_buckets',
-        function: 'postgresql:executor__run',
-        duration_seconds: 5,
+        probe_type: 'HIST',
+        function: 'PortalRun',
+        target: 'pg',
+        duration_seconds: 10,
         max_overhead_pct: 2.0,
         endpoint_id: 'ep-A',
-        project_id: 'tenant-A',
       },
       ctx,
     );
-    expect(out.ok).toBe(false);
-    if (out.ok) throw new Error('unreachable');
-    expect(out.stage).toBe('schema');
-    expect(out.reason).toMatch(/entry\/exit 配对|uretprobe|USDT.*不支持/);
+    expect(out.ok).toBe(true);
+    if (!out.ok) throw new Error('unreachable');
+    expect(out.result.output.probe_type).toBe('HIST');
+    if (out.result.output.probe_type !== 'HIST') throw new Error('unreachable');
+    expect(out.result.output.histogram.length).toBe(2);
+    expect(out.result.output.histogram[0].percent).toBeCloseTo(66.666, 2);
+    // set 第二参 = HIST
+    const setCall = calls.find((c) => /set_uprobe/.test(c.sql));
+    expect(setCall?.params).toEqual(['PortalRun', 'HIST']);
+    // 用 stat_hist_uprobe 而非 stat_time_uprobe
+    expect(calls.some((c) => /stat_hist_uprobe/.test(c.sql))).toBe(true);
+    expect(calls.some((c) => /stat_time_uprobe/.test(c.sql))).toBe(false);
   });
 
   // ─────────────────────────────────────────────────────────────
-  // case B · 恶意 bpftrace 模板 (template enum 越界 / function 含 ; 注入)
-  it('case B · 恶意 bpftrace 模板 enum / function 注入 → schema 拒', async () => {
+  // case B · 恶意 input → schema 拒
+  it('case B · probe_type 越界 / function SQL 注入字符 → schema 拒', async () => {
     const { ctx } = buildCtx();
-    // B-1: template 越界
+    // B-1: probe_type 越界
     const bad1 = await attachDynamicProbeHandler(
       {
-        template: 'rm_rf_anything', // 不在 enum
-        function: 'postgresql:executor__run', // function 合法 · 确保 fail 在 template enum 而非 whitelist
+        probe_type: 'EXFIL', // 不在 enum
+        function: 'PortalStart',
         duration_seconds: 30,
         max_overhead_pct: 2.0,
       },
@@ -194,11 +225,11 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
     if (bad1.ok) throw new Error('unreachable');
     expect(bad1.stage).toBe('schema');
 
-    // B-2: function 含 bpftrace 注入字符
+    // B-2: function 含 SQL 注入字符
     const bad2 = await attachDynamicProbeHandler(
       {
-        template: 'latency_buckets',
-        function: 'ExecutorRun; system("rm -rf /")',
+        probe_type: 'TIME',
+        function: "x'); DROP TABLE users;--",
         duration_seconds: 30,
         max_overhead_pct: 2.0,
       },
@@ -207,27 +238,86 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
     expect(bad2.ok).toBe(false);
     if (bad2.ok) throw new Error('unreachable');
     expect(bad2.stage).toBe('schema');
+
+    // B-3: function 含冒号 (旧 USDT probe_name 形式 · 新 regex 去掉冒号 · 应拒)
+    const bad3 = await attachDynamicProbeHandler(
+      {
+        probe_type: 'TIME',
+        function: 'postgresql:executor__run',
+        duration_seconds: 30,
+        max_overhead_pct: 2.0,
+      },
+      ctx,
+    );
+    expect(bad3.ok).toBe(false);
+    if (bad3.ok) throw new Error('unreachable');
+    expect(bad3.stage).toBe('schema');
   });
 
   // ─────────────────────────────────────────────────────────────
-  // case C · 越权 pid (resolveTargetPid 返 0 = 全局) → 拒
-  it('case C · target-pid=0 全局 attach → sidecar 阶段拒', async () => {
-    const { ctx } = buildCtx({ resolveTargetPid: async () => 0 });
+  // case C · denylist FLOOR → denylist 拒 (不再要求 ∈ whitelist · 但 floor 命中即拒)
+  it('case C · denylist FLOOR (scram_sha256 / get_role_password) → denylist 阶段拒', async () => {
+    const { ctx } = buildCtx();
+    for (const fn of ['scram_sha256', 'get_role_password', 'pg_md5_hash', 'be_tls_open_server']) {
+      const out = await attachDynamicProbeHandler(
+        {
+          probe_type: 'TIME',
+          function: fn,
+          target: 'pg',
+          duration_seconds: 5,
+          max_overhead_pct: 2.0,
+          endpoint_id: 'ep-A',
+        },
+        ctx,
+      );
+      expect(out.ok, `function ${fn} 应被 denylist 拒`).toBe(false);
+      if (out.ok) throw new Error('unreachable');
+      expect(out.stage).toBe('denylist');
+      expect(out.reason).toMatch(/denylist|FLOOR/);
+    }
+  });
+
+  it('case C2 · denylist 不误伤合法函数 (fullmatch · scram_X 命中但 myscram 不命中)', async () => {
+    const { ctx } = buildCtx();
+    // 'myscram_foo' 不被 'scram_.*' fullmatch 命中 (fullmatch 锚 ^$ · 前缀 my 阻断)
     const out = await attachDynamicProbeHandler(
       {
-        // USDT + 单点模板 (无 retprobe 需求) · BUG A 修复后 USDT 仅支持 entry-only 模板
-        template: 'call_count',
-        function: 'postgresql:executor__run',
-        duration_seconds: 30,
+        probe_type: 'TIME',
+        function: 'myscram_foo',
+        target: 'pg',
+        duration_seconds: 5,
         max_overhead_pct: 2.0,
         endpoint_id: 'ep-A',
       },
       ctx,
     );
-    expect(out.ok).toBe(false);
-    if (out.ok) throw new Error('unreachable');
-    expect(out.stage).toBe('sidecar');
-    expect(out.reason).toMatch(/pid=0|target-pid/);
+    expect(out.ok).toBe(true);
+  });
+
+  it('case C3 · rust target denylist (::scram_) → denylist 拒', async () => {
+    const { ctx } = buildCtx();
+    const out = await attachDynamicProbeHandler(
+      {
+        probe_type: 'TIME',
+        function: 'neon_pageserver_auth_scram_verify', // 不命中 · 普通函数
+        target: 'rust',
+        duration_seconds: 5,
+        max_overhead_pct: 2.0,
+        endpoint_id: 'ep-A',
+      },
+      ctx,
+    );
+    // 上面这个不含 '::' 不被 .*::scram_.* 命中 → 放行
+    expect(out.ok).toBe(true);
+
+    // 用 inline denylist 注入一个会命中的 rust 符号验证拒 (规避 SAFE_SYMBOL_RE 不允许 ':')
+    // 注: SAFE_SYMBOL_RE 不含冒号 · 真实 rust 符号 attach 走 schema 后 function 已无 '::' ·
+    // 这里验证 denylist uprobe_symbol_patterns 集本身可命中 (单测 checkDenylist 直接覆盖)。
+    const { checkDenylist } = await import(
+      '../tools/handlers/dynamic-probe/denylist'
+    );
+    const r = checkDenylist('neon::scram_verify', 'rust', FIXTURE_DENYLIST);
+    expect(r.ok).toBe(false);
   });
 
   // ─────────────────────────────────────────────────────────────
@@ -236,8 +326,9 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
     const { ctx } = buildCtx({ tenant: 'tenant-A' });
     const out = await attachDynamicProbeHandler(
       {
-        template: 'call_count',
-        function: 'postgresql:executor__run',
+        probe_type: 'TIME',
+        function: 'PortalStart',
+        target: 'pg',
         duration_seconds: 30,
         max_overhead_pct: 2.0,
         endpoint_id: 'ep-X',
@@ -252,15 +343,37 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
   });
 
   // ─────────────────────────────────────────────────────────────
-  // case E · 容器 capability 缺失 (sidecar.forceFail)
-  it('case E · 容器 capability 缺失 → sidecar attach failed + post-condition fail', async () => {
-    const { ctx, dispatcher } = buildCtx();
-    dispatcher.forceFail = true;
+  // case E · sql-driver 抛 (set_uprobe 失败) → sql-driver 阶段拒
+  it('case E · sql-driver set_uprobe 抛 → sql-driver 阶段拒 + probe_attach_failed audit', async () => {
+    const { ctx } = buildCtx({}, { throwOnSet: true });
     const out = await attachDynamicProbeHandler(
       {
-        template: 'call_count',
-        function: 'postgresql:executor__run',
+        probe_type: 'TIME',
+        function: 'PortalStart',
+        target: 'pg',
         duration_seconds: 30,
+        max_overhead_pct: 2.0,
+        endpoint_id: 'ep-A',
+      },
+      ctx,
+    );
+    expect(out.ok).toBe(false);
+    if (out.ok) throw new Error('unreachable');
+    expect(out.stage).toBe('sql-driver');
+    const types = emitSpy.mock.calls.map((c) => c[0].event_type);
+    expect(types).toContain('probe_attach_failed');
+  });
+
+  // ─────────────────────────────────────────────────────────────
+  // case F · post-condition fail (stat 没采到 calls = 探针没真挂上)
+  it('case F · stat 返回无 calls (探针没真挂上) → post-condition 拒 + probe_attach_failed', async () => {
+    const { ctx } = buildCtx({}, { timeStat: 'no data collected' });
+    const out = await attachDynamicProbeHandler(
+      {
+        probe_type: 'TIME',
+        function: 'PortalStart',
+        target: 'pg',
+        duration_seconds: 5,
         max_overhead_pct: 2.0,
         endpoint_id: 'ep-A',
       },
@@ -273,53 +386,41 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
     expect(types).toContain('probe_attach_failed');
   });
 
-  // ─────────────────────────────────────────────────────────────
-  // case F · watchdog 超时 (overhead 超阈值持续 ≥ persistence)
-  it('case F · watchdog overhead > max 持续 ≥ persistence → 提前 detach + overhead_exceeded high audit', async () => {
-    const { ctx, dispatcher } = buildCtx({
-      watchdogPersistenceMs: 30, // 测试用 · 30ms 持续就触发
-    });
-    // 模拟 sidecar 慢慢跑 · watchdog 持续超阈值
-    dispatcher.forceOverheadPct = 8.0; // > max 2.0
-    dispatcher.fakeDurationMs = 200; // 给 watchdog 时间触发 (3-4 poll @ 10ms · 持续 30ms+)
+  // case F2 · post-condition overhead 超阈值 (route.ts 注入真实 overhead)
+  it('case F2 · 真实 overhead > max → post-condition 拒 + overhead_exceeded high', async () => {
+    const { ctx } = buildCtx({ observedOverheadPct: 9.0 });
     const out = await attachDynamicProbeHandler(
       {
-        template: 'call_count',
-        function: 'postgresql:executor__run',
-        duration_seconds: 30,
+        probe_type: 'TIME',
+        function: 'PortalStart',
+        target: 'pg',
+        duration_seconds: 5,
         max_overhead_pct: 2.0,
         endpoint_id: 'ep-A',
       },
       ctx,
     );
-    // watchdog 触发 detach → dispatch 返 detached_early · post-condition 仍 audit overhead_exceeded
-    const types = emitSpy.mock.calls.map((c) => c[0].event_type);
-    expect(types).toContain('probe_overhead_exceeded');
+    expect(out.ok).toBe(false);
+    if (out.ok) throw new Error('unreachable');
+    expect(out.stage).toBe('post-condition');
     const overheadEv = emitSpy.mock.calls.find(
       (c) => c[0].event_type === 'probe_overhead_exceeded',
     );
+    expect(overheadEv).toBeDefined();
     expect(overheadEv?.[0].severity).toBe('high');
-    // out 可能 ok=false (post-condition fail) 或 ok=true (detached_early) 取决于 race ·
-    // 关键是 overhead_exceeded audit 必须 emit
-    if (out.ok) {
-      expect(out.result.status).toBe('detached_early');
-    } else {
-      expect(out.stage).toBe('post-condition');
-    }
   });
 
   // ─────────────────────────────────────────────────────────────
-  // case G · 限流触发 (per-function 5min 内 5+ 次)
+  // case G · 限流 (per-function 5min/5)
   it('case G · per-function 5min/5 限流 → rate-limit 拒', async () => {
-    const { ctx } = buildCtx();
-    // 跑 5 次成功 attach (耗尽 per-function 配额)
-    // 但 per-tenant 5min/2 会先触 · 先用不同 tenant 跑前 4 次再切回 tenant-A
+    // 跑满 per-function 配额 (用不同 tenant 绕过 per-tenant 5min/2)
     for (let i = 0; i < RATE_LIMITS.PER_FUNCTION_MAX; i++) {
       const { ctx: ctxi } = buildCtx({ tenant: `tenant-${i}` });
       const ok = await attachDynamicProbeHandler(
         {
-          template: 'call_count',
-          function: 'postgresql:executor__run',
+          probe_type: 'TIME',
+          function: 'PortalStart',
+          target: 'pg',
           duration_seconds: 1,
           max_overhead_pct: 2.0,
           endpoint_id: 'ep-A',
@@ -328,11 +429,12 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
       );
       expect(ok.ok).toBe(true);
     }
-    // 第 6 次 (任何 tenant) → per-function 5min/5 拒
+    const { ctx } = buildCtx();
     const out = await attachDynamicProbeHandler(
       {
-        template: 'call_count',
-        function: 'postgresql:executor__run',
+        probe_type: 'TIME',
+        function: 'PortalStart',
+        target: 'pg',
         duration_seconds: 1,
         max_overhead_pct: 2.0,
         endpoint_id: 'ep-A',
@@ -348,40 +450,17 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
   });
 
   // ─────────────────────────────────────────────────────────────
-  // case H · post-condition fail (跑完后 obs > max · 没被 watchdog 抓到 · 边界 race)
-  it('case H · post-condition fail · 跑完后 obs > max → 拒 + audit overhead_exceeded', async () => {
-    const { ctx, dispatcher } = buildCtx();
-    // 设 fakeDurationMs=0 → dispatch 立即返 · watchdog 来不及 poll · post-condition 收尾时才发现 obs 超阈
-    dispatcher.forceOverheadPct = 9.0;
-    dispatcher.fakeDurationMs = 0;
-    const out = await attachDynamicProbeHandler(
-      {
-        template: 'call_count',
-        function: 'postgresql:executor__run',
-        duration_seconds: 5,
-        max_overhead_pct: 2.0,
-        endpoint_id: 'ep-A',
-      },
-      ctx,
-    );
-    expect(out.ok).toBe(false);
-    if (out.ok) throw new Error('unreachable');
-    expect(out.stage).toBe('post-condition');
-    const types = emitSpy.mock.calls.map((c) => c[0].event_type);
-    expect(types).toContain('probe_overhead_exceeded');
-  });
-
-  // ─────────────────────────────────────────────────────────────
-  // 额外 · L3 require_plan 路径 (#141 验收门: L3 → plan mode elicitation)
-  it('附加 · L3 + 未审批 → policy 阶段返 require_plan verdict (调用方走 elicitInput)', async () => {
+  // 附加 · L3 require_plan
+  it('附加 · L3 + 未审批 → policy 阶段返 require_plan verdict', async () => {
     const { ctx } = buildCtx({
       autonomyLevel: 'L3',
-      _testOnlyPlanApprovedBypass: false, // 未审批
+      _testOnlyPlanApprovedBypass: false,
     });
     const out = await attachDynamicProbeHandler(
       {
-        template: 'call_count',
-        function: 'postgresql:executor__run',
+        probe_type: 'TIME',
+        function: 'PortalStart',
+        target: 'pg',
         duration_seconds: 30,
         max_overhead_pct: 2.0,
         endpoint_id: 'ep-A',
@@ -394,16 +473,18 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
     expect(out.stage).toBe('policy');
     expect(out.verdict?.action).toBe('require_plan');
     expect(out.verdict?.plan?.op_class).toBe('DYNAMIC_PROBE_ATTACH');
+    expect(out.verdict?.plan?.risk_level).toBe('high');
   });
 
-  // L1/L2 直接 deny (#141 验收门: L1/L2 deny)
+  // 附加 · L1/L2 deny
   it('附加 · L1/L2a/L2b → 矩阵 deny · 不弹 plan', async () => {
     for (const lvl of ['L1', 'L2a', 'L2b'] as const) {
       const { ctx } = buildCtx({ autonomyLevel: lvl });
       const out = await attachDynamicProbeHandler(
         {
-          template: 'call_count',
-          function: 'postgresql:executor__run',
+          probe_type: 'TIME',
+          function: 'PortalStart',
+          target: 'pg',
           duration_seconds: 30,
           max_overhead_pct: 2.0,
           endpoint_id: 'ep-A',
@@ -418,251 +499,124 @@ describe('feat-068 dynamic-probe · 8 case fixture', () => {
     }
   });
 
-  // ─────────────────────────────────────────────────────────────
-  // 额外 · whitelist denylist (scram_*) 拒 · 跟 8 case 主线 case D 互补
-  it('附加 · denylist 命中 (scram_*) → whitelist 阶段拒 (denylist 优先于 whitelist)', async () => {
-    const wl: Whitelist = {
-      ...FIXTURE_WHITELIST,
-      usdt: [
-        ...(FIXTURE_WHITELIST.usdt ?? []),
-        // 故意把 scram probe 同时放白名单 · 验证 denylist 优先
-        {
-          target: 'postgresql',
-          probe_name: 'postgresql:scram_init',
-          subsystem: 'other',
-        },
-      ],
-    };
-    const { ctx } = buildCtx({ whitelist: wl });
+  // 附加 · L3+ 缺 endpoint_id → policy 拒
+  it('附加 · L4 缺 endpoint_id → policy 拒 (ODD 内强制)', async () => {
+    const { ctx } = buildCtx({ autonomyLevel: 'L4' });
     const out = await attachDynamicProbeHandler(
       {
-        template: 'call_count',
-        function: 'postgresql:scram_init',
-        duration_seconds: 5,
-        max_overhead_pct: 2.0,
-        endpoint_id: 'ep-A',
-      },
-      ctx,
-    );
-    expect(out.ok).toBe(false);
-    if (out.ok) throw new Error('unreachable');
-    expect(out.stage).toBe('whitelist');
-    expect(out.reason).toMatch(/denylist|scram/);
-  });
-});
-
-// ─────────────────────────────────────────────────────────────
-// 单测 · template 渲染 + escape (#144 验收门: 占位符 escape)
-describe('feat-068 templates · escape + render', () => {
-  it('renderTemplate 5 个模板都正确渲染含 target pid + duration', async () => {
-    const {
-      renderTemplate,
-      TEMPLATE_NAMES,
-      USDT_INCOMPATIBLE_TEMPLATES,
-    } = await import('../tools/handlers/dynamic-probe/templates');
-    for (const t of TEMPLATE_NAMES) {
-      // BUG A 修复: entry/exit 配对模板只能 kind=uprobe · 单点模板两种都行
-      const kind: 'usdt' | 'uprobe' = USDT_INCOMPATIBLE_TEMPLATES.has(t)
-        ? 'uprobe'
-        : 'usdt';
-      const script = renderTemplate(t, {
-        function: 'ExecutorRun',
-        binary: 'postgres',
-        kind,
-        pid: 9999,
-        duration_seconds: 30,
-      });
-      expect(script).toContain('pid == 9999');
-      expect(script).toContain('interval:s:30');
-      // 不允许 shell 元字符出现
-      expect(script).not.toMatch(/system\(|`|\$\(/);
-    }
-  });
-
-  // BUG A 修复 (R2 元评 ⚠ 阻塞-A) · USDT + entry/exit 配对模板必须抛
-  it('renderTemplate · USDT + latency_buckets/lock_wait_histogram → 抛错 (BUG A)', async () => {
-    const { renderTemplate } = await import(
-      '../tools/handlers/dynamic-probe/templates'
-    );
-    for (const t of ['latency_buckets', 'lock_wait_histogram'] as const) {
-      expect(() =>
-        renderTemplate(t, {
-          function: 'ExecutorRun',
-          binary: 'postgres',
-          kind: 'usdt',
-          pid: 1234,
-          duration_seconds: 5,
-        }),
-      ).toThrow(/entry\/exit 配对|uretprobe|USDT.*不支持/);
-    }
-  });
-
-  it('renderTemplate · uprobe + latency_buckets → 入口 uprobe: + 出口 uretprobe: (BUG A 反向回归)', async () => {
-    const { renderTemplate } = await import(
-      '../tools/handlers/dynamic-probe/templates'
-    );
-    const script = renderTemplate('latency_buckets', {
-      function: 'neon_pageserver_wal_lazy_apply', // SAFE_SYMBOL_RE 允许的形式 (无 ::)
-      binary: 'pageserver',
-      kind: 'uprobe',
-      pid: 1234,
-      duration_seconds: 5,
-    });
-    expect(script).toMatch(/uprobe:pageserver:neon_pageserver_wal_lazy_apply/);
-    expect(script).toMatch(/uretprobe:pageserver:neon_pageserver_wal_lazy_apply/);
-    // 显式断言不能出现 retHead 错误替换 (usdt:/usdt: 同样 no-op)
-    expect(script).not.toMatch(/(?:^|\n)usdt:.*\{.*hist\(/);
-  });
-
-  it('renderTemplate 拒绝注入字符 function 名 · 抛错', async () => {
-    const { renderTemplate } = await import(
-      '../tools/handlers/dynamic-probe/templates'
-    );
-    expect(() =>
-      renderTemplate('latency_buckets', {
-        function: 'ExecutorRun; rm -rf /',
-        binary: 'pageserver',
-        kind: 'uprobe', // BUG A 修复后 entry/exit 配对模板只能 uprobe
-        pid: 1234,
-        duration_seconds: 5,
-      }),
-    ).toThrow(/unsafe symbol/);
-  });
-
-  it('renderTemplate 拒绝 pid=0 (全局 attach)', async () => {
-    const { renderTemplate } = await import(
-      '../tools/handlers/dynamic-probe/templates'
-    );
-    expect(() =>
-      renderTemplate('call_count', {
-        function: 'ExecutorRun',
-        binary: 'postgres',
-        kind: 'usdt', // 单点模板 USDT 合规
-        pid: 0,
-        duration_seconds: 5,
-      }),
-    ).toThrow(/pid|invalid/);
-  });
-});
-
-// ────────────────────────────────────────────────────────────────────────
-// #181 + #182 follow-up · risk=high + watchdog 1s poll + 2s persistence
-// ────────────────────────────────────────────────────────────────────────
-describe('feat-068 follow-up · risk=high + watchdog persistence (#181 + #182)', () => {
-  let emitSpy: MockedFunction<typeof auditEmit.emitAuditEvent>;
-
-  beforeEach(() => {
-    __resetRateLimitForTest();
-    __setWhitelistForTest(FIXTURE_WHITELIST);
-    emitSpy = vi
-      .spyOn(auditEmit, 'emitAuditEvent')
-      .mockImplementation(() => undefined) as MockedFunction<
-      typeof auditEmit.emitAuditEvent
-    >;
-  });
-
-  // #181: risk_level 跟设计 §3.1 一致 = high
-  it('#181 · DYNAMIC_PROBE_ATTACH plan-mode risk_level=high (跟设计 §3.1 RISK_BY_OP 一致)', async () => {
-    // L3 + planApproved=false → 走 plan-mode 阶段 · verdict require_plan · 含 plan.risk_level
-    const { ctx } = buildCtx({
-      autonomyLevel: 'L3',
-      _testOnlyPlanApprovedBypass: false,
-    });
-    const out = await attachDynamicProbeHandler(
-      {
-        template: 'call_count',
-        function: 'postgresql:executor__run',
+        probe_type: 'TIME',
+        function: 'PortalStart',
+        target: 'pg',
         duration_seconds: 30,
         max_overhead_pct: 2.0,
-        endpoint_id: 'ep-A',
-        project_id: 'tenant-A',
+        // endpoint_id 缺
       },
       ctx,
     );
     expect(out.ok).toBe(false);
     if (out.ok) throw new Error('unreachable');
     expect(out.stage).toBe('policy');
-    expect(out.verdict?.action).toBe('require_plan');
-    // verdict.plan.risk_level 应该 = 'high'
-    expect(out.verdict?.plan?.risk_level).toBe('high');
+    expect(out.reason).toMatch(/endpoint_id/);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// sql-driver 单测 · parseTimeStat / 同连接时序 / delete best-effort / 参数化
+// ────────────────────────────────────────────────────────────────────────
+describe('feat-068 sql-driver · pg_uprobe SQL 驱动单测 (#210)', () => {
+  it('parseTimeStat · "calls: N  avg time: M ns" → { calls, avg_time_ns }', () => {
+    expect(parseTimeStat('calls: 1234  avg time: 567 ns')).toEqual({
+      calls: 1234,
+      avg_time_ns: 567,
+    });
+    expect(parseTimeStat('calls: 0  avg time: 0 ns')).toEqual({
+      calls: 0,
+      avg_time_ns: 0,
+    });
+    // 字段缺失 → null (不抛)
+    expect(parseTimeStat('no data')).toEqual({ calls: null, avg_time_ns: null });
   });
 
-  // #182 watchdog 颗粒度: spike 不触发 / persistence 触发 通过 runWatchdog 单元测试
-  // (handler 层 case F 已验证 persistence 触发 detach · 这里测 watchdog 本身行为)
-  it('#182 · WATCHDOG_POLL_MS default = 1000ms · persistence default = 2000ms', async () => {
-    const { WATCHDOG_POLL_MS, WATCHDOG_PERSISTENCE_MS } = await import(
-      '../tools/handlers/dynamic-probe/watchdog'
-    );
-    expect(WATCHDOG_POLL_MS).toBe(1_000);
-    expect(WATCHDOG_PERSISTENCE_MS).toBe(2_000);
-  });
-
-  it('#182 · runWatchdog spike (单次超 < persistence) → 不 detach · 返 detached:false', async () => {
-    const { runWatchdog } = await import(
-      '../tools/handlers/dynamic-probe/watchdog'
-    );
-    let pollCount = 0;
-    const mockDispatcher = {
-      dispatch: async () => ({
-        attachId: 'a1',
-        status: 'completed' as const,
-        observedOverheadPct: 0.5,
-        elapsedMs: 0,
-      }),
-      detach: vi.fn(async () => undefined),
-      getObservedOverhead: async () => {
-        pollCount += 1;
-        // 第一次 poll 报 spike · 后续回归正常 (spike 不应触发 detach)
-        return pollCount === 1 ? 8.0 : 0.5;
+  it('runProbe · TIME 同连接跑 set→stat→delete · 参数化 $1/$2 · 不拼接函数名', async () => {
+    const calls: SqlCall[] = [];
+    const client: PgClientLike = {
+      async query<R = unknown>(sql: string, params: unknown[] = []) {
+        calls.push({ sql, params });
+        if (/stat_time_uprobe/.test(sql)) {
+          return {
+            rows: [
+              { stat_time_uprobe: 'calls: 42  avg time: 100 ns' },
+            ] as unknown as R[],
+          };
+        }
+        return { rows: [] as unknown as R[] };
       },
     };
-    const outcome = await runWatchdog({
-      attachId: 'a1',
-      dispatcher: mockDispatcher,
-      maxOverheadPct: 2.0,
-      durationSeconds: 0.1, // 100ms duration
-      tenant: 'tenant-A',
-      functionName: 'fn',
-      pollMs: 10,
-      persistenceMs: 50, // 持续 50ms 才触发 · 单次 spike (10ms) < 50ms 不触发
+    const res = await runProbe(client, {
+      function: 'PortalStart',
+      probe_type: 'TIME',
+      duration_seconds: 30,
+      sleep: async () => {}, // 跳过等待
     });
-    expect(outcome.detached).toBe(false); // spike 不触发 detach
-    expect(mockDispatcher.detach).not.toHaveBeenCalled();
+    expect(res.probe_type).toBe('TIME');
+    if (res.probe_type === 'HIST') throw new Error('unreachable');
+    expect(res.calls).toBe(42);
+    expect(res.avg_time_ns).toBe(100);
+    // 全程同一 client 实例 (同 session) · set/stat/delete 顺序
+    expect(calls.map((c) => c.sql.match(/(set_uprobe|stat_time_uprobe|delete_uprobe)/)?.[1])).toEqual(
+      ['set_uprobe', 'stat_time_uprobe', 'delete_uprobe'],
+    );
+    // 函数名只走 params · 不在 SQL 串里
+    for (const c of calls) {
+      expect(c.sql).not.toContain('PortalStart');
+    }
+    expect(calls[0].params).toEqual(['PortalStart', 'TIME']);
   });
 
-  it('#182 · runWatchdog 持续超阈值 ≥ persistence → 触发 detach + emit overhead_exceeded', async () => {
-    const { runWatchdog } = await import(
-      '../tools/handlers/dynamic-probe/watchdog'
-    );
-    const mockDispatcher = {
-      dispatch: async () => ({
-        attachId: 'a1',
-        status: 'detached_early' as const,
-        observedOverheadPct: 8.0,
-        elapsedMs: 0,
-      }),
-      detach: vi.fn(async () => undefined),
-      getObservedOverhead: async () => 8.0, // 持续超阈值
+  it('runProbe · stat 抛仍 best-effort delete_uprobe (探针不悬挂) + 原始错误透传', async () => {
+    const calls: SqlCall[] = [];
+    const client: PgClientLike = {
+      async query<R = unknown>(sql: string, params: unknown[] = []) {
+        calls.push({ sql, params });
+        if (/stat_time_uprobe/.test(sql)) throw new Error('boom stat');
+        return { rows: [] as unknown as R[] };
+      },
     };
-    const outcome = await runWatchdog({
-      attachId: 'a1',
-      dispatcher: mockDispatcher,
-      maxOverheadPct: 2.0,
-      durationSeconds: 5,
-      tenant: 'tenant-A',
-      functionName: 'fn',
-      pollMs: 10,
-      persistenceMs: 30, // 30ms 持续即触发 · 3+ poll 后超
+    await expect(
+      runProbe(client, {
+        function: 'PortalStart',
+        probe_type: 'TIME',
+        duration_seconds: 5,
+        sleep: async () => {},
+      }),
+    ).rejects.toThrow(/boom stat/);
+    // set 后 stat 抛 · finally 仍跑 delete_uprobe
+    expect(calls.some((c) => /delete_uprobe/.test(c.sql))).toBe(true);
+  });
+
+  it('runProbe · HIST 走 stat_hist_uprobe · 返直方图行', async () => {
+    const client: PgClientLike = {
+      async query<R = unknown>(sql: string) {
+        if (/stat_hist_uprobe/.test(sql)) {
+          return {
+            rows: [
+              { time_range: '(a,b)', hist_entry: '@@', percent: '50.0' },
+            ] as unknown as R[],
+          };
+        }
+        return { rows: [] as unknown as R[] };
+      },
+    };
+    const res = await runProbe(client, {
+      function: 'PortalRun',
+      probe_type: 'HIST',
+      duration_seconds: 1,
+      sleep: async () => {},
     });
-    expect(outcome.detached).toBe(true);
-    if (!outcome.detached) throw new Error('unreachable');
-    expect(outcome.observedPct).toBe(8.0);
-    expect(mockDispatcher.detach).toHaveBeenCalled();
-    const overheadEv = emitSpy.mock.calls.find(
-      (c) => c[0].event_type === 'probe_overhead_exceeded',
-    );
-    expect(overheadEv).toBeDefined();
-    expect(overheadEv?.[0].severity).toBe('high');
-    expect(overheadEv?.[0].extra?.persisted_ms).toBeGreaterThanOrEqual(30);
+    expect(res.probe_type).toBe('HIST');
+    if (res.probe_type !== 'HIST') throw new Error('unreachable');
+    expect(res.histogram).toEqual([
+      { time_range: '(a,b)', hist_entry: '@@', percent: 50 },
+    ]);
   });
 });
