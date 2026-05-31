@@ -1,9 +1,7 @@
 /**
  * feat-068 dynamic-probe · 公开 entry
  *
- * 注:本 sub-issue scope 只到 handler 层 + 8 case fixture · MCP NEON_TOOLS 注册留给后续 PR
- * (需配 grant-scope mapping + role-toolsets + tools.ts dispatch case · 跨文件改动大 ·
- * 详设 §4 已划定但 ship 节奏分 issue)。
+ * 重设计 (#210 · ADR-0017): 主引擎 bpftrace+sidecar → pg_uprobe SQL 驱动 · whitelist 强制 → denylist FLOOR。
  */
 export {
   attachDynamicProbeHandler,
@@ -13,25 +11,32 @@ export {
 export {
   attachDynamicProbeInputSchema,
   validateAttachInput,
-  loadWhitelist,
-  checkWhitelist,
-  __resetWhitelistCacheForTest,
-  __setWhitelistForTest,
+  PROBE_TYPES,
+  PROBE_TARGETS,
+  SAFE_SYMBOL_RE,
   type AttachDynamicProbeInput,
-  type Whitelist,
-  type WhitelistProbe,
-  type UsdtEntry,
-  type UprobeEntry,
-  type WhitelistDenylist,
+  type ProbeView,
+  type ProbeTarget,
 } from './schema';
 export {
-  TEMPLATE_NAMES,
-  TEMPLATES,
-  USDT_INCOMPATIBLE_TEMPLATES,
-  renderTemplate,
-  type TemplateName,
-  type TemplateInputs,
-} from './templates';
+  loadDenylist,
+  checkDenylist,
+  __resetDenylistCacheForTest,
+  __setDenylistForTest,
+  type Denylist,
+  type DenylistCheckResult,
+} from './denylist';
+export {
+  runProbe,
+  parseTimeStat,
+  type PgClientLike,
+  type ProbeType,
+  type RunProbeInput,
+  type RunProbeResult,
+  type TimeProbeResult,
+  type HistProbeResult,
+} from './sql-driver';
+export { newAttachId } from './attach-id';
 export {
   RATE_LIMITS,
   checkRateLimit,
@@ -39,17 +44,4 @@ export {
   releaseAttach,
   __resetRateLimitForTest,
 } from './rate-limit';
-export {
-  MockDispatcher,
-  K8sDispatcher,
-  newAttachId,
-  type Dispatcher,
-  type AttachRequest,
-  type AttachResult,
-  type SidecarCapability,
-} from './sidecar';
-export {
-  runWatchdog,
-  checkPostCondition,
-  WATCHDOG_POLL_MS,
-} from './watchdog';
+export { checkPostCondition } from './watchdog';

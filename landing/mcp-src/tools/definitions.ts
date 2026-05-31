@@ -1763,52 +1763,53 @@ export const NEON_TOOLS = [
       openWorldHint: true,
     } satisfies ToolAnnotations,
   },
-  // feat-068 attach_neondb_dynamic_probe · L3 ephemeral dynamic probe attach (USDT/uprobe).
-  // follow-up #179 (sub-1 dispatcher wire): handler 之前没注册到 NEON_TOOLS (PR167 §模块边界 自述
-  // 'out-of-scope · 留 follow-up') · agent 调不到 · feat-045 get_neondb_rca_evidence fetcher 拿 stub。
-  // 本 entry 补齐 tool def + risk=high (跟设计 §3.1 RISK_BY_OP 一致 · #181 已 ship) · plan-mode
-  // 走 require_plan path · DBA 审批后才 attach。
-  // 详设: https://github.com/zlxtqbdgdgd/openneon-design/issues/13 + openneon-mcp#141/#142/#143/#144.
+  // feat-068 attach_neondb_dynamic_probe · L3 dynamic probe attach (pg_uprobe SQL 驱动).
+  // 重设计 (#210 · ADR-0017): 主引擎从 bpftrace+ephemeral sidecar 改为 PostgreSQL 扩展 pg_uprobe
+  // (compute 内置 · SQL 函数驱动 set_uprobe/stat_*_uprobe/delete_uprobe)。治理从 whitelist 强制
+  // 改为 denylist FLOOR (任意导出函数放行 · 只过 denylist hard-deny)。risk=high · plan-mode require_plan。
+  // 详设: https://github.com/zlxtqbdgdgd/openneon-design/issues/13 + openneon-mcp#210.
   {
     name: 'attach_neondb_dynamic_probe' as const,
     scope: 'querying',
     category: 'optional',
-    description: `Attach an ephemeral eBPF/USDT/uprobe to a Neon compute endpoint for time-limited diagnostic data.
+    description: `Attach a time-limited pg_uprobe to a function inside a running Neon compute (PostgreSQL) for diagnostic timing/count data.
 
     <use_case>
       Use this tool when standard observability (logs / metrics / traces) is insufficient and you
-      need *kernel-level* visibility into a running compute — measuring per-function latency
-      histograms, capturing stack traces under contention, or counting lock waits per LWLock tranche.
-      The tool: (1) validates target function against an allow-list (feat-067 USDT / feat-069 Rust
-      uprobe whitelist), (2) renders one of 5 bpftrace templates (latency_buckets / stacktrace_top /
-      lock_wait_histogram / call_count / lwlock_contention_top), (3) launches an ephemeral sidecar
-      pod with CAP_BPF/CAP_PERFMON + hostPID against the target compute's PID, (4) runs for
-      duration_seconds (≤ 300) with watchdog (1s poll · 2s overhead persistence threshold ·
-      auto-detach on overhead > max_overhead_pct), (5) returns aggregated buckets / call counts /
-      stack samples to feed into your RCA.
+      need *inside-the-engine* visibility into a running compute — measuring per-C-function execution
+      time (TIME), an execution-time histogram (HIST), or MemoryContext deltas (MEM). Backed by the
+      pg_uprobe extension (Frida-based dynamic instrumentation · no kernel privileges / no sidecar pod).
+      The tool: (1) validates probe_type + function (any ELF-exported symbol · regex
+      ^[A-Za-z_][A-Za-z0-9_]*$) against a denylist FLOOR, (2) on a single DB session connection runs
+      set_uprobe(function, probe_type, is_shared=false) → waits duration_seconds (≤ 300) →
+      stat_time_uprobe / stat_hist_uprobe → delete_uprobe (parameterized $1/$2 · no SQL string concat),
+      (3) returns the parsed enriched stat (calls + avg time ns for TIME/MEM · histogram rows for HIST)
+      to feed into your RCA.
     </use_case>
 
     <important_notes>
-      Risk level = HIGH (kernel observation can perturb production load · lock_wait / stacktrace
-      hot probes are most expensive). Plan mode (feat-027 elicitation) MUST approve before attach ·
-      fail-closed deny when capability missing. duration ≤ 300s · max_overhead_pct must be 1.0-5.0 ·
-      target function must match probes/whitelist.yaml (PG USDT) or rust-whitelist.yaml (pageserver/
-      safekeeper/proxy hot fns). Denylist preempts whitelist (scram_* / *_secret / *_password /
-      decrypt_* always rejected). Three-tier rate limit: global 3 / per-tenant 2 per 5min /
-      per-function 5 per 5min. Audit emits probe_attached / probe_detached / probe_overhead_exceeded /
-      probe_rate_limit_exceeded / probe_attach_denied / probe_attach_failed per call.
+      Risk level = HIGH (in-engine instrumentation perturbs the target session/instance). Plan mode
+      (feat-027 elicitation) MUST approve before attach · fail-closed deny when the pg_uprobe session
+      connection is unavailable. duration ≤ 300s · max_overhead_pct must be 1.0-5.0. There is NO
+      whitelist requirement (agents who know the source pick any exported function = form-shift value);
+      the only hard gate is a denylist FLOOR (re.fullmatch) — security-sensitive functions are always
+      rejected and cannot be overridden: scram_* / parse_scram_secret / pg_be_scram_* / encrypt_password /
+      get_role_password / pg_md5_* / pg_cryptohash_* / pg_hmac_* / be_tls_* / be_gssapi_* / verify_token.
+      Probes never read function arguments (timing/count only). Three-tier rate limit: global 3 /
+      per-tenant 2 per 5min / per-function 5 per 5min. Audit emits probe_attached / probe_detached /
+      probe_overhead_exceeded / probe_rate_limit_exceeded / probe_attach_denied / probe_attach_failed.
     </important_notes>`,
     inputSchema: attachDynamicProbeInputSchema,
-    // 内核观察 + ephemeral sidecar attach · 直接影响 compute · 写性质
+    // pg_uprobe in-engine instrumentation · 直接影响 compute session · 写性质
     readOnlySafe: false,
     annotations: {
-      title: 'Attach Neon DB Dynamic Probe (feat-068 · ephemeral eBPF/USDT/uprobe attach)',
+      title: 'Attach Neon DB Dynamic Probe (feat-068 · pg_uprobe SQL-driven TIME/HIST/MEM)',
       readOnlyHint: false,
-      // 副作用是观察 · 不改 schema/data · 但跟内核交互 → destructiveHint=false 但 risk=high
+      // 副作用是观察 (timing/count) · 不改 schema/data · 但 in-engine 扰动 → destructiveHint=false 但 risk=high
       destructiveHint: false,
       idempotentHint: false,
-      // attach sidecar + 跟 k8s API 交互 → openWorldHint=true
-      openWorldHint: true,
+      // pg_uprobe 在 compute 内运行 · 不跟外部 k8s 交互 → openWorldHint=false
+      openWorldHint: false,
     } satisfies ToolAnnotations,
   },
   // feat-066/#2 get_neondb_trace · trace 读 · path β 基线 + path α bonus (RAG 剧本 agent 拉全 span)

@@ -1,0 +1,59 @@
+# feat-068 #210 · denylist FLOOR mirror (build-time copy · 跨仓自治)
+#
+# === mirror 来源 ===
+# $source_repo:   zlxtqbdgdgd/openneon
+# $source_path:   pgxn/neon/probes/denylist.yaml
+# $source_commit: dbc23f2a7c204ad4237773508ad8ed550ae18f5a
+# $source_issue:  91
+# upgrade path: openneon 仓 denylist.yaml 变更 → 本仓 PR 同步 mirror 整文件 + 刷 $source_commit
+#   + 复跑 feat-068 denylist drift fixture (drift CI 检测)。
+#
+# === floor 语义 (feat-068 重设计 · ADR-0017 · 2026-05-31) ===
+# 动态探针治理从 "whitelist 强制" 改为 "denylist floor":
+#   - 不再要求探测函数 ∈ whitelist (agent 熟代码自挑任意导出函数 = form-shift 价值点)
+#   - denylist 是 FLOOR: 唯一硬约束 · 命中即 reject + audit severity=critical · 不可禁用 · 不可被任何 allow 覆盖
+#   - 配合 "只取 timing/count 不抓函数参数" (引擎层不暴露读参数能力) 双保险
+#
+# 加载: feat-068 mcp tool (openneon-mcp#210) hard-coded 加载本文件 · 任一 pattern re.fullmatch 命中即 reject
+#
+# === pattern 与 pg17 真实导出符号对齐 (feat-091 · nm -D 实测 pg_install/v17/bin/postgres 17.5) ===
+# 每条 pattern 后注真实命中符号 · 防 "凭设计写 pattern 但 binary 里对不上" 的假防护。
+version: 1
+
+denylist:
+  # PG C 函数 deny (re.fullmatch · 按 ELF 导出符号名匹配 · pg17 17.5 nm -D 校准)
+  usdt_probe_patterns:
+    # --- 1. SCRAM 认证 (密钥派生/验证 · 漏 parse_/pg_be_ 前缀是原 ^scram_ 的洞) ---
+    - "scram_.*"                    # scram_ClientKey/H/SaltedPassword/ServerKey/build_secret/sha_256_iterations/verify_plain_password
+    - "parse_scram_secret"          # 解析 SCRAM secret
+    - "pg_be_scram_.*"              # pg_be_scram_build_secret / pg_be_scram_mech
+    # --- 2. password 处理 (原 denylist 全漏) ---
+    - "encrypt_password"            # 密码加密
+    - "get_role_password"           # 读 pg_authid.rolpassword (拿所有用户密码 hash)
+    - "get_password_type"           # 密码类型探测
+    - "check_password_hook"         # 密码校验 hook
+    - "check_password_hash"         # 密码 hash 校验 (设计列·17.5 未导出·预留)
+    - "Password_encryption"         # 密码加密 GUC 路径
+    - "plain_crypt_verify"          # 明文密码校验
+    - "md5_crypt_verify"            # MD5 密码校验
+    # --- 3. MD5 / cryptohash / hmac (原 ^pg_md5_hash 只盖 1 个) ---
+    - "pg_md5_.*"                   # pg_md5_hash / pg_md5_binary / pg_md5_encrypt
+    - "pg_cryptohash_.*"            # cryptohash create/init/update/final/free/error
+    - "pg_hmac_.*"                  # hmac create/init/update/final/free/error
+    - "sha256_bytea"                # SHA256 (探它泄露被哈希明文)
+    - "md5_bytea"                   # MD5 (同上)
+    - "md5_text"                    # MD5 (同上)
+    # --- 4. TLS handshake / cert ---
+    - "be_tls_.*"                   # be_tls_init/open_server/read/write/get_cipher/get_certificate_hash/...
+    # --- 5. GSSAPI / Kerberos ---
+    - "be_gssapi_.*"                # GSSAPI 认证 (17.5 当前未导出·预留·若编进则盖)
+    # --- 6. token 校验 (精确·不用 .*token.* 防误伤 parser: prsd_nexttoken/gettoken_tsvector/json_get_first_token/outToken/ScanKeywordTokens) ---
+    - "verify_token"                # token 校验
+  # Rust uprobe symbol deny (feat-069 挪 L4·暂留占位·跟 rust-denylist.yaml 一致)
+  uprobe_symbol_patterns:
+    - ".*::scram_.*"
+    - ".*::sasl::.*"
+    - ".*::tls::handshake.*"
+    - ".*::password::.*"
+    - ".*::token::verify.*"
+    - ".*::crypto::aead.*"

@@ -73,7 +73,8 @@ import { handleBranchCanaryDdl } from './handlers/branch-canary-ddl';
 // feat-037 cluster_neondb_logs · L3 log pattern 聚类 hybrid path (LLM 主 + Drain3 备).
 // 详设: https://github.com/zlxtqbdgdgd/openneon-design/issues/51 + openneon-mcp#154/#155/#157/#158/#156.
 import { handleClusterNeondbLogs } from './handlers/cluster-neondb-logs';
-// feat-068 attach_neondb_dynamic_probe · L3 ephemeral dynamic probe attach (sub-1 wire #179)
+// feat-068 attach_neondb_dynamic_probe · L3 dynamic probe attach
+// 重设计 (#210 · ADR-0017): bpftrace+sidecar → pg_uprobe SQL 驱动 (ctx 注入 pgClient · 单连接)
 import {
   attachDynamicProbeHandler,
   type AttachHandlerCtx,
@@ -2296,40 +2297,34 @@ You MUST follow these steps:
     };
   },
 
-  // feat-068 attach_neondb_dynamic_probe · L3 ephemeral dynamic probe (sub-1 wire #179).
-  // PR167 §模块边界 自述 "out-of-scope · 留 follow-up" · 本 dispatch case 把 handler
-  // 真接到 NEON_HANDLERS · agent 经 mcp tools/call 可调到 attachDynamicProbeHandler。
+  // feat-068 attach_neondb_dynamic_probe · L3 dynamic probe attach.
+  // 重设计 (#210 · ADR-0017): 主引擎 bpftrace+sidecar → pg_uprobe SQL 驱动 · 本 dispatch case 把
+  // handler 接到 NEON_HANDLERS · agent 经 mcp tools/call 可调到 attachDynamicProbeHandler。
   //
-  // ⚠️ Sidecar dispatcher 当前仍是 MockDispatcher (生产 K8sDispatcher 接入留 sub-2 #180 ·
-  // 需 ops 团队 k8s 凭证 + RBAC + 镜像源)。本 dispatch wire 让 agent / fixture 路径
-  // 闭环 · 生产真 attach 需 #180 ship 完。
-  //
-  // ⚠️ resolveTargetPid 需 route.ts 真接通时注入真实 endpoint_id → compute PID 映射
-  // (跟 ops 控制面集成) · 当前 fallback null/throw 让 handler fail-closed deny。
+  // ⚠️ pgClient 需 route.ts 真接通时注入**单个物理连接** (pg.PoolClient · 不是 pool) ·
+  // 因为 is_shared=false 的 pg_uprobe 探针是 session 级 · set/stat/delete 必须同连接
+  // (详 sql-driver.ts)。当前未 wire → pgClient 缺省 → handler runProbe 调 query 即 throw →
+  // sql-driver 阶段 fail-closed deny。真实 wire (endpoint_id → compute 连接) 留 route.ts follow-up。
   attach_neondb_dynamic_probe: async ({ params }, _neonClient, extra) => {
     // attachDynamicProbeHandler 自己 validate zod input · 这里只传 raw + ctx。
-    // ctx 真实 wire 在 route.ts orchestrator (跟踪 #176 evidence-store 同期 sub-issue)。
-    // route.ts orchestrator 把这些 ctx 字段注入 extra (当前未 wire → undefined → 各自 fallback / fail-closed)。
+    // ctx 真实 wire 在 route.ts orchestrator · 把这些 ctx 字段注入 extra (当前未 wire → fallback / fail-closed)。
     // extra 静态类型是 MCP SDK RequestHandlerExtra · 不含这些自定义注入字段 · 按 Partial<AttachHandlerCtx> 投射。
     const injected = extra as unknown as Partial<AttachHandlerCtx> | undefined;
     const ctx: AttachHandlerCtx = {
-      dispatcher: injected?.dispatcher as AttachHandlerCtx['dispatcher'],
-      resolveTargetPid: (injected?.resolveTargetPid ??
-        (async () => {
+      pgClient: (injected?.pgClient ?? {
+        async query() {
           throw new Error(
-            'attach_neondb_dynamic_probe: resolveTargetPid not wired (跟踪 #179 follow-up: route.ts 真接通 + ops control-plane 注入 endpoint_id → PID)',
+            'attach_neondb_dynamic_probe: pgClient not wired (route.ts follow-up: 注入 endpoint_id → compute 单连接 PoolClient)',
           );
-        })) as AttachHandlerCtx['resolveTargetPid'],
+        },
+      }) as AttachHandlerCtx['pgClient'],
       autonomyLevel: (injected?.autonomyLevel ??
         'L1') as AttachHandlerCtx['autonomyLevel'],
       tenant: (injected?.tenant ?? '') as string,
-      whitelist: injected?.whitelist as AttachHandlerCtx['whitelist'],
+      denylist: injected?.denylist as AttachHandlerCtx['denylist'],
       _testOnlyPlanApprovedBypass:
         injected?._testOnlyPlanApprovedBypass as boolean | undefined,
-      watchdogPollMs: injected?.watchdogPollMs as number | undefined,
-      watchdogPersistenceMs: injected?.watchdogPersistenceMs as
-        | number
-        | undefined,
+      observedOverheadPct: injected?.observedOverheadPct as number | undefined,
     };
     const result = await attachDynamicProbeHandler(params, ctx);
     return {
