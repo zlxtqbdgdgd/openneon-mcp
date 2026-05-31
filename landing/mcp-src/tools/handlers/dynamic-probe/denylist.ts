@@ -15,6 +15,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { load as yamlLoad } from 'js-yaml';
+import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
+
+// ESM: __dirname 等价 (mcp 是 ESM · CommonJS __dirname 在 ESM 运行时未定义 · #212 验收发现)
+const __dirname_esm = dirname(fileURLToPath(import.meta.url));
 
 /** denylist FLOOR 结构 · usdt (PG C 符号) + uprobe (Rust 符号) pattern 分集合 */
 export type Denylist = {
@@ -40,7 +45,7 @@ export function loadDenylist(path?: string): Denylist {
   const resolved =
     path ??
     process.env.OPENNEON_PROBE_DENYLIST_PATH ??
-    join(__dirname, 'denylist.yaml');
+    join(__dirname_esm, 'denylist.yaml');
   let raw: string;
   try {
     raw = readFileSync(resolved, 'utf8');
