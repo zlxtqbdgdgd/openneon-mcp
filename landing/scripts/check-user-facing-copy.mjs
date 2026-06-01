@@ -9,10 +9,11 @@
 // names. Those belong in code comments + the detailed-design HTML, never in a
 // runtime string that surfaces to users.
 //
-// This check uses the TypeScript compiler API to inspect ONLY the string values of
-// `description:` / `title:` property assignments — so it never flags code comments
-// or the GitHub design-doc link URLs (which legitimately contain feat-NNN), which
-// is exactly where the design vocabulary is supposed to live.
+// This check uses the TypeScript compiler API to inspect ONLY the string values that
+// surface in the tools/list response: `description:` / `title:` property assignments AND
+// zod input-schema field descriptions (`.describe("...")`). It never flags code comments
+// or the GitHub design-doc link URLs (which legitimately contain feat-NNN), which is
+// exactly where the design vocabulary is supposed to live.
 //
 // Run: `node scripts/check-user-facing-copy.mjs` (wired into `pnpm lint`).
 
@@ -24,9 +25,16 @@ import { dirname, join, relative } from 'node:path';
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
 
-// User-facing MCP surface: the files whose `description`/`title` reach the user.
+// User-facing MCP surface: the files whose tool/prompt copy reaches the user — both
+// top-level `description`/`title` AND zod input-schema field descriptions (`.describe()`),
+// since every one of these is serialized into the `tools/list` response the agent reads.
 // Extend this list when a new file defines runtime user-facing tool/prompt copy.
-const SCAN_FILES = ['mcp-src/tools/definitions.ts', 'mcp-src/prompts.ts'];
+const SCAN_FILES = [
+  'mcp-src/tools/definitions.ts',
+  'mcp-src/tools/tools.ts',
+  'mcp-src/tools/toolsSchema.ts',
+  'mcp-src/prompts.ts',
+];
 
 // Property names whose string value is user-facing runtime copy.
 const FIELDS = new Set(['description', 'title']);
@@ -69,33 +77,46 @@ for (const rel of SCAN_FILES) {
     /* setParentNodes */ true,
   );
 
+  const checkText = (text, node, field) => {
+    if (text == null) return;
+    for (const { re, label } of BANNED) {
+      const m = text.match(re);
+      if (!m) continue;
+      if (EXCEPTIONS.some((e) => e.file === rel && text.includes(e.allow)))
+        continue;
+      const { line } = source.getLineAndCharacterOfPosition(
+        node.getStart(source),
+      );
+      violations.push({ file: rel, line: line + 1, field, hit: m[0], label });
+    }
+  };
+
   const walk = (node) => {
+    // tool / prompt `description:` / `title:` property values
     if (
       ts.isPropertyAssignment(node) &&
       ts.isIdentifier(node.name) &&
       FIELDS.has(node.name.text)
     ) {
-      const text = literalText(node.initializer);
-      if (text != null) {
-        for (const { re, label } of BANNED) {
-          const m = text.match(re);
-          if (!m) continue;
-          const excepted = EXCEPTIONS.some(
-            (e) => e.file === rel && text.includes(e.allow),
-          );
-          if (excepted) continue;
-          const { line } = source.getLineAndCharacterOfPosition(
-            node.initializer.getStart(source),
-          );
-          violations.push({
-            file: rel,
-            line: line + 1,
-            field: node.name.text,
-            hit: m[0],
-            label,
-          });
-        }
-      }
+      checkText(
+        literalText(node.initializer),
+        node.initializer,
+        node.name.text,
+      );
+    }
+    // zod input-schema field descriptions: `.describe("...")` — served under
+    // `inputSchema.properties.*.description` in tools/list.
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === 'describe' &&
+      node.arguments.length > 0
+    ) {
+      checkText(
+        literalText(node.arguments[0]),
+        node.arguments[0],
+        '.describe()',
+      );
     }
     ts.forEachChild(node, walk);
   };
