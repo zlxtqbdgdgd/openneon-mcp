@@ -14,28 +14,11 @@ import { toJsonSchemaCompat } from '@modelcontextprotocol/sdk/server/zod-json-sc
 import { captureException, startSpan } from '@sentry/node';
 
 import {
-  getAvailablePrompts,
-  getPromptTemplate,
-} from '../../../mcp-src/prompts';
-import { NEON_HANDLERS } from '../../../mcp-src/tools/index';
-import {
-  classifyOp,
   getParserBackend,
   initPgParser,
 } from '../../../mcp-src/protection/destructive-detector';
-import { runPipeline } from '../../../mcp-src/policy/pipeline';
-import {
-  resolvePlanApproval,
-  type ElicitResultLike,
-} from '../../../mcp-src/policy/stages/plan-mode';
-import { issueConfirmToken } from '../../../mcp-src/policy/confirm-token-issuer';
-import { emitConfirmTokenAudit } from '../../../mcp-src/audit/event-types';
-import {
-  emitAuditEvent,
-  sha256Hex,
-  type AuditEventType,
-} from '../../../mcp-src/observability/audit-emit';
-import { resolvePolicy, applyOverrides } from '../../../mcp-src/policy/loader';
+import { type ElicitResultLike } from '../../../mcp-src/policy/stages/plan-mode';
+import { emitAuditEvent } from '../../../mcp-src/observability/audit-emit';
 import {
   getDocResource,
   listDocsResources,
@@ -43,10 +26,8 @@ import {
 import { createNeonClient } from '../../../mcp-src/server/api';
 import pkg from '../../../package.json';
 import { handleToolError } from '../../../mcp-src/server/errors';
-import type { ToolHandlerExtraParams } from '../../../mcp-src/tools/types';
 import { detectClientApplication } from '../../../mcp-src/utils/client-application';
 import { isReadOnly } from '../../../mcp-src/utils/read-only';
-import type { AuthContext } from '../../../mcp-src/types/auth';
 import { logger } from '../../../mcp-src/utils/logger';
 import { generateTraceId } from '../../../mcp-src/utils/trace';
 import { waitUntil } from '@vercel/functions';
@@ -58,7 +39,6 @@ import {
 import { resolveAccountFromAuth } from '../../../mcp-src/server/account';
 import { model } from '../../../mcp-src/oauth/model';
 import { getApiKeys, type ApiKeyRecord } from '../../../mcp-src/oauth/kv-store';
-import { setSentryTags } from '../../../mcp-src/sentry/utils';
 import type { ServerContext, AppContext } from '../../../mcp-src/types/context';
 import {
   isDocsOnlyRequest,
@@ -80,25 +60,17 @@ import {
   type ResolvedGrant,
 } from '../../../mcp-src/auth/grant-builder';
 import {
-  getAvailableTools,
-  getAccessControlWarnings,
-  injectProjectId,
-} from '../../../mcp-src/tools/grant-filter';
-import { filterToolsByRole } from '../../../mcp-src/tools/role-toolsets';
-import {
   isLocalDevAuthEnabled,
   buildLocalDevAuthInfo,
 } from '../../../mcp-src/server/local-dev-auth';
-import {
-  parseCategoryInclude,
-  type CategoryInclude,
-} from '../../../mcp-src/config/categories';
+import { parseCategoryInclude } from '../../../mcp-src/config/categories';
 import { NEON_TOOLS } from '../../../mcp-src/tools/definitions';
-// feat-060/#2 (#130): per-call JWT claim 绑定 SQL/tool 参数 · 防同 project 内跨用户越权 (§0.2 亮点 A3)
-import { bindClaims } from '../../../mcp-src/auth/claim-binding';
-// feat-060/#3 (#131): tool fromClaim 注册表 (side-table · 跟 zod schema 解耦)
-import { getToolClaimBindings } from '../../../mcp-src/auth/tool-claim-bindings';
 import { assert } from '../../../lib/assert';
+import {
+  registerNeonServer,
+  type AuthenticatedExtra,
+  type StaticToolContext,
+} from '../../../mcp-src/server/register-neon-server';
 import { buildResourceMetadataUrlForResourceRequest } from '../../../lib/oauth/protected-resource-metadata';
 import {
   bindSession,
@@ -143,23 +115,6 @@ function createDeferred<T>(): Deferred<T> {
     reject = rej;
   });
   return { promise, resolve, reject };
-}
-
-// feat-031: pipeline deny verdict → `openneon.audit.event_type`。
-// Verdict 不直接携带 event_type (pipeline.ts 是策略权威 · 不耦合 audit taxonomy)，
-// orchestrator 按 §8.2 护栏 reason 关键字映射到 feat-031 §3.2 (a) 13 类之一。
-// 命中不了 G1/G4/G9 关键字的 deny (matrix deny 等) → 归 g4_destructive_deny (destructive 类的兜底)。
-function denyVerdictToEventType(reason: string): AuditEventType {
-  // 用单词边界匹配 guard 编号 · 避免裸 includes('G1') 误命中 G10/G14 等
-  // (现存 guard 编号 G1/G3/G4/G9/G10/G14 · reason 串形如 "(G1 hard-deny)" / "(G9 · ...)")。
-  if (/\bG1\b/.test(reason) || reason.includes('跨 project')) {
-    return 'g1_cross_project_deny';
-  }
-  if (/\bG9\b/.test(reason) || reason.includes('速率')) {
-    return 'g9_rate_limit_exceeded';
-  }
-  // G4 hard-deny + matrix deny + confirm-token fail-closed deny 等 → destructive 兜底
-  return 'g4_destructive_deny';
 }
 
 // Carries the authenticated caller's identity fingerprint from post-auth into
@@ -216,38 +171,6 @@ const SESSION_BINDING_UNAVAILABLE_RESPONSE: JsonErrorDefinition = {
   status: HTTP_STATUS.serviceUnavailable,
   error: 'Session binding unavailable',
   code: SESSION_ERROR_CODES.sessionBindingUnavailable,
-};
-
-type AuthenticatedExtra = {
-  authInfo?: AuthInfo & {
-    extra?: {
-      apiKey?: string;
-      account?: AuthContext['extra']['account'];
-      readOnly?: boolean;
-      grant?: GrantContext;
-      client?: AuthContext['extra']['client'];
-      transport?: AppContext['transport'];
-      userAgent?: string;
-      // feat-060/#2 (#130): MCP-Auth-<authService> headers 在 verifyToken 时捕获 ·
-      // 给 claim-binding middleware 用 (避免 tool dispatch 时重读 req · 上游 MCP SDK 不直传 req)。
-      mcpAuthHeaders?: Record<string, string>;
-    };
-  };
-  signal?: AbortSignal;
-  sessionId?: string;
-};
-
-type StaticToolContext = {
-  grant: GrantContext;
-  readOnly: boolean;
-  // feat-005 #3 listing filter · 'core' (default · 4 day-one tools) or 'all' (33-tool listing).
-  // Parsed from `?include=` HTTP query param via parseCategoryInclude (null/invalid → 'core').
-  categoryInclude: CategoryInclude;
-  // Identity fingerprint of the SSE connection owner, captured at handler
-  // construction. Each tool call compares `extra.authInfo`'s identity against
-  // this. Mismatches indicate a Redis envelope was routed into a stream it
-  // does not belong to — defense in depth on top of the POST-side check.
-  sseOwnerIdentity: string | null;
 };
 
 function createContextualMcpHandler(staticToolContext: StaticToolContext) {
@@ -491,530 +414,21 @@ function createContextualMcpHandler(staticToolContext: StaticToolContext) {
         waitUntil(flushAnalytics());
       };
 
-      const composedTools = getAvailableTools(
-        staticToolContext.grant,
-        staticToolContext.readOnly,
-        staticToolContext.categoryInclude,
-      );
-
-      // Register tools for this specific auth context.
-      composedTools.forEach((tool) => {
-        const toolHandler = NEON_HANDLERS[tool.name];
-        assert(toolHandler, `Handler for tool ${tool.name} not found`);
-
-        server.registerTool(
-          tool.name,
-          {
-            description: tool.description,
-            // NOTE: This intentionally stays strongly typed (no cast). If this starts failing
-            // after an SDK upgrade, treat it as a schema-type compatibility regression between
-            // MCP SDK zod-compat types and our tool schema definitions.
-            inputSchema: tool.inputSchema,
-            annotations: tool.annotations,
-          },
-          async (args: any, extra: any) => {
-            const typedExtra = extra as AuthenticatedExtra;
-            if (checkEnvelopeMatches(typedExtra, tool.name)) {
-              // Silently drop the misrouted invocation. Returning a non-error
-              // empty result avoids leaking a JSON-RPC error onto the SSE
-              // owner's (victim's) channel.
-              return { content: [], isError: false } as const;
-            }
-
-            const traceId = generateTraceId();
-            return await startSpan(
-              {
-                name: 'tool_call',
-                attributes: {
-                  tool_name: tool.name,
-                  trace_id: traceId,
-                },
-              },
-              async (span) => {
-                const {
-                  account,
-                  readOnly,
-                  grant,
-                  neonClient,
-                  clientApplication: clientApp,
-                  clientName: cName,
-                  client,
-                  context,
-                } = await getAuthContext(typedExtra);
-
-                // Track server_init on first authenticated request (after client detection)
-                trackServerInit(context);
-
-                const properties = {
-                  tool_name: tool.name,
-                  readOnly: String(readOnly),
-                  projectScoped: String(!!grant.projectId),
-                  clientName: cName,
-                  traceId,
-                };
-
-                logger.info('tool call:', properties);
-                setSentryTags(context);
-
-                track({
-                  userId: account.id,
-                  event: 'tool_call',
-                  properties,
-                  context: {
-                    client,
-                    app: context.app,
-                    clientName: cName,
-                  },
-                });
-                waitUntil(flushAnalytics());
-
-                const extraArgs: ToolHandlerExtraParams = {
-                  ...extra,
-                  account,
-                  readOnly,
-                  clientApplication: clientApp,
-                };
-
-                try {
-                  // Inject projectId if in project-scoped mode
-                  const argsAfterInject = injectProjectId(
-                    (args ?? {}) as Record<string, unknown>,
-                    grant,
-                  );
-
-                  // feat-060/#2 (#130): JWT claim 绑定 middleware · 串在 feat-029 API Key check 之后 / feat-056 pipeline 之前。
-                  // - 扫 tool inputSchema 的 fromClaim 声明 · verify JWT · 4-outcome 决策 · 强制覆盖 agent 越权值
-                  // - pass / override → 用 boundArgs 继续 dispatch
-                  // - deny_missing / deny_invalid → 返 isError content (HTTP 200 + isError=true · 跟 feat-029 一致风格)
-                  const claimResult = await bindClaims({
-                    toolName: tool.name,
-                    // feat-060/#3 (#131): 用 side-table 取 fromClaim 声明 · 不读 zod inputSchema (zod 不支持任意元数据)
-                    toolSchema: getToolClaimBindings(tool.name),
-                    args: argsAfterInject,
-                    headers: typedExtra.authInfo?.extra?.mcpAuthHeaders ?? {},
-                    projectId:
-                      grant.projectId ??
-                      (argsAfterInject.projectId as string | undefined),
-                    principal: `agent:${account?.id ?? 'unknown'}`,
-                  });
-                  if (
-                    claimResult.outcome === 'deny_missing' ||
-                    claimResult.outcome === 'deny_invalid'
-                  ) {
-                    logger.warn('claim-binding deny (feat-060):', {
-                      ...properties,
-                      outcome: claimResult.outcome,
-                      code: claimResult.denyDetail?.code,
-                    });
-                    return {
-                      content: [
-                        {
-                          type: 'text',
-                          text: `Claim binding rejected: ${claimResult.denyDetail?.code ?? 'UNKNOWN'} (${claimResult.outcome}). ${claimResult.denyDetail?.message ?? ''}`,
-                        },
-                      ],
-                      isError: true,
-                    } as const;
-                  }
-                  const effectiveArgs = claimResult.boundArgs ?? argsAfterInject;
-
-                  // feat-056 enforcement pipeline (ADR-0007 · #73 骨架: hard-deny G4 · 在 toolHandler 之前)
-                  const a = effectiveArgs as Record<string, unknown>;
-                  const sqlForClassify =
-                    typeof a.sql === 'string'
-                      ? a.sql
-                      : Array.isArray(a.sqlStatements)
-                        ? (a.sqlStatements as string[]).join('; ')
-                        : undefined;
-                  const opClass = classifyOp(tool.name, sqlForClassify);
-                  const effectiveProjectId =
-                    grant.projectId ?? (a.projectId as string | undefined);
-                  const resolved = resolvePolicy(effectiveProjectId);
-                  const pipelineCtx = {
-                    opClass,
-                    toolName: tool.name,
-                    projectId: effectiveProjectId,
-                    // feat-056/#3 (#76): G1 用原始请求 projectId (injectProjectId 覆盖前) 检测跨 project 越权
-                    requestedProjectId: (
-                      args as Record<string, unknown> | undefined
-                    )?.projectId as string | undefined,
-                    // feat-056/#2 (#75): per-project autonomy_level + SQL-pattern override
-                    autonomyLevel: applyOverrides(sqlForClassify, resolved),
-                    grant: { projectId: grant.projectId },
-                    // feat-030/#79: per-project timeout 覆盖 → timeoutInjectionStage (执行前注入消费在后续 write-path 成熟)
-                    timeoutOverrides: resolved.timeout_overrides,
-                    // feat-027/#2: 原始 SQL → planModeStage 组 plan payload
-                    sql: sqlForClassify,
-                  } as const;
-                  const verdict = runPipeline({ ...pipelineCtx });
-                  if (verdict.action === 'deny') {
-                    logger.warn('policy deny (feat-056):', {
-                      ...properties,
-                      opClass,
-                      reason: verdict.reason,
-                    });
-                    // feat-031: deny 落 audit (G1/G4/G9 越权拦截 · §3.2 a · OWASP LLM02 攻击痕迹)
-                    emitAuditEvent({
-                      event_type: denyVerdictToEventType(verdict.reason),
-                      outcome: 'deny',
-                      op_class: opClass,
-                      principal: `agent:${account?.id ?? 'unknown'}`,
-                      severity: verdict.audit_severity === 'high' ? 'high' : 'medium',
-                      project_id: effectiveProjectId,
-                      db_statement_sha256: sqlForClassify
-                        ? sha256Hex(sqlForClassify)
-                        : undefined,
-                      extra: { 'openneon.audit.deny_reason': verdict.reason },
-                    });
-                    return {
-                      content: [
-                        {
-                          type: 'text' as const,
-                          text: `Denied by policy: ${verdict.reason}`,
-                        },
-                      ],
-                      isError: true,
-                    };
-                  }
-
-                  // feat-027/#2 plan mode: require_plan → orchestrator 弹 MCP elicitInput 给 DBA 审批 ·
-                  // 人批才放行 · fail-closed (client 无 capability / 超时 / 异常 → deny · ADR-0008)。
-                  if (verdict.action === 'require_plan') {
-                    if (!verdict.plan) {
-                      return {
-                        content: [
-                          {
-                            type: 'text' as const,
-                            text: 'Plan not approved: plan payload missing · fail-closed',
-                          },
-                        ],
-                        isError: true,
-                      };
-                    }
-                    // 不预检 getClientCapabilities() —— mcp-handler streamable HTTP 下该快照可能拿不到
-                    // (tool-call 那次请求的 server 实例未必见过 initialize 握手) → 会误判 fail-closed。
-                    // 直接 attempt elicitInput · 由 resolvePlanApproval 的 try/catch 兜底:client 真不支持
-                    // 时 SDK 同步抛 "Client does not support elicitation" → catch → fail-closed (SPIKE feat-027/#1)。
-                    logger.info('plan mode · attempting elicitation (feat-027):', {
-                      ...properties,
-                      opClass,
-                      clientCaps: server.server.getClientCapabilities() ?? null,
-                    });
-                    // feat-031: 弹 plan 给人 (plan_mode_required · §3.2 a)
-                    emitAuditEvent({
-                      event_type: 'plan_mode_required',
-                      outcome: 'deny',
-                      op_class: opClass,
-                      principal: `agent:${account?.id ?? 'unknown'}`,
-                      severity: 'medium',
-                      project_id: effectiveProjectId,
-                      db_statement_sha256: sqlForClassify
-                        ? sha256Hex(sqlForClassify)
-                        : undefined,
-                    });
-                    const elicit = async (
-                      message: string,
-                      requestedSchema: Record<string, unknown>,
-                      timeoutMs: number,
-                    ): Promise<ElicitResultLike> => {
-                      const res = await server.server.elicitInput(
-                        { message, requestedSchema } as never,
-                        { timeout: timeoutMs },
-                      );
-                      return {
-                        action: res.action,
-                        content: res.content,
-                      } as ElicitResultLike;
-                    };
-                    const approval = await resolvePlanApproval(
-                      elicit,
-                      verdict.plan,
-                    );
-                    if (!approval.approved) {
-                      logger.warn('plan mode deny (feat-027):', {
-                        ...properties,
-                        opClass,
-                        reason: approval.reason,
-                        failClosed: approval.failClosed,
-                      });
-                      // feat-031: DBA 拒批 / fail-closed (plan_mode_rejected · §3.2 a)
-                      // principal 是 elicitation 的人工审批者 (human responder) · 不是 agent
-                      // 账号 (account.id 是 API key 持有者 / LLM agent · OWASP LLM06)。MCP
-                      // elicitation 协议不回传 responder 身份 (ElicitResultLike 只有
-                      // action/content) → 填 human:unknown 占位 (design §3.2 a
-                      // human:<elicitation-responder-id> · L2b 接通真实 responder id 时再填)。
-                      emitAuditEvent({
-                        event_type: 'plan_mode_rejected',
-                        outcome: 'deny',
-                        op_class: opClass,
-                        principal: approval.failClosed
-                          ? 'system:fail-closed'
-                          : 'human:unknown',
-                        severity: 'high',
-                        project_id: effectiveProjectId,
-                        db_statement_sha256: sqlForClassify
-                          ? sha256Hex(sqlForClassify)
-                          : undefined,
-                        extra: {
-                          'openneon.audit.reject_reason': approval.reason,
-                          'openneon.audit.fail_closed': approval.failClosed,
-                        },
-                      });
-                      return {
-                        content: [
-                          {
-                            type: 'text' as const,
-                            text: `Plan not approved: ${approval.reason}`,
-                          },
-                        ],
-                        isError: true,
-                      };
-                    }
-                    logger.info('plan mode approved (feat-027):', {
-                      ...properties,
-                      opClass,
-                      reason: approval.reason,
-                    });
-                    // feat-031: DBA 批准 (plan_mode_approved · principal=human responder · §3.2 a)
-                    // 同 plan_mode_rejected: principal 是人工审批者 · 非 agent 账号 (account.id)。
-                    // MCP elicitation 不回传 responder 身份 → human:unknown 占位
-                    // (design §3.2 a human:<elicitation-responder-id> · L2b 接通后填真实 id)。
-                    emitAuditEvent({
-                      event_type: 'plan_mode_approved',
-                      outcome: 'approved',
-                      op_class: opClass,
-                      principal: 'human:unknown',
-                      severity: 'medium',
-                      project_id: effectiveProjectId,
-                      db_statement_sha256: sqlForClassify
-                        ? sha256Hex(sqlForClassify)
-                        : undefined,
-                      extra: { 'openneon.audit.approve_reason': approval.reason },
-                    });
-                    // feat-026/#1: approve 后 server 颁发 ConfirmToken (audit artifact ·
-                    // 短 TTL · single-use) · 注入 ctx 重跑 pipeline · planModeStage 看到
-                    // token 后 skip elicitation · confirmTokenStage (step 7) verify + audit
-                    // (token_id 是跨系统 join key · 详设 §3 调用链)。
-                    // confirm token 是这次人工批准的产物 · principal 跟 plan_mode_approved
-                    // 一致 = 人工审批者 (非 agent account.id) · MCP elicitation 不回传
-                    // responder 身份 → human:unknown 占位 (L2b 接通后填真实 id)。
-                    // verify 阶段 (confirm-token.ts) 会读回此 principal emit confirm_token_verified。
-                    const tokenSnapshot = issueConfirmToken({
-                      op_class: opClass,
-                      args: sqlForClassify ?? '',
-                      principal: 'human:unknown',
-                      source: 'plan-mode-approval',
-                    });
-                    emitConfirmTokenAudit({
-                      event_type: 'confirm_token_issued',
-                      token_id: tokenSnapshot.id,
-                      source: tokenSnapshot.source,
-                      op_class: opClass,
-                      principal: 'human:unknown',
-                      ttl_seconds: 300,
-                    });
-                    const verdict2 = runPipeline({
-                      ...pipelineCtx,
-                      confirmToken: tokenSnapshot,
-                    });
-                    if (verdict2.action === 'deny') {
-                      logger.warn('policy deny after approve (feat-026):', {
-                        ...properties,
-                        opClass,
-                        reason: verdict2.reason,
-                      });
-                      // feat-031: 批准后重跑 pipeline 仍 deny (token verify 失败等 · §3.2 a)
-                      emitAuditEvent({
-                        event_type: denyVerdictToEventType(verdict2.reason),
-                        outcome: 'deny',
-                        op_class: opClass,
-                        principal: `agent:${account?.id ?? 'unknown'}`,
-                        severity: 'high',
-                        project_id: effectiveProjectId,
-                        db_statement_sha256: sqlForClassify
-                          ? sha256Hex(sqlForClassify)
-                          : undefined,
-                        extra: { 'openneon.audit.deny_reason': verdict2.reason },
-                      });
-                      return {
-                        content: [
-                          {
-                            type: 'text' as const,
-                            text: `Denied by policy: ${verdict2.reason}`,
-                          },
-                        ],
-                        isError: true,
-                      };
-                    }
-                    // verdict2 应为 allow / inject_timeout · 都放行执行 (audit high · 已批准高危 op)
-                  }
-
-                  // Wrap args in { params } structure expected by handlers
-                  const result = await (toolHandler as any)(
-                    { params: effectiveArgs },
-                    neonClient,
-                    extraArgs,
-                  );
-                  if (result.isError) {
-                    logger.warn('tool error response:', {
-                      ...properties,
-                      isError: true,
-                      contentLength: result.content?.length,
-                      firstContentType: result.content?.[0]?.type,
-                    });
-                  }
-
-                  // Append access control warnings to tool response
-                  const accessControlWarnings = getAccessControlWarnings(
-                    grant,
-                    readOnly,
-                  );
-                  if (accessControlWarnings.length > 0 && result.content) {
-                    result.content.push(
-                      ...accessControlWarnings.map((w: string) => ({
-                        type: 'text' as const,
-                        text: w,
-                      })),
-                    );
-                  }
-
-                  return result;
-                } catch (error) {
-                  span.setStatus({ code: 2 });
-                  // feat-029/#3: 把 apiKey 传给 handleToolError · Neon API 401/403 自动 invalidate
-                  // 5min KV cache（运行期 revocation 检测 · 下次 fail-closed）
-                  const errorResult = handleToolError(
-                    error,
-                    properties,
-                    traceId,
-                    typedExtra.authInfo?.extra?.apiKey,
-                  );
-                  logger.warn('tool error response:', {
-                    ...properties,
-                    isError: true,
-                    contentLength: errorResult.content?.length,
-                    firstContentType: errorResult.content?.[0]?.type,
-                  });
-                  return errorResult;
-                }
-              },
-            );
-          },
-        );
-      });
-
-      // Register prompts for this specific auth context.
-      const composedPrompts = getAvailablePrompts(staticToolContext.grant);
-      composedPrompts.forEach((prompt) => {
-        server.registerPrompt(
-          prompt.name,
-          {
-            description: prompt.description,
-            // Same compatibility guardrail as tool registration above.
-            argsSchema: prompt.argsSchema,
-          },
-          async (args: any, extra: any) => {
-            const typedExtra = extra as AuthenticatedExtra;
-            if (checkEnvelopeMatches(typedExtra, `prompt:${prompt.name}`)) {
-              // Silently drop the misrouted invocation; see tool handler note.
-              return { messages: [] } as const;
-            }
-
-            const {
-              account,
-              readOnly,
-              clientApplication: clientApp,
-              clientName: cName,
-              client,
-              context,
-            } = await getAuthContext(typedExtra);
-
-            // Track server_init on first authenticated request
-            trackServerInit(context);
-
-            const traceId = generateTraceId();
-            const properties = {
-              prompt_name: prompt.name,
-              clientName: cName,
-              traceId,
-            };
-            logger.info('prompt call:', properties);
-            setSentryTags(context);
-
-            track({
-              userId: account.id,
-              event: 'prompt_call',
-              properties,
-              context: { client, app: context.app },
-            });
-            waitUntil(flushAnalytics());
-
-            try {
-              const extraArgs: ToolHandlerExtraParams = {
-                ...extra,
-                account,
-                readOnly,
-                clientApplication: clientApp,
-              };
-              const template = await getPromptTemplate(
-                prompt.name,
-                extraArgs,
-                args,
-              );
-              return {
-                messages: [
-                  {
-                    role: 'user' as const,
-                    content: {
-                      type: 'text' as const,
-                      text: template,
-                    },
-                  },
-                ],
-              };
-            } catch (error) {
-              captureException(error, {
-                extra: properties,
-              });
-              throw error;
-            }
-          },
-        );
-      });
-
-      // Override tools/list to return the same context-scoped surface that was
-      // registered for this handler instance.
-      server.server.setRequestHandler(ListToolsRequestSchema, async () => {
-        // Avoid relying on MCP SDK private fields (`_registeredTools`), which can
-        // change across SDK versions and break request handling. Build the list from
-        // our canonical tool definitions and convert schemas explicitly.
-        //
-        // feat-059/#1: role 软过滤 —— listing ∩ ROLE_TOOLSETS[agent_role] (per-project policy ·
-        // 未配 → 不过滤)。**软**: 只裁 listing · 不影响上面已 registerTool 的可调用集 (非 toolset 的
-        // tool 仍可被调 · 走 feat-056 enforcement · 不因"不在 toolset"而拒)。
-        const agentRole = resolvePolicy(
-          staticToolContext.grant.projectId ?? undefined,
-        ).agent_role;
-        const listedTools = filterToolsByRole(composedTools, agentRole);
-        const tools = listedTools.map((tool) => {
-          const normalizedSchema = normalizeObjectSchema(tool.inputSchema);
-          const inputSchema = normalizedSchema
-            ? toJsonSchemaCompat(normalizedSchema, {
-                strictUnions: true,
-                pipeStrategy: 'input',
-              })
-            : { type: 'object' as const };
-
+      registerNeonServer(server, {
+        staticToolContext,
+        getAuthContext,
+        trackServerInit,
+        checkEnvelopeMatches,
+        elicit: async (message, requestedSchema, timeoutMs) => {
+          const res = await server.server.elicitInput(
+            { message, requestedSchema } as never,
+            { timeout: timeoutMs },
+          );
           return {
-            name: tool.name,
-            title: tool.annotations?.title,
-            description: tool.description,
-            inputSchema,
-            annotations: tool.annotations,
-          };
-        });
-
-        return { tools };
+            action: res.action,
+            content: res.content,
+          } as ElicitResultLike;
+        },
       });
     },
     {
@@ -1574,15 +988,12 @@ const verifyToken = async (
       });
     } catch (error) {
       if (error instanceof KeyResolverError) {
-        logger.error(
-          'API key scope re-resolve failed (feat-029 fail-closed)',
-          {
-            code: error.code,
-            message: error.message,
-            last4: keyLast4(bearerToken),
-            outcome: 'reject_key_resolve_failed',
-          },
-        );
+        logger.error('API key scope re-resolve failed (feat-029 fail-closed)', {
+          code: error.code,
+          message: error.message,
+          last4: keyLast4(bearerToken),
+          outcome: 'reject_key_resolve_failed',
+        });
       } else {
         logger.error('API key scope re-resolve unexpected error', { error });
       }
@@ -1887,12 +1298,16 @@ function getDocsOnlyHandler() {
 const parserInitPromise: Promise<void> = (async () => {
   const backend = getParserBackend();
   if (backend === 'regex') {
-    logger.info('feat-028 destructive-detector backend: regex (回滚通路 · 失 4 类绕过防护 + 长锁识别)');
+    logger.info(
+      'feat-028 destructive-detector backend: regex (回滚通路 · 失 4 类绕过防护 + 长锁识别)',
+    );
     return;
   }
   try {
     await initPgParser();
-    logger.info('feat-028 destructive-detector backend: pg-parser (libpg-query · WASM)');
+    logger.info(
+      'feat-028 destructive-detector backend: pg-parser (libpg-query · WASM)',
+    );
   } catch (err) {
     logger.error(
       'feat-028 PG parser 初始化失败 · mcp-server 启动拒 (fail-closed · 不 silent fallback regex)',
