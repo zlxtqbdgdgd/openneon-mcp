@@ -12,6 +12,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "mcp:stdio": "tsx mcp-src/server/stdio.ts",
     "lint": "eslint .",
     "lint:fix": "eslint --fix . && prettier -w .",
     "typecheck": "tsc --noEmit",

@@ -88,9 +88,12 @@ describe('MCP server e2e tool calls', () => {
     );
 
     await withConnectedClient(createTestContext(), async (client) => {
+      // feat-072/#217: createMcpServer now registers through registerNeonServer,
+      // which uses the production HTTP contract (top-level args, no `params`
+      // wrapper) — unifying the previously-divergent stdio/test registration.
       const result = await client.callTool({
         name: 'list_docs_resources',
-        arguments: { params: {} },
+        arguments: {},
       });
       const content = result.content as Array<{ type: string; text?: string }>;
 
@@ -112,7 +115,7 @@ describe('MCP server e2e tool calls', () => {
     await withConnectedClient(createTestContext(), async (client) => {
       const result = await client.callTool({
         name: 'get_doc_resource',
-        arguments: { params: { slug: 'docs/guides/prisma' } },
+        arguments: { slug: 'docs/guides/prisma' },
       });
       const content = result.content as Array<{ type: string; text?: string }>;
 
@@ -129,7 +132,7 @@ describe('MCP server e2e tool calls', () => {
     await withConnectedClient(createTestContext(), async (client) => {
       const result = await client.callTool({
         name: 'get_doc_resource',
-        arguments: { params: { slug: 'https://evil.example/bad' } },
+        arguments: { slug: 'https://evil.example/bad' },
       });
       const content = result.content as Array<{ type: string; text?: string }>;
 

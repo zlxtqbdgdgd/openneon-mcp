@@ -33,7 +33,14 @@
 - 长期分支：`feat/neon-autopilot`（本项目所有 mcp 改造）
 - 上游 `main` 定期 fetch 但不强制 rebase（详 [§3.1.3 时间线根因 + §5.5.3 fork 决策](https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/overview.html)）
 
-### 本仓特定 caveat（TODO 待填）
+### 验证 / 测试约定（重要 · 别重复问）
+
+- **验证一个特性 = 直连 dev server 端到端**（编译 → 重启 → curl/psql 对真 `neon_local` 集群），不是看 CI。HOW 的 SoT：[openneon-design `docs/agents/test-infra.md`](https://github.com/zlxtqbdgdgd/openneon-design/blob/main/docs/agents/test-infra.md)（§1 三层 / §4 改码→stop→make→start / §8 健康检查 / §11 4 paths）。代码合 main 但没这么验过 = 仍 `pending`，不是 done。
+- **CI 现只跑轻 hosted check**（lint / type-check / 命名 guard 等）—— self-hosted runner 已停（#81 火热单人期）· `l1-e2e` 之类会**永远 queued / 无结论** · **不是 e2e 门、别当 blocker**。
+- **编译 / 重启 / 测试是日常常规** —— maintainer 自己 `ssh openneon-dev` 跑完整 rebuild→restart→verify · 不必逐次求授权。
+- 本地工具链：dev server 用 pnpm（`source node20-env.sh` + corepack 绕过见 test-infra）；mac 上无 pnpm 时单测可直接 `./node_modules/.bin/vitest run ...`。
+
+### 其他本仓 caveat（TODO 待填）
 
 - [Vercel deploy 流程 / OAuth 配置 / MCP Server 启动顺序等]
 
