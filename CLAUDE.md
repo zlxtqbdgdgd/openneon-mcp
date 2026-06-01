@@ -40,9 +40,16 @@
 - **编译 / 重启 / 测试是日常常规** —— maintainer 自己 `ssh openneon-dev` 跑完整 rebuild→restart→verify · 不必逐次求授权。
 - 本地工具链：dev server 用 pnpm（`source node20-env.sh` + corepack 绕过见 test-infra）；mac 上无 pnpm 时单测可直接 `./node_modules/.bin/vitest run ...`。
 
+### 部署形态（feat-072/#219 · ADR-0019）
+
+- **常驻自托管 server（`next start`），不是 Vercel serverless**：`pnpm run build && pnpm run start` 起一个长期运行 Node 进程。
+- **为什么不 serverless**：有状态 Streamable HTTP（#216）把 MCP session 存进程内存——serverless 跨函数实例无 session 亲和会丢，且 elicitation 长连（等真人审批）扛不住 serverless。`vercel.json` 已删。
+- 本地 stdio：`pnpm run mcp:stdio`（需 `NEON_API_KEY` · 见 #217）。
+- 自托管 dev/test 连真 neon_local 集群见 [test-infra.md](https://github.com/zlxtqbdgdgd/openneon-design/blob/main/docs/agents/test-infra.md)。
+
 ### 其他本仓 caveat（TODO 待填）
 
-- [Vercel deploy 流程 / OAuth 配置 / MCP Server 启动顺序等]
+- [OAuth 配置 / MCP Server 启动顺序等]
 
 ---
 
