@@ -4,7 +4,6 @@ import '../../../mcp-src/sentry/instrument';
 import { initOtel } from '../../../mcp-src/observability/otel-init';
 initOtel();
 
-import { AsyncLocalStorage } from 'node:async_hooks';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { createMcpHandler, withMcpAuth } from 'mcp-handler';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -17,7 +16,6 @@ import {
   getParserBackend,
   initPgParser,
 } from '../../../mcp-src/protection/destructive-detector';
-import { type ElicitResultLike } from '../../../mcp-src/policy/stages/plan-mode';
 import { emitAuditEvent } from '../../../mcp-src/observability/audit-emit';
 import {
   getDocResource,
@@ -26,20 +24,15 @@ import {
 import { createNeonClient } from '../../../mcp-src/server/api';
 import pkg from '../../../package.json';
 import { handleToolError } from '../../../mcp-src/server/errors';
-import { detectClientApplication } from '../../../mcp-src/utils/client-application';
 import { isReadOnly } from '../../../mcp-src/utils/read-only';
 import { logger } from '../../../mcp-src/utils/logger';
 import { generateTraceId } from '../../../mcp-src/utils/trace';
 import { waitUntil } from '@vercel/functions';
 import { track, flushAnalytics } from '../../../mcp-src/analytics/analytics';
-import {
-  saveCapabilities,
-  loadCapabilities,
-} from '../../../mcp-src/server/capability-cache';
 import { resolveAccountFromAuth } from '../../../mcp-src/server/account';
 import { model } from '../../../mcp-src/oauth/model';
 import { getApiKeys, type ApiKeyRecord } from '../../../mcp-src/oauth/kv-store';
-import type { ServerContext, AppContext } from '../../../mcp-src/types/context';
+import type { AppContext } from '../../../mcp-src/types/context';
 import {
   isDocsOnlyRequest,
   resolveGrantFromSearchParams,
@@ -66,70 +59,9 @@ import {
 import { parseCategoryInclude } from '../../../mcp-src/config/categories';
 import { NEON_TOOLS } from '../../../mcp-src/tools/definitions';
 import { assert } from '../../../lib/assert';
-import {
-  registerNeonServer,
-  type AuthenticatedExtra,
-  type StaticToolContext,
-} from '../../../mcp-src/server/register-neon-server';
+import { type StaticToolContext } from '../../../mcp-src/server/register-neon-server';
 import { handleStatefulStreamableHttp } from '../../../mcp-src/server/streamable-http-transport';
 import { buildResourceMetadataUrlForResourceRequest } from '../../../lib/oauth/protected-resource-metadata';
-import {
-  bindSession,
-  deriveIdentity,
-  emitSseBindOutcome,
-  evaluateMessageOwnership,
-  releaseSession,
-  shouldRejectEnvelope,
-} from '../../../mcp-src/server/session-binding';
-
-class SessionIdentityMismatchError extends Error {
-  constructor() {
-    super('Session identity mismatch; request dropped');
-    this.name = 'SessionIdentityMismatchError';
-  }
-}
-
-type Deferred<T> = {
-  promise: Promise<T>;
-  resolve: (value: T | PromiseLike<T>) => void;
-  reject: (reason?: unknown) => void;
-};
-
-type SessionBindingContext = {
-  identity: string;
-  binding: Deferred<void>;
-  sessionId?: string;
-  sessionStarted: boolean;
-};
-
-type JsonErrorDefinition = {
-  status: number;
-  error: string;
-  code: string;
-};
-
-function createDeferred<T>(): Deferred<T> {
-  let resolve!: Deferred<T>['resolve'];
-  let reject!: Deferred<T>['reject'];
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
-// Carries the authenticated caller's identity fingerprint from post-auth into
-// the mcp-handler onEvent callback (where `SESSION_STARTED` fires with the
-// newly-generated sessionId). ALS propagates through the library's awaits. For
-// SSE, the outer route waits on the same context before returning the stream, so
-// clients never receive a usable sessionId before Redis has the owner binding.
-const sessionBindingContext = new AsyncLocalStorage<SessionBindingContext>();
-
-// SSE streams live up to this many seconds on Vercel Fluid Compute. Used both
-// as mcp-handler's `maxDuration` and (plus a buffer) as the TTL for session
-// bindings in Redis.
-const SSE_MAX_DURATION_SEC = 800;
-const SESSION_BINDING_TTL_SEC = SSE_MAX_DURATION_SEC + 70;
 
 const ROUTE_PATHS = {
   apiBase: '/api',
@@ -138,11 +70,6 @@ const ROUTE_PATHS = {
   legacyMcp: '/mcp',
   legacySse: '/sse',
 } as const;
-
-const SSE_CONNECTION_PATHS = new Set<string>([
-  ROUTE_PATHS.canonicalSse,
-  ROUTE_PATHS.legacySse,
-]);
 
 const JSON_RESPONSE_HEADERS = { 'Content-Type': 'application/json' } as const;
 
@@ -154,411 +81,6 @@ const HTTP_STATUS = {
 
 const PROTECTED_RESOURCE_METADATA_PATH =
   '/.well-known/oauth-protected-resource';
-
-const SESSION_ERROR_CODES = {
-  callerIdentityUnavailable: 'caller_identity_unavailable',
-  sessionBindingUnavailable: 'session_binding_unavailable',
-  sessionNotOwned: 'session_not_owned',
-  sessionVerificationUnavailable: 'session_verification_unavailable',
-} as const;
-
-const CALLER_IDENTITY_UNAVAILABLE_RESPONSE: JsonErrorDefinition = {
-  status: HTTP_STATUS.unauthorized,
-  error: 'Caller identity unavailable',
-  code: SESSION_ERROR_CODES.callerIdentityUnavailable,
-};
-
-const SESSION_BINDING_UNAVAILABLE_RESPONSE: JsonErrorDefinition = {
-  status: HTTP_STATUS.serviceUnavailable,
-  error: 'Session binding unavailable',
-  code: SESSION_ERROR_CODES.sessionBindingUnavailable,
-};
-
-function createContextualMcpHandler(staticToolContext: StaticToolContext) {
-  const { sseOwnerIdentity } = staticToolContext;
-
-  // Verifies that the caller baked into an incoming MCP envelope (tool or
-  // prompt call) matches the identity captured when the SSE stream was
-  // established. See StaticToolContext.sseOwnerIdentity for rationale.
-  // Returns true on mismatch so the registered handler can short-circuit
-  // with a no-op result rather than emitting a JSON-RPC error onto the SSE
-  // owner's channel (which is the victim, not the attacker).
-  const checkEnvelopeMatches = (
-    extra: AuthenticatedExtra,
-    invocationName: string,
-  ): boolean => {
-    if (!shouldRejectEnvelope(sseOwnerIdentity, extra.authInfo)) return false;
-    emitSseBindOutcome('envelope_mismatch', { invocation: invocationName });
-    logger.error('envelope identity mismatch — dropping invocation', {
-      invocation: invocationName,
-      hasCallerIdentity: deriveIdentity(extra.authInfo) !== null,
-    });
-    captureException(new SessionIdentityMismatchError(), {
-      tags: { invocation: invocationName },
-    });
-    return true;
-  };
-
-  return createMcpHandler(
-    (server: McpServer) => {
-      // Request-scoped mutable state (isolated per server instance)
-      let clientName = 'unknown';
-      let clientApplication = detectClientApplication(clientName);
-      let hasTrackedServerInit = false;
-      let lastKnownContext: ServerContext | undefined;
-      // issue #100 mitigation · one-shot guard for capability cache sync.
-      // mcp-handler 1.0.6 SSE reconnect 给 fresh McpServer 而 Claude Code 2.1.150
-      // 不重发 initialize → _clientCapabilities 永远 undefined → plan-mode fail-closed
-      // deny。每个 server instance 第一次 getAuthContext 时一次性检查:
-      //   - SDK 有真 caps → 写 redis cache (后续重连复用)
-      //   - SDK 无 caps → 从 redis 取上次同 (accountId, userAgent) 的 cache · 注入
-      //                  · 真的没 cache 才走 ADR-0008 fail-closed deny
-      let hasTriedCapabilityCacheSync = false;
-
-      // Default app context for analytics/Sentry (used in onerror fallback)
-      const defaultAppContext: AppContext = {
-        name: 'mcp-server-neon',
-        transport: 'sse',
-        environment: (process.env.NODE_ENV ??
-          'production') as AppContext['environment'],
-        version: pkg.version,
-      };
-
-      // Track server initialization (called after client detection with proper context)
-      function trackServerInit(context: ServerContext) {
-        if (hasTrackedServerInit) return;
-        hasTrackedServerInit = true;
-
-        const grant = context.grant ?? DEFAULT_GRANT;
-        const properties = {
-          clientName,
-          clientApplication,
-          readOnly: String(context.readOnly ?? false),
-          projectScoped: String(!!grant.projectId),
-          customScopes: grant.scopes?.join(',') ?? 'all',
-        };
-
-        track({
-          userId: context.account.id,
-          event: 'server_init',
-          properties,
-          context: {
-            client: context.client,
-            app: context.app,
-          },
-        });
-        waitUntil(flushAnalytics());
-        logger.info('Server initialized:', {
-          clientName,
-          clientApplication,
-          readOnly: context.readOnly,
-          grant,
-        });
-      }
-
-      // Helper function to get Neon client and context from auth info
-      async function getAuthContext(extra: AuthenticatedExtra) {
-        const authInfo = extra.authInfo;
-        if (!authInfo?.extra?.apiKey || !authInfo?.extra?.account) {
-          throw new Error('Authentication required');
-        }
-
-        const apiKey = authInfo.extra.apiKey;
-        const account = authInfo.extra.account;
-        const readOnly = authInfo.extra.readOnly ?? false;
-        const grant = { ...(authInfo.extra.grant ?? DEFAULT_GRANT) };
-        const client = authInfo.extra.client;
-        const transport = authInfo.extra.transport ?? 'sse';
-        const neonClient = createNeonClient(apiKey);
-
-        // Use User-Agent as clientName fallback if MCP handshake hasn't provided it yet
-        if (clientName === 'unknown' && authInfo.extra.userAgent) {
-          clientName = authInfo.extra.userAgent;
-          clientApplication = detectClientApplication(clientName);
-        }
-
-        // issue #100 mitigation · one-shot capability cache save/load。
-        // 详 server/capability-cache.ts 头注释 + ADR-0008 后果段 "production 部署前置"。
-        if (
-          !hasTriedCapabilityCacheSync &&
-          account?.id &&
-          authInfo.extra.userAgent
-        ) {
-          hasTriedCapabilityCacheSync = true;
-          const currentCaps = server.server.getClientCapabilities();
-          if (currentCaps && Object.keys(currentCaps).length > 0) {
-            // 真 initialize 已来 (oninitialized hook 触发过) → 把 fresh caps 写
-            // redis 给后续 reconnect 用。fire-and-forget · 失败不阻塞主流程。
-            void saveCapabilities(
-              account.id,
-              authInfo.extra.userAgent,
-              currentCaps,
-            );
-          } else {
-            // SDK _clientCapabilities undefined = client 没发 initialize (或 mcp-handler
-            // 还没投递)。试 redis cache · 命中就直接注入 SDK · 跳过 fail-closed deny。
-            const cached = await loadCapabilities(
-              account.id,
-              authInfo.extra.userAgent,
-            );
-            if (cached) {
-              // SDK 1.25.3 server/index.js:272/286 把 `_clientCapabilities` 当普通
-              // property 读写 (TS 标 `private` 但运行时无 #private · 外部赋值合法 ·
-              // 通过 unknown cast 绕 TS visibility 检查)。等真 initialize 来时 SDK
-              // 会自然覆写,我们的 cache 会被刷新。
-              (
-                server.server as unknown as {
-                  _clientCapabilities?: typeof cached;
-                }
-              )._clientCapabilities = cached;
-              logger.info(
-                'capability-cache · injected (#100 · reconnect without re-init)',
-                { accountId: account.id, caps: cached },
-              );
-            } else {
-              logger.warn(
-                'capability-cache · miss + no initialize · plan-mode 将走 ADR-0008 fail-closed deny',
-                {
-                  accountId: account.id,
-                  userAgent: authInfo.extra.userAgent,
-                },
-              );
-            }
-          }
-        }
-
-        // Create dynamic appContext with actual transport
-        const dynamicAppContext: AppContext = {
-          name: 'mcp-server-neon',
-          transport,
-          environment: (process.env.NODE_ENV ??
-            'production') as AppContext['environment'],
-          version: pkg.version,
-        };
-
-        // Build and store context for potential use in onerror
-        const context: ServerContext = {
-          apiKey,
-          account,
-          app: dynamicAppContext,
-          readOnly,
-          client,
-          grant,
-        };
-        lastKnownContext = context;
-
-        return {
-          apiKey,
-          account,
-          readOnly,
-          grant,
-          neonClient,
-          clientApplication,
-          clientName,
-          client,
-          context,
-        };
-      }
-
-      // Set up lifecycle hooks for client detection and error handling
-      server.server.oninitialized = () => {
-        const clientInfo = server.server.getClientVersion();
-        logger.info('MCP oninitialized:', {
-          clientInfo,
-          hasName: !!clientInfo?.name,
-          currentClientName: clientName,
-        });
-        // Prefer MCP clientInfo over HTTP User-Agent (more reliable)
-        // This ensures we get the real client name even when using mcp-remote,
-        // which forwards the original client name (e.g., "Cursor (via mcp-remote 0.1.31)")
-        if (clientInfo?.name) {
-          clientName = clientInfo.name;
-          clientApplication = detectClientApplication(clientName);
-        }
-        // issue #100 · 真 initialize 来时重置 cache sync guard · 让下次 getAuthContext
-        // 拿 fresh caps 刷 redis (覆盖可能 stale 的 cached value · 如 client 升级声明
-        // 新能力)。处理 init 与 first tool call 的 race: 即使 inject 路径先跑了,oninit
-        // 后下次 tool call 会重新 sync 把 fresh caps 写进 cache。
-        hasTriedCapabilityCacheSync = false;
-        // Note: server_init is tracked on first authenticated request
-        // because we don't have account info here yet
-      };
-
-      server.server.onerror = (error: unknown) => {
-        const message =
-          error instanceof Error ? error.message : 'Unknown error';
-        logger.error('Server error:', {
-          message,
-          error,
-        });
-
-        // Use last known context if available, otherwise use defaults
-        const userId = lastKnownContext?.account?.id ?? 'unknown';
-        const contexts = {
-          app: lastKnownContext?.app ?? defaultAppContext,
-          client: lastKnownContext?.client,
-        };
-
-        const eventId = captureException(error, {
-          user: lastKnownContext?.account
-            ? { id: lastKnownContext.account.id }
-            : undefined,
-          contexts,
-        });
-
-        track({
-          userId,
-          event: 'server_error',
-          properties: { message, error, eventId },
-          context: contexts,
-        });
-        waitUntil(flushAnalytics());
-      };
-
-      registerNeonServer(server, {
-        staticToolContext,
-        getAuthContext,
-        trackServerInit,
-        checkEnvelopeMatches,
-        elicit: async (message, requestedSchema, timeoutMs) => {
-          const res = await server.server.elicitInput(
-            { message, requestedSchema } as never,
-            { timeout: timeoutMs },
-          );
-          return {
-            action: res.action,
-            content: res.content,
-          } as ElicitResultLike;
-        },
-      });
-    },
-    {
-      serverInfo: {
-        name: 'mcp-server-neon',
-        version: pkg.version,
-      },
-      capabilities: {
-        tools: {},
-        resources: {},
-        prompts: {
-          listChanged: true,
-        },
-      },
-    },
-    {
-      redisUrl: process.env.KV_URL || process.env.REDIS_URL,
-      basePath: ROUTE_PATHS.apiBase,
-      maxDuration: SSE_MAX_DURATION_SEC, // Fluid Compute ceiling for SSE connections
-      verboseLogs: process.env.NODE_ENV !== 'production',
-      onEvent: (event) => {
-        switch (event.type) {
-          case 'SESSION_STARTED': {
-            logger.info('MCP session started', {
-              sessionId: event.sessionId,
-              transport: event.transport,
-              clientInfo: event.clientInfo,
-            });
-            const bindingContext = sessionBindingContext.getStore();
-            const identity = bindingContext?.identity;
-            if (event.sessionId && identity && bindingContext) {
-              const sessionId = event.sessionId;
-              bindingContext.sessionId = sessionId;
-              bindingContext.sessionStarted = true;
-              void bindSession(sessionId, identity, SESSION_BINDING_TTL_SEC)
-                .then(() => {
-                  bindingContext.binding.resolve();
-                })
-                .catch((err) => {
-                  logger.error('session-binding bind failed', {
-                    sessionId,
-                    err,
-                  });
-                  captureException(err, {
-                    tags: { operation: 'bindSession' },
-                    extra: { sessionId },
-                  });
-                  bindingContext.binding.reject(err);
-                });
-            } else if (bindingContext) {
-              const err = new Error('SESSION_STARTED missing sessionId');
-              logger.error('session-binding cannot bind SSE session', {
-                hasSessionId: !!event.sessionId,
-                hasIdentity: !!identity,
-              });
-              captureException(err, {
-                tags: { operation: 'bindSession' },
-              });
-              bindingContext.binding.reject(err);
-            }
-            break;
-          }
-
-          case 'SESSION_ENDED': {
-            logger.info('MCP session ended', {
-              sessionId: event.sessionId,
-              transport: event.transport,
-            });
-            if (event.sessionId) {
-              const sessionId = event.sessionId;
-              waitUntil(
-                releaseSession(sessionId).catch((err) => {
-                  logger.error('session-binding release failed', {
-                    sessionId,
-                    err,
-                  });
-                  captureException(err, {
-                    tags: { operation: 'releaseSession' },
-                    extra: { sessionId },
-                  });
-                }),
-              );
-            }
-            break;
-          }
-
-          case 'REQUEST_COMPLETED':
-            if (event.status === 'error') {
-              logger.warn('MCP request failed', {
-                sessionId: event.sessionId,
-                requestId: event.requestId,
-                method: event.method,
-                duration: event.duration,
-              });
-            }
-            break;
-
-          case 'ERROR':
-            const isConnectionError =
-              typeof event.error === 'string'
-                ? event.error.includes('No connection established')
-                : event.error?.message?.includes('No connection established');
-
-            if (isConnectionError) {
-              logger.warn('MCP connection lost', {
-                sessionId: event.sessionId,
-                source: event.source,
-                severity: event.severity,
-                context: event.context,
-              });
-            } else if (event.severity === 'fatal') {
-              logger.error('MCP fatal error', {
-                sessionId: event.sessionId,
-                error: event.error,
-                source: event.source,
-                context: event.context,
-              });
-              captureException(
-                event.error instanceof Error
-                  ? event.error
-                  : new Error(String(event.error)),
-              );
-            }
-            break;
-        }
-      },
-    },
-  );
-}
 
 // The docs-only handler bypasses OAuth entirely. It only registers tools
 // scoped to the `docs` category, which currently fetch from neon.com via
@@ -1082,7 +604,8 @@ function getStaticToolContext(req: Request): StaticToolContext {
     grant,
     readOnly: authExtra?.readOnly === true,
     categoryInclude,
-    sseOwnerIdentity: deriveIdentity(authInfo),
+    // feat-072/#218: SSE retired → no envelope owner identity to bind.
+    sseOwnerIdentity: null,
   };
 }
 
@@ -1091,157 +614,15 @@ function getStaticToolContext(req: Request): StaticToolContext {
 // the message into the SSE owner's stream. The decision logic lives in
 // `evaluateMessageOwnership` so it can be unit-tested in isolation; this
 // function is just the Request → Response adapter.
-async function checkSessionOwnership(
-  req: Request,
-  identity: string | null,
-): Promise<Response | null> {
-  const url = new URL(req.url);
-  const sessionId = url.searchParams.get('sessionId');
-  const result = await evaluateMessageOwnership(
-    req.method,
-    url.pathname,
-    sessionId,
-    identity,
-  );
-  if (result.kind !== 'reject') return null;
-  if (result.status === HTTP_STATUS.forbidden) {
-    logger.warn('session-binding mismatch on POST /message', {
-      sessionId,
-      reason: result.reason,
-    });
-  } else if (result.status === HTTP_STATUS.serviceUnavailable) {
-    logger.error('session-binding verify failed; denying', { sessionId });
-  }
-  const code =
-    result.status === HTTP_STATUS.forbidden
-      ? SESSION_ERROR_CODES.sessionNotOwned
-      : result.status === HTTP_STATUS.serviceUnavailable
-        ? SESSION_ERROR_CODES.sessionVerificationUnavailable
-        : SESSION_ERROR_CODES.callerIdentityUnavailable;
-  return jsonErrorResponse({
-    status: result.status,
-    error: result.reason,
-    code,
-  });
-}
-
-function isSseConnectionRequest(req: Request): boolean {
-  const url = new URL(req.url);
-  return req.method === 'GET' && SSE_CONNECTION_PATHS.has(url.pathname);
-}
-
-function jsonErrorResponse({
-  status,
-  error,
-  code,
-}: JsonErrorDefinition): Response {
-  return new Response(JSON.stringify({ error, code }), {
-    status,
-    headers: JSON_RESPONSE_HEADERS,
-  });
-}
-
-function cloneRequestWithSignal(req: Request, signal: AbortSignal): Request {
-  const cloned = new Request(req, { signal });
-  cloned.auth = req.auth;
-  return cloned;
-}
-
-async function runSseAfterSessionBinding(
-  req: Request,
-  identity: string,
-): Promise<Response> {
-  const abortController = new AbortController();
-  const abortFromClient = () => abortController.abort();
-  if (req.signal.aborted) {
-    abortController.abort();
-  } else {
-    req.signal.addEventListener('abort', abortFromClient, { once: true });
-  }
-
-  const bindingContext: SessionBindingContext = {
-    identity,
-    binding: createDeferred<void>(),
-    sessionStarted: false,
-  };
-  const sseReq = cloneRequestWithSignal(req, abortController.signal);
-  const responsePromise = sessionBindingContext.run(bindingContext, () =>
-    createContextualMcpHandler(getStaticToolContext(sseReq))(sseReq),
-  );
-
-  try {
-    const firstResult = await Promise.race([
-      responsePromise.then(
-        (response) => ({ type: 'response' as const, response }),
-        (error) => ({ type: 'response-error' as const, error }),
-      ),
-      bindingContext.binding.promise.then(
-        () => ({ type: 'bound' as const }),
-        (error) => ({ type: 'bind-error' as const, error }),
-      ),
-    ]);
-
-    if (firstResult.type === 'response-error') {
-      throw firstResult.error;
-    }
-    if (firstResult.type === 'bind-error') {
-      abortController.abort();
-      void responsePromise.catch(() => undefined);
-      return jsonErrorResponse(SESSION_BINDING_UNAVAILABLE_RESPONSE);
-    }
-
-    const response =
-      firstResult.type === 'response'
-        ? firstResult.response
-        : await responsePromise;
-
-    if (bindingContext.sessionStarted) {
-      try {
-        await bindingContext.binding.promise;
-      } catch {
-        abortController.abort();
-        void responsePromise.catch(() => undefined);
-        return jsonErrorResponse(SESSION_BINDING_UNAVAILABLE_RESPONSE);
-      }
-      return response;
-    }
-
-    if (response.ok) {
-      const err = new Error('SSE response opened without session binding');
-      logger.error('session-binding missing SESSION_STARTED event; denying', {
-        status: response.status,
-      });
-      captureException(err, {
-        tags: { operation: 'bindSession' },
-      });
-      abortController.abort();
-      return jsonErrorResponse(SESSION_BINDING_UNAVAILABLE_RESPONSE);
-    }
-
-    return response;
-  } finally {
-    req.signal.removeEventListener('abort', abortFromClient);
-  }
-}
 
 // Wrap with authentication. After auth is resolved, route to a context-scoped
 // MCP handler whose registered tools match the token grant/read-only context.
 const authHandler = withMcpAuth(
-  async (req) => {
-    const identity = deriveIdentity(req.auth);
-    const rejection = await checkSessionOwnership(req, identity);
-    if (rejection) return rejection;
-    if (isSseConnectionRequest(req)) {
-      if (!identity) {
-        return jsonErrorResponse(CALLER_IDENTITY_UNAVAILABLE_RESPONSE);
-      }
-      return runSseAfterSessionBinding(req, identity);
-    }
-    // feat-072/#216 (ADR-0019): streamable HTTP 走裸 SDK **有状态** transport
-    // （取代 mcp-handler 无状态 createContextualMcpHandler）· 单端点承载 elicitation。
-    // SSE 路径仍走 createContextualMcpHandler(mcp-handler)，#218 退役。
-    return handleStatefulStreamableHttp(req, getStaticToolContext(req));
-  },
+  // feat-072/#216+#218 (ADR-0019): SSE retired (→ 410 in handleRequest); all
+  // authenticated MCP traffic now flows through the raw-SDK **stateful**
+  // Streamable HTTP handler (single /api/mcp endpoint, carries elicitation).
+  async (req: Request) =>
+    handleStatefulStreamableHttp(req, getStaticToolContext(req)),
   verifyToken,
   {
     required: true,
@@ -1337,6 +718,20 @@ const handleRequest = async (req: Request) => {
     url.pathname = ROUTE_PATHS.canonicalMcp;
   } else if (url.pathname === ROUTE_PATHS.legacySse) {
     url.pathname = ROUTE_PATHS.canonicalSse;
+  }
+
+  // feat-072/#218 (ADR-0019): SSE transport retired — only the stateful
+  // Streamable HTTP endpoint (/api/mcp) remains. Return 410 Gone pointing
+  // clients at /api/mcp (no auth needed for the retirement notice).
+  if (url.pathname === ROUTE_PATHS.canonicalSse) {
+    return new Response(
+      JSON.stringify({
+        error:
+          'The SSE transport has been retired; use Streamable HTTP at /api/mcp.',
+        code: 'sse_retired',
+      }),
+      { status: 410, headers: JSON_RESPONSE_HEADERS },
+    );
   }
 
   const normalizedReq = new Request(url.toString(), {

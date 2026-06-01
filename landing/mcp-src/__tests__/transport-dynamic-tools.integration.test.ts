@@ -80,29 +80,40 @@ function buildOAuthToken(
   };
 }
 
+// feat-072/#216+#218 (ADR-0019): the remote transport is now **stateful**
+// Streamable HTTP — initialize returns an Mcp-Session-Id and subsequent requests
+// MUST carry it. mcpCall threads the session id in/out; openSession() below does
+// the initialize → notifications/initialized handshake and returns the sid.
 async function mcpCall(
   bearerToken: string,
   method: string,
-  id: number,
+  id: number | undefined,
   params?: unknown,
   queryString = '',
+  sessionId?: string,
 ) {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${bearerToken}`,
+    'Content-Type': 'application/json',
+    Accept: 'application/json, text/event-stream',
+  };
+  if (sessionId) {
+    headers['mcp-session-id'] = sessionId;
+    headers['mcp-protocol-version'] = '2025-03-26';
+  }
   const req = new Request(`http://localhost/api/mcp${queryString}`, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${bearerToken}`,
-      'Content-Type': 'application/json',
-      Accept: 'application/json, text/event-stream',
-    },
+    headers,
     body: JSON.stringify({
       jsonrpc: '2.0',
-      id,
+      ...(id !== undefined ? { id } : {}),
       method,
       ...(params ? { params } : {}),
     }),
   });
 
   const res = await POST(req);
+  const sessionIdOut = res.headers.get('mcp-session-id') ?? sessionId;
   const raw = await res.text();
   let body: unknown = raw;
   try {
@@ -121,7 +132,7 @@ async function mcpCall(
       }
     }
   }
-  return { status: res.status, body };
+  return { status: res.status, body, sessionId: sessionIdOut };
 }
 
 // feat-005 #3 (47bc1e7): tools/list defaults to the `core` listing tier (4
@@ -135,8 +146,8 @@ async function mcpCall(
 // and the registered (callable) handler set to include the optional tools.
 const INCLUDE_ALL = '?include=all';
 
-async function listToolsForToken(token: string, queryString = INCLUDE_ALL) {
-  await mcpCall(
+async function openSession(token: string, queryString = INCLUDE_ALL) {
+  const init = await mcpCall(
     token,
     'initialize',
     1,
@@ -147,8 +158,34 @@ async function listToolsForToken(token: string, queryString = INCLUDE_ALL) {
     },
     queryString,
   );
+  const sessionId = init.sessionId;
+  if (!sessionId) {
+    throw new Error(
+      `initialize did not return an Mcp-Session-Id: ${JSON.stringify(init.body)}`,
+    );
+  }
+  await mcpCall(
+    token,
+    'notifications/initialized',
+    undefined,
+    undefined,
+    queryString,
+    sessionId,
+  );
+  return sessionId;
+}
 
-  const list = await mcpCall(token, 'tools/list', 2, {}, queryString);
+async function listToolsForToken(token: string, queryString = INCLUDE_ALL) {
+  const sessionId = await openSession(token, queryString);
+
+  const list = await mcpCall(
+    token,
+    'tools/list',
+    2,
+    {},
+    queryString,
+    sessionId,
+  );
   if (list.status !== 200) {
     throw new Error(
       `tools/list failed with status ${list.status}: ${JSON.stringify(list.body)}`,
@@ -203,6 +240,7 @@ describe('transport dynamic tool composition', () => {
     expect(scopedNames.has('list_projects')).toBe(false);
 
     // Unscoped variant still requires projectId from caller -> handler should not run.
+    const unscopedSid = await openSession(unscopedToken, INCLUDE_ALL);
     await mcpCall(
       unscopedToken,
       'tools/call',
@@ -212,10 +250,12 @@ describe('transport dynamic tool composition', () => {
         arguments: { sql: 'select 1' },
       },
       INCLUDE_ALL,
+      unscopedSid,
     );
     expect(runSqlSpy).toHaveBeenCalledTimes(0);
 
     // Project-scoped variant injects projectId from auth grant -> handler runs.
+    const scopedSid = await openSession(scopedToken, INCLUDE_ALL);
     await mcpCall(
       scopedToken,
       'tools/call',
@@ -225,6 +265,7 @@ describe('transport dynamic tool composition', () => {
         arguments: { sql: 'select 1' },
       },
       INCLUDE_ALL,
+      scopedSid,
     );
     expect(runSqlSpy).toHaveBeenCalledTimes(1);
   });
@@ -264,17 +305,7 @@ describe('transport dynamic tool composition', () => {
       }) as never,
     );
 
-    await mcpCall(
-      oauthToken,
-      'initialize',
-      10,
-      {
-        protocolVersion: '2025-03-26',
-        capabilities: {},
-        clientInfo: { name: 'test-client', version: '1.0.0' },
-      },
-      '?projectId=proj_123',
-    );
+    const sid = await openSession(oauthToken, '?projectId=proj_123');
 
     await mcpCall(
       oauthToken,
@@ -285,6 +316,7 @@ describe('transport dynamic tool composition', () => {
         arguments: { sql: 'select 1' },
       },
       '?projectId=proj_123',
+      sid,
     );
 
     // If query params were merged at runtime, run_sql would receive injected projectId.
@@ -299,17 +331,7 @@ describe('transport dynamic tool composition', () => {
       buildOAuthToken(readOnlyToken, 'read') as never,
     );
 
-    await mcpCall(
-      readOnlyToken,
-      'initialize',
-      20,
-      {
-        protocolVersion: '2025-03-26',
-        capabilities: {},
-        clientInfo: { name: 'test-client', version: '1.0.0' },
-      },
-      '?readonly=false',
-    );
+    const sid = await openSession(readOnlyToken, '?readonly=false');
 
     const list = await mcpCall(
       readOnlyToken,
@@ -317,6 +339,7 @@ describe('transport dynamic tool composition', () => {
       21,
       {},
       '?readonly=false',
+      sid,
     );
     expect(list.status).toBe(200);
 
