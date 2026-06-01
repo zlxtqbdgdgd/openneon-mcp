@@ -5,12 +5,17 @@ import { initOtel } from '../../../mcp-src/observability/otel-init';
 initOtel();
 
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
-import { createMcpHandler, withMcpAuth } from 'mcp-handler';
+import {
+  InvalidTokenError,
+  InsufficientScopeError,
+  ServerError,
+} from '@modelcontextprotocol/sdk/server/auth/errors.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { normalizeObjectSchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
 import { toJsonSchemaCompat } from '@modelcontextprotocol/sdk/server/zod-json-schema-compat.js';
-import { captureException, startSpan } from '@sentry/node';
+import { startSpan } from '@sentry/node';
 
 import {
   getParserBackend,
@@ -63,6 +68,18 @@ import { type StaticToolContext } from '../../../mcp-src/server/register-neon-se
 import { handleStatefulStreamableHttp } from '../../../mcp-src/server/streamable-http-transport';
 import { buildResourceMetadataUrlForResourceRequest } from '../../../lib/oauth/protected-resource-metadata';
 
+// feat-072/#218 part2 (ADR-0019): `req.auth` carries the verified OAuth identity
+// set by the self-implemented withOAuth gate — previously provided by
+// mcp-handler's global Request augmentation, which went away with the dependency.
+declare global {
+  // Global augmentation requires interface (declaration merging) — `type` cannot
+  // augment the built-in Request, so the repo's prefer-`type` rule is N/A here.
+  // eslint-disable-next-line @typescript-eslint/consistent-type-definitions
+  interface Request {
+    auth?: AuthInfo;
+  }
+}
+
 const ROUTE_PATHS = {
   apiBase: '/api',
   canonicalMcp: '/api/mcp',
@@ -110,172 +127,127 @@ const docsOnlyAppContext: AppContext = {
   version: pkg.version,
 };
 
-function createDocsOnlyMcpHandler() {
-  return createMcpHandler(
-    (server: McpServer) => {
-      async function runDocsTool(
-        toolName: 'list_docs_resources' | 'get_doc_resource',
-        call: () => Promise<string>,
-      ) {
-        const traceId = generateTraceId();
-        return await startSpan(
-          {
-            name: 'tool_call',
-            attributes: {
-              tool_name: toolName,
-              trace_id: traceId,
-              docs_only: true,
-            },
-          },
-          async (span) => {
-            const properties = {
-              tool_name: toolName,
-              readOnly: 'true',
-              projectScoped: 'false',
-              clientName: 'anonymous-docs',
-              traceId,
-              docsOnly: 'true',
-            };
-
-            logger.info('tool call (docs-only):', properties);
-
-            track({
-              anonymousId: ANONYMOUS_DOCS_USER_ID,
-              event: 'tool_call',
-              properties,
-              context: { app: docsOnlyAppContext },
-            });
-            waitUntil(flushAnalytics());
-
-            try {
-              const text = await call();
-              return {
-                content: [
-                  {
-                    type: 'text' as const,
-                    text,
-                  },
-                ],
-              };
-            } catch (error) {
-              span.setStatus({ code: 2 });
-              const errorResult = handleToolError(error, properties, traceId);
-              logger.warn('tool error response (docs-only):', {
-                ...properties,
-                isError: true,
-                contentLength: errorResult.content?.length,
-                firstContentType: errorResult.content?.[0]?.type,
-              });
-              return errorResult;
-            }
-          },
-        );
-      }
-
-      server.registerTool(
-        listDocsResourcesTool.name,
-        {
-          description: listDocsResourcesTool.description,
-          inputSchema: listDocsResourcesTool.inputSchema,
-          annotations: listDocsResourcesTool.annotations,
+function buildDocsOnlyServer(): McpServer {
+  const server = new McpServer(
+    { name: 'mcp-server-neon', version: pkg.version },
+    { capabilities: { tools: {} } },
+  );
+  async function runDocsTool(
+    toolName: 'list_docs_resources' | 'get_doc_resource',
+    call: () => Promise<string>,
+  ) {
+    const traceId = generateTraceId();
+    return await startSpan(
+      {
+        name: 'tool_call',
+        attributes: {
+          tool_name: toolName,
+          trace_id: traceId,
+          docs_only: true,
         },
-        async () =>
-          runDocsTool(listDocsResourcesTool.name, () => listDocsResources()),
-      );
+      },
+      async (span) => {
+        const properties = {
+          tool_name: toolName,
+          readOnly: 'true',
+          projectScoped: 'false',
+          clientName: 'anonymous-docs',
+          traceId,
+          docsOnly: 'true',
+        };
 
-      server.registerTool(
-        getDocResourceTool.name,
-        {
-          description: getDocResourceTool.description,
-          inputSchema: getDocResourceTool.inputSchema,
-          annotations: getDocResourceTool.annotations,
-        },
-        async (args: { slug: string }) =>
-          runDocsTool(getDocResourceTool.name, () =>
-            getDocResource({ slug: args.slug }),
-          ),
-      );
+        logger.info('tool call (docs-only):', properties);
 
-      server.server.setRequestHandler(ListToolsRequestSchema, async () => {
-        const tools = DOCS_ONLY_TOOLS.map((tool) => {
-          const normalizedSchema = normalizeObjectSchema(tool.inputSchema);
-          const inputSchema = normalizedSchema
-            ? toJsonSchemaCompat(normalizedSchema, {
-                strictUnions: true,
-                pipeStrategy: 'input',
-              })
-            : { type: 'object' as const };
-
-          return {
-            name: tool.name,
-            title: tool.annotations?.title,
-            description: tool.description,
-            inputSchema,
-            annotations: tool.annotations,
-          };
+        track({
+          anonymousId: ANONYMOUS_DOCS_USER_ID,
+          event: 'tool_call',
+          properties,
+          context: { app: docsOnlyAppContext },
         });
+        waitUntil(flushAnalytics());
 
-        return { tools };
-      });
-    },
-    {
-      serverInfo: {
-        name: 'mcp-server-neon',
-        version: pkg.version,
-      },
-      capabilities: {
-        tools: {},
-      },
-    },
-    {
-      redisUrl: process.env.KV_URL || process.env.REDIS_URL,
-      basePath: '/api',
-      maxDuration: 800,
-      verboseLogs: process.env.NODE_ENV !== 'production',
-      onEvent: (event) => {
-        switch (event.type) {
-          case 'SESSION_STARTED':
-            logger.info('MCP docs-only session started', {
-              sessionId: event.sessionId,
-              transport: event.transport,
-              clientInfo: event.clientInfo,
-            });
-            break;
-          case 'SESSION_ENDED':
-            logger.info('MCP docs-only session ended', {
-              sessionId: event.sessionId,
-              transport: event.transport,
-            });
-            break;
-          case 'REQUEST_COMPLETED':
-            if (event.status === 'error') {
-              logger.warn('MCP docs-only request failed', {
-                sessionId: event.sessionId,
-                requestId: event.requestId,
-                method: event.method,
-                duration: event.duration,
-              });
-            }
-            break;
-          case 'ERROR':
-            if (event.severity === 'fatal') {
-              logger.error('MCP docs-only fatal error', {
-                sessionId: event.sessionId,
-                error: event.error,
-                source: event.source,
-                context: event.context,
-              });
-              captureException(
-                event.error instanceof Error
-                  ? event.error
-                  : new Error(String(event.error)),
-              );
-            }
-            break;
+        try {
+          const text = await call();
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text,
+              },
+            ],
+          };
+        } catch (error) {
+          span.setStatus({ code: 2 });
+          const errorResult = handleToolError(error, properties, traceId);
+          logger.warn('tool error response (docs-only):', {
+            ...properties,
+            isError: true,
+            contentLength: errorResult.content?.length,
+            firstContentType: errorResult.content?.[0]?.type,
+          });
+          return errorResult;
         }
       },
+    );
+  }
+
+  server.registerTool(
+    listDocsResourcesTool.name,
+    {
+      description: listDocsResourcesTool.description,
+      inputSchema: listDocsResourcesTool.inputSchema,
+      annotations: listDocsResourcesTool.annotations,
     },
+    async () =>
+      runDocsTool(listDocsResourcesTool.name, () => listDocsResources()),
   );
+
+  server.registerTool(
+    getDocResourceTool.name,
+    {
+      description: getDocResourceTool.description,
+      inputSchema: getDocResourceTool.inputSchema,
+      annotations: getDocResourceTool.annotations,
+    },
+    async (args: { slug: string }) =>
+      runDocsTool(getDocResourceTool.name, () =>
+        getDocResource({ slug: args.slug }),
+      ),
+  );
+
+  server.server.setRequestHandler(ListToolsRequestSchema, async () => {
+    const tools = DOCS_ONLY_TOOLS.map((tool) => {
+      const normalizedSchema = normalizeObjectSchema(tool.inputSchema);
+      const inputSchema = normalizedSchema
+        ? toJsonSchemaCompat(normalizedSchema, {
+            strictUnions: true,
+            pipeStrategy: 'input',
+          })
+        : { type: 'object' as const };
+
+      return {
+        name: tool.name,
+        title: tool.annotations?.title,
+        description: tool.description,
+        inputSchema,
+        annotations: tool.annotations,
+      };
+    });
+
+    return { tools };
+  });
+  return server;
+}
+
+async function handleDocsOnly(req: Request): Promise<Response> {
+  const server = buildDocsOnlyServer();
+  // docs-only is anonymous + simple → stateless transport (sessionIdGenerator
+  // undefined), fresh server+transport per request (no cross-request sharing).
+  const transport = new WebStandardStreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+  });
+  await server.connect(transport);
+  return transport.handleRequest(req);
 }
 
 // Cache TTL for API key verification (5 minutes)
@@ -609,25 +581,103 @@ function getStaticToolContext(req: Request): StaticToolContext {
   };
 }
 
-// Session-binding check for POSTs to the SSE message endpoint. Verifies that
-// the caller owns the sessionId they're posting to before the library routes
-// the message into the SSE owner's stream. The decision logic lives in
-// `evaluateMessageOwnership` so it can be unit-tested in isolation; this
-// function is just the Request → Response adapter.
+// feat-072/#218 part2 (ADR-0019): self-implemented OAuth gate, replacing
+// mcp-handler's `withMcpAuth` (dropped with the rest of mcp-handler). Faithfully
+// mirrors it: extract `Bearer` → `verifyToken` (reused, unchanged) → fail-closed
+// 401 / scope 403 / expiry 401 → set `req.auth` → call handler. The OAuth error
+// classes come straight from the MCP SDK, so the `WWW-Authenticate` challenge +
+// JSON body are byte-identical to the previous behavior. `rewriteResourceMetadataHeader`
+// (below, in handleRequest) still rewrites the 401's resource_metadata to the
+// exact requested resource path.
+function oauthChallengeResponse(
+  error: InvalidTokenError | InsufficientScopeError,
+  resourceMetadataUrl: string,
+  status: number,
+): Response {
+  return new Response(JSON.stringify(error.toResponseObject()), {
+    status,
+    headers: {
+      'Content-Type': 'application/json',
+      'WWW-Authenticate': `Bearer error="${error.errorCode}", error_description="${error.message}", resource_metadata="${resourceMetadataUrl}"`,
+    },
+  });
+}
 
-// Wrap with authentication. After auth is resolved, route to a context-scoped
-// MCP handler whose registered tools match the token grant/read-only context.
-const authHandler = withMcpAuth(
-  // feat-072/#216+#218 (ADR-0019): SSE retired (→ 410 in handleRequest); all
-  // authenticated MCP traffic now flows through the raw-SDK **stateful**
-  // Streamable HTTP handler (single /api/mcp endpoint, carries elicitation).
+function withOAuth(
+  handler: (req: Request) => Promise<Response>,
+  {
+    required = false,
+    requiredScopes,
+  }: { required?: boolean; requiredScopes?: string[] } = {},
+) {
+  return async (req: Request): Promise<Response> => {
+    const resourceMetadataUrl = `${new URL(req.url).origin}${PROTECTED_RESOURCE_METADATA_PATH}`;
+    const authHeader = req.headers.get('Authorization');
+    const [type, token] = authHeader?.split(' ') ?? [];
+    const bearerToken = type?.toLowerCase() === 'bearer' ? token : undefined;
+
+    let authInfo: AuthInfo | undefined;
+    try {
+      authInfo = await verifyToken(req, bearerToken);
+    } catch (err) {
+      logger.error('Unexpected error authenticating bearer token', { err });
+      return oauthChallengeResponse(
+        new InvalidTokenError('Invalid token'),
+        resourceMetadataUrl,
+        HTTP_STATUS.unauthorized,
+      );
+    }
+
+    try {
+      if (required && !authInfo) {
+        throw new InvalidTokenError('No authorization provided');
+      }
+      if (!authInfo) {
+        return handler(req);
+      }
+      if (
+        requiredScopes?.length &&
+        !requiredScopes.every((scope) => authInfo!.scopes.includes(scope))
+      ) {
+        throw new InsufficientScopeError('Insufficient scope');
+      }
+      if (authInfo.expiresAt && authInfo.expiresAt < Date.now() / 1000) {
+        throw new InvalidTokenError('Token has expired');
+      }
+      (req as Request & { auth?: AuthInfo }).auth = authInfo;
+      return handler(req);
+    } catch (error) {
+      if (error instanceof InvalidTokenError) {
+        return oauthChallengeResponse(
+          error,
+          resourceMetadataUrl,
+          HTTP_STATUS.unauthorized,
+        );
+      }
+      if (error instanceof InsufficientScopeError) {
+        return oauthChallengeResponse(
+          error,
+          resourceMetadataUrl,
+          HTTP_STATUS.forbidden,
+        );
+      }
+      logger.error('Unexpected error authenticating bearer token', { error });
+      return new Response(
+        JSON.stringify(
+          new ServerError('Internal Server Error').toResponseObject(),
+        ),
+        { status: 500, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+  };
+}
+
+// All authenticated MCP traffic flows through the raw-SDK stateful Streamable
+// HTTP handler (single /api/mcp endpoint, carries elicitation).
+const authHandler = withOAuth(
   async (req: Request) =>
     handleStatefulStreamableHttp(req, getStaticToolContext(req)),
-  verifyToken,
-  {
-    required: true,
-    resourceMetadataPath: PROTECTED_RESOURCE_METADATA_PATH,
-  },
+  { required: true },
 );
 
 function rewriteResourceMetadataHeader(
@@ -665,16 +715,6 @@ function rewriteResourceMetadataHeader(
     statusText: response.statusText,
     headers,
   });
-}
-
-// Lazily-initialized docs-only handler. Built on first docs-only request
-// so module load doesn't pay the cost when the endpoint is never used.
-let docsOnlyHandler: ReturnType<typeof createDocsOnlyMcpHandler> | null = null;
-function getDocsOnlyHandler() {
-  if (!docsOnlyHandler) {
-    docsOnlyHandler = createDocsOnlyMcpHandler();
-  }
-  return docsOnlyHandler;
 }
 
 // feat-028/#108: mcp-server 启动期初始化 PG parser (WASM runtime · libpg-query)。
@@ -746,7 +786,7 @@ const handleRequest = async (req: Request) => {
   // without an account. Only triggers when the request is exactly
   // ?category=docs (no other categories, no projectId).
   if (isDocsOnlyRequest(url.searchParams)) {
-    return getDocsOnlyHandler()(normalizedReq);
+    return handleDocsOnly(normalizedReq);
   }
 
   const response = authHandler(normalizedReq);
