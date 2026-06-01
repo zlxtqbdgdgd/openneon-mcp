@@ -5,8 +5,10 @@ const nextConfig: NextConfig = {
   // (turbopack 生产构建会把 wasm 路径改写成不存在的 /ROOT/... · externalize 后运行时 require 真实 node_modules · loader 自找 wasm)
   serverExternalPackages: ['libpg-query'],
 
-  // Serverless deployment on Vercel - do not use 'export' mode
-  // API routes require dynamic server-side rendering
+  // feat-072/#219 (ADR-0019): deployed as a **long-running Node server**
+  // (`next start`), NOT Vercel serverless — stateful in-memory MCP sessions
+  // (#216) need a persistent process (Vercel config removed: vercel.json gone).
+  // Not 'export' mode: API routes are dynamic server-rendered and hold state.
 
   // Redirect landing page to Neon docs (single source of truth)
   async redirects() {
