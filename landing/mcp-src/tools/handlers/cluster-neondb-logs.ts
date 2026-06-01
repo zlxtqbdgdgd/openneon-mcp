@@ -51,7 +51,9 @@ export const clusterNeondbLogsInputSchema = z.object({
   endpoint_id: z
     .string()
     .min(1)
-    .describe('Compute endpoint id (feat-060 claim binding · current_project_id 自动 filter).'),
+    .describe(
+      'Compute endpoint id (claim binding · current_project_id 自动 filter).',
+    ),
   time_range: z
     .object({
       start: z.string().describe('ISO8601 start inclusive.'),
@@ -60,10 +62,13 @@ export const clusterNeondbLogsInputSchema = z.object({
     .describe('Log fetch window · half-open [start, end).'),
   trace_id: z
     .string()
-    .regex(/^[0-9a-f]{32}$/i, 'trace_id must be 32 hex characters (W3C trace_id)')
+    .regex(
+      /^[0-9a-f]{32}$/i,
+      'trace_id must be 32 hex characters (W3C trace_id)',
+    )
     .optional()
     .describe(
-      'Optional W3C trace_id filter. v1 阶段 (feat-036 v1 raw stderr) 返 feat_036_not_ready · 等 v2 jsonlog ship.',
+      'Optional W3C trace_id filter. On v1 (raw stderr) 返 feat_036_not_ready · 等 v2 jsonlog ship.',
     ),
   severity: z
     .array(z.enum(['FATAL', 'ERROR', 'WARN', 'INFO', 'DEBUG']))
@@ -82,18 +87,24 @@ export const clusterNeondbLogsInputSchema = z.object({
     .int()
     .positive()
     .optional()
-    .describe('Top N pattern · default 50 (matches drain3.top_n_patterns GUC).'),
+    .describe(
+      'Top N pattern · default 50 (matches drain3.top_n_patterns GUC).',
+    ),
   cache: z
     .boolean()
     .optional()
-    .describe('Consult router cache · default true · ongoing trace 1h TTL · closed 24h.'),
+    .describe(
+      'Consult router cache · default true · ongoing trace 1h TTL · closed 24h.',
+    ),
   trace_state: z
     .enum(['ongoing', 'closed'])
     .optional()
     .describe('Trace state hint · default ongoing (conservative TTL).'),
 });
 
-export type ClusterNeondbLogsInput = z.infer<typeof clusterNeondbLogsInputSchema>;
+export type ClusterNeondbLogsInput = z.infer<
+  typeof clusterNeondbLogsInputSchema
+>;
 
 // ------------------------------------------------------------------------------------------------
 // Output shape (handler returns this · tool.ts wraps as text response)
@@ -271,12 +282,14 @@ export async function handleClusterNeondbLogs(
     reason: routerPayload.router.reason,
     estimated_tokens: routerPayload.router.estimated_tokens,
     cluster: routerPayload.cluster,
-    cluster_requires_llm_enrichment: routerPayload.router.requires_llm_enrichment,
+    cluster_requires_llm_enrichment:
+      routerPayload.router.requires_llm_enrichment,
     cached: routerPayload.cached,
     duration_ms: duration,
     coverage: {
       fetched_lines: (fetchResult as LogFetchSuccess).coverage.fetched_lines,
-      total_matching_lines: (fetchResult as LogFetchSuccess).coverage.total_matching_lines,
+      total_matching_lines: (fetchResult as LogFetchSuccess).coverage
+        .total_matching_lines,
       truncated: (fetchResult as LogFetchSuccess).coverage.truncated,
       latest_line_ts: (fetchResult as LogFetchSuccess).coverage.latest_line_ts,
     },

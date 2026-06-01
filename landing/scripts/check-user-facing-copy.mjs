@@ -18,22 +18,34 @@
 // Run: `node scripts/check-user-facing-copy.mjs` (wired into `pnpm lint`).
 
 import ts from 'typescript';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, relative } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..');
 
-// User-facing MCP surface: the files whose tool/prompt copy reaches the user — both
-// top-level `description`/`title` AND zod input-schema field descriptions (`.describe()`),
-// since every one of these is serialized into the `tools/list` response the agent reads.
-// Extend this list when a new file defines runtime user-facing tool/prompt copy.
+// User-facing MCP surface: every `*.ts` under `mcp-src/tools/` (tool defs, merged
+// registrations, AND zod input schemas — including handler-defined ones) plus the
+// MCP prompts. Both top-level `description`/`title` AND zod field descriptions
+// (`.describe()`) are serialized into the tools/list response the agent reads, so the
+// guard walks the whole tool tree rather than a hand-maintained file list — a new
+// handler-defined schema can't slip a leak past it.
+function collectTsFiles(dir) {
+  const out = [];
+  for (const entry of readdirSync(dir)) {
+    if (entry === '__tests__') continue;
+    const abs = join(dir, entry);
+    if (statSync(abs).isDirectory()) out.push(...collectTsFiles(abs));
+    else if (entry.endsWith('.ts') && !entry.endsWith('.test.ts'))
+      out.push(abs);
+  }
+  return out;
+}
+
 const SCAN_FILES = [
-  'mcp-src/tools/definitions.ts',
-  'mcp-src/tools/tools.ts',
-  'mcp-src/tools/toolsSchema.ts',
-  'mcp-src/prompts.ts',
+  ...collectTsFiles(join(repoRoot, 'mcp-src/tools')),
+  join(repoRoot, 'mcp-src/prompts.ts'),
 ];
 
 // Property names whose string value is user-facing runtime copy.
@@ -68,8 +80,8 @@ function literalText(node) {
 
 const violations = [];
 
-for (const rel of SCAN_FILES) {
-  const abs = join(repoRoot, rel);
+for (const abs of SCAN_FILES) {
+  const rel = relative(repoRoot, abs);
   const source = ts.createSourceFile(
     abs,
     readFileSync(abs, 'utf8'),

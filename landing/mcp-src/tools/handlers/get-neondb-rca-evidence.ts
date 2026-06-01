@@ -46,8 +46,13 @@ import type {
 export const getNeondbRcaEvidenceInputSchema = z.object({
   trace_id: z
     .string()
-    .regex(/^[0-9a-f]{32}$/i, 'trace_id must be 32 hex characters (W3C trace_id)')
-    .describe('W3C trace_id (32 hex chars) · identifies the incident to gather RCA evidence for.'),
+    .regex(
+      /^[0-9a-f]{32}$/i,
+      'trace_id must be 32 hex characters (W3C trace_id)',
+    )
+    .describe(
+      'W3C trace_id (32 hex chars) · identifies the incident to gather RCA evidence for.',
+    ),
   audit_filter: z
     .object({
       start: z.string().describe('ISO8601 start time inclusive.'),
@@ -55,7 +60,7 @@ export const getNeondbRcaEvidenceInputSchema = z.object({
     })
     .optional()
     .describe(
-      'Optional time range for audit-event lookup (feat-031 query_audit_events). Defaults to ±10min around the trace.',
+      'Optional time range for audit-event lookup (query_audit_events). Defaults to ±10min around the trace.',
     ),
 });
 
@@ -166,7 +171,10 @@ export async function handleGetNeondbRcaEvidence(
     estimateTokens(templateMarkdown) + estimateTokens(evidenceJson);
 
   // Patch the header now that we have the real token estimate.
-  templateInput.estimatedInputTokens = Math.min(estInputTokens, RCA_MAX_INPUT_TOKENS);
+  templateInput.estimatedInputTokens = Math.min(
+    estInputTokens,
+    RCA_MAX_INPUT_TOKENS,
+  );
   templateMarkdown = renderTemplate(templateInput);
 
   const duration = Date.now() - t0;
