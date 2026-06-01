@@ -4,7 +4,7 @@ import { AuthContext } from './auth';
 
 export type AppContext = {
   name: string;
-  transport: 'sse' | 'stream';
+  transport: 'sse' | 'stream' | 'stdio';
   environment: Environment;
   version: string;
 };
