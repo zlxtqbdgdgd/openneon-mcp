@@ -60,23 +60,23 @@ export const attachDynamicProbeInputSchema = z.object({
     .number()
     .int()
     .min(1)
-    .max(300, 'duration cap = 300s (5 min) · 重设计 §4.1')
-    .describe('probe attach 持续秒 · cap 5 min · sql-driver set→等→stat 等待窗口'),
+    .max(300, 'duration cap = 300s (5 min)')
+    .describe(
+      'probe attach 持续秒 · cap 5 min · sql-driver set→等→stat 等待窗口',
+    ),
   max_overhead_pct: z
     .number()
     .min(1.0)
     .max(5.0)
-    .describe(
-      'post-condition 提前判退阈值 (% CPU on target) · 重设计 §6 (1.0 ~ 5.0)',
-    ),
+    .describe('post-condition 提前判退阈值 (% CPU on target · 1.0 ~ 5.0)'),
   endpoint_id: z
     .string()
     .optional()
-    .describe('Neon endpoint ID · L3+ ODD 内强制 (此字段必填)'),
+    .describe('Neon endpoint ID (此 probe 必填)'),
   project_id: z
     .string()
     .optional()
-    .describe('Neon project ID · 走 G1 跨 project hard-deny 校验'),
+    .describe('Neon project ID · 跨 project 访问被 hard-deny 校验拦截'),
 });
 
 export type AttachDynamicProbeInput = z.infer<

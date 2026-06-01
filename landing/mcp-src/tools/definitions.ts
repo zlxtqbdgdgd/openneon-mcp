@@ -660,7 +660,7 @@ export const NEON_TOOLS = [
     name: 'get_neondb_explain_plans' as const,
     scope: 'querying',
     category: 'optional',
-    description: `Get a SQL statement's execution plan (EXPLAIN) — the safe T3 analyzer. Prefer this over \`explain_sql_statement\`.
+    description: `Get a SQL statement's execution plan (EXPLAIN) — the safe plan analyzer. Prefer this over \`explain_sql_statement\`.
 
     <use_case>
       Use to inspect a query's plan (e.g. spot a Seq Scan / missing index on a slow SELECT before recommending an index).
@@ -674,7 +674,7 @@ export const NEON_TOOLS = [
     inputSchema: explainPlansInputSchema,
     readOnlySafe: true,
     annotations: {
-      title: 'Get Neon DB Explain Plans (feat-019 · op-class-aware safe explain)',
+      title: 'Get Neon DB Explain Plans',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
@@ -689,7 +689,7 @@ export const NEON_TOOLS = [
     name: 'get_neondb_health_signals' as const,
     scope: 'querying',
     category: 'optional',
-    description: `Get a whole-database health snapshot — the T4 aggregator. Prefer this over raw \`run_sql\` against pg_stat_* views.
+    description: `Get a whole-database health snapshot — the multi-signal health aggregator. Prefer this over raw \`run_sql\` against pg_stat_* views.
 
     <use_case>
       Use first when diagnosing "the DB is slow / unhealthy": one call returns every health signal's current value
@@ -703,7 +703,7 @@ export const NEON_TOOLS = [
     inputSchema: getNeondbHealthSignalsInputSchema,
     readOnlySafe: true,
     annotations: {
-      title: 'Get Neon DB Health Signals (feat-020 · T4 multi-signal aggregation)',
+      title: 'Get Neon DB Health Signals',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
@@ -718,11 +718,11 @@ export const NEON_TOOLS = [
     name: 'get_neondb_pool_stats' as const,
     scope: 'querying',
     category: 'optional',
-    description: `Get a connection-pool snapshot from pgcat / PgBouncer — the T12 pool view. Complements T4 health_signals.
+    description: `Get a connection-pool snapshot from pgcat / PgBouncer — the connection-pool view. Complements \`get_neondb_health_signals\`.
 
     <use_case>
-      Use when diagnosing "connection refused / timeout" while T4 conn_saturation looks low: T4 reads PostgreSQL
-      pg_stat_activity (backend count), but clients can be stuck WAITING in the pooler queue. T12 surfaces
+      Use when diagnosing "connection refused / timeout" while \`get_neondb_health_signals\` conn_saturation looks low: that signal reads PostgreSQL
+      pg_stat_activity (backend count), but clients can be stuck WAITING in the pooler queue. This pool view surfaces
       cl_waiting + max_wait_ms so you see pool saturation that PG-side metrics miss. High cl_waiting + high max_wait_ms
       = the pool is full → recommend raising pool size / max_client_conn.
     </use_case>
@@ -737,7 +737,7 @@ export const NEON_TOOLS = [
     inputSchema: getNeondbPoolStatsInputSchema,
     readOnlySafe: true,
     annotations: {
-      title: 'Get Neon DB Pool Stats (feat-025 · T12 pgcat/PgBouncer pool snapshot)',
+      title: 'Get Neon DB Pool Stats',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
@@ -752,11 +752,11 @@ export const NEON_TOOLS = [
     name: 'get_neondb_query_performance' as const,
     scope: 'querying',
     category: 'optional',
-    description: `Rank the slowest / heaviest queries — the T5 locator. Prefer this over raw \`run_sql\` against pg_stat_statements.
+    description: `Rank the slowest / heaviest queries — the slow-query locator. Prefer this over raw \`run_sql\` against pg_stat_statements.
 
     <use_case>
-      Use after T4 flags a problem to find WHICH queries are responsible: returns cumulative top-N (rank by total/mean/calls/io)
-      with per-query profile tags (slow-per-call / high-frequency / io-heavy). Pick the worst offender, then explain it with T3.
+      Use after \`get_neondb_health_signals\` flags a problem to find WHICH queries are responsible: returns cumulative top-N (rank by total/mean/calls/io)
+      with per-query profile tags (slow-per-call / high-frequency / io-heavy). Pick the worst offender, then explain it with \`get_neondb_explain_plans\`.
     </use_case>
 
     <important_notes>
@@ -766,7 +766,7 @@ export const NEON_TOOLS = [
     inputSchema: getNeondbQueryPerformanceInputSchema,
     readOnlySafe: true,
     annotations: {
-      title: 'Get Neon DB Query Performance (feat-021 · T5 slow-query ranking)',
+      title: 'Get Neon DB Query Performance',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
@@ -781,11 +781,11 @@ export const NEON_TOOLS = [
     name: 'get_neondb_query_samples' as const,
     scope: 'querying',
     category: 'optional',
-    description: `Search recent query execution samples (duration + the query that ran) — the T11 sample finder. Use to investigate "what does this slow query actually look like / how slow is it" without ever seeing real user data.
+    description: `Search recent query execution samples (duration + the query that ran) — the obfuscated sample finder. Use to investigate "what does this slow query actually look like / how slow is it" without ever seeing real user data.
 
     <use_case>
       Use to investigate a specific query's behavior over time (pass signature + time_range + duration_min_ms): returns
-      execution duration plus the query text. Pair with T10 search_plans to correlate slow samples with plan regressions.
+      execution duration plus the query text. Pair with \`get_neondb_search_plans\` to correlate slow samples with plan regressions.
     </use_case>
 
     <important_notes>
@@ -797,7 +797,7 @@ export const NEON_TOOLS = [
     inputSchema: getNeondbQuerySamplesInputSchema,
     readOnlySafe: true,
     annotations: {
-      title: 'Get Neon DB Query Samples (feat-024 · T11 server-side obfuscated)',
+      title: 'Get Neon DB Query Samples',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
@@ -812,10 +812,10 @@ export const NEON_TOOLS = [
     name: 'get_neondb_recommendations' as const,
     scope: 'querying',
     category: 'optional',
-    description: `Get server-computed database recommendations — the T7 advisor. Prefer this over reasoning "should I add an index?" yourself.
+    description: `Get server-computed database recommendations — the recommendation advisor. Prefer this over reasoning "should I add an index?" yourself.
 
     <use_case>
-      Use after T3 shows a Seq Scan (or on a routine optimization sweep): returns enriched, deterministic recommendations
+      Use after \`get_neondb_explain_plans\` shows a Seq Scan (or on a routine optimization sweep): returns enriched, deterministic recommendations
       (missing_index / unused_index / oversized_temp / autovacuum_lag / inefficient_join) — each with evidence + a ready-to-run
       SQL template + confidence — so you go straight to plan mode instead of guessing table/column names.
     </use_case>
@@ -829,7 +829,7 @@ export const NEON_TOOLS = [
     inputSchema: getNeondbRecommendationsInputSchema,
     readOnlySafe: true,
     annotations: {
-      title: 'Get Neon DB Recommendations (feat-022 · T7 recommendation rule set)',
+      title: 'Get Neon DB Recommendations',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
@@ -844,24 +844,24 @@ export const NEON_TOOLS = [
     name: 'get_neondb_search_plans' as const,
     scope: 'querying',
     category: 'optional',
-    description: `Search historical query execution plans — the T10 proactive-inspection tool. Use this to find plan-quality problems across the whole project without re-running EXPLAIN per query.
+    description: `Search historical query execution plans — the proactive plan-history tool. Use this to find plan-quality problems across the whole project without re-running EXPLAIN per query.
 
     <use_case>
       Use for proactive inspection ("which queries ran a Seq Scan in the last 7 days?", "find plans with cost > 10000")
       and for tracking a single query's plan over time (pass signature_list + depth='full' to see a plan regress from
-      Index Scan to Seq Scan). Pair each hit with T7 recommendations to produce an index-tuning candidate list.
+      Index Scan to Seq Scan). Pair each hit with \`get_neondb_recommendations\` to produce an index-tuning candidate list.
     </use_case>
 
     <important_notes>
-      Reads a server-side plan history store populated by T3 (on-demand) and a background pg_stat_statements collector —
+      Reads a server-side plan history store populated by \`get_neondb_explain_plans\` (on-demand) and a background pg_stat_statements collector —
       it does NOT execute any SQL. Plans contain table/column/filter structure but NO bound parameter values (EXPLAIN default).
-      If the store is empty (cold start), run T3 first or wait for the background collector. depth='shallow' returns a
+      If the store is empty (cold start), run \`get_neondb_explain_plans\` first or wait for the background collector. depth='shallow' returns a
       one-line summary per hit; depth='full' returns the (summarized) plan_json.
     </important_notes>`,
     inputSchema: searchPlansInputSchema,
     readOnlySafe: true,
     annotations: {
-      title: 'Search Neon DB Plans (feat-023 · T10 proactive plan history)',
+      title: 'Search Neon DB Plans',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
@@ -1507,15 +1507,15 @@ export const NEON_TOOLS = [
       Use this tool BEFORE making any decision based on a query's SQL text. When you have a query_signature
       (e.g. from list_slow_queries), call this tool to get the actual SQL · do NOT guess based on signature name.
       This is the openneon LLM-native MCP anti-hallucination tool · prevents agent from "creatively interpreting"
-      slow query signatures into wrong SQL (root cause of multiple public AI agent删库事件 · R10 §2.1).
+      slow query signatures into wrong SQL (root cause of multiple public AI agent删库事件).
     </use_case>
 
     <workflow_rule>
-      HALLUCINATION GUARD (openneon core rule · feat-003): NEVER write, quote, edit, or reason about a
+      HALLUCINATION GUARD (openneon core rule): NEVER write, quote, edit, or reason about a
       query's SQL text from memory or from the query_signature name alone. ALWAYS call this tool first to
       obtain the ground-truth parameterized SQL. The symmetric rule for table columns: call
-      get_neondb_schemas (T8) BEFORE naming or assuming any column. These two tools are the 防幻觉一对组合 —
-      skipping either is the documented root cause of public AI-agent 删库 incidents (R10 §2.1). If this tool
+      get_neondb_schemas BEFORE naming or assuming any column. These two tools are the 防幻觉一对组合 —
+      skipping either is the documented root cause of public AI-agent 删库 incidents. If this tool
       returns NotFoundError, do NOT fabricate the SQL — tell the user the query_signature was not found.
     </workflow_rule>
 
@@ -1527,7 +1527,7 @@ export const NEON_TOOLS = [
     inputSchema: getNeondbQueryStatementInputSchema,
     readOnlySafe: true,
     annotations: {
-      title: 'Get Neon DB Query Statement (T6 · 防 LLM 自负幻觉 SQL)',
+      title: 'Get Neon DB Query Statement',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
@@ -1551,24 +1551,24 @@ export const NEON_TOOLS = [
     </use_case>
 
     <workflow_rule>
-      HALLUCINATION GUARD (openneon core rule · feat-004): NEVER name, filter by, or assume a table's columns
+      HALLUCINATION GUARD (openneon core rule): NEVER name, filter by, or assume a table's columns
       from memory or table-name conventions. ALWAYS call this tool first to get ground-truth columns. The
-      symmetric rule for SQL text: call get_neondb_query_statement (T6) BEFORE quoting any query's SQL. These
+      symmetric rule for SQL text: call get_neondb_query_statement BEFORE quoting any query's SQL. These
       two tools are the 防幻觉一对组合 — skipping either is the documented root cause of public AI-agent 删库
-      incidents (R10 §2.1). If this tool returns NotFoundError, do NOT fabricate columns — tell the user the
+      incidents. If this tool returns NotFoundError, do NOT fabricate columns — tell the user the
       table was not found and suggest a wildcard (e.g. 'sales*').
     </workflow_rule>
 
     <important_notes>
       Day-one shallow schema returns 5 fields per column (table/column/type/indexed/nullable).
       Wildcard filter (e.g. "sales*") and full depth (with pg_index INCLUDE / partial WHERE) coming in
-      feat-004 #2 + #4 sub-issues.
+      a later release.
       For comparison: Neon official 'describe_table_schema' returns full schema without progressive disclosure.
     </important_notes>`,
     inputSchema: getNeondbSchemasInputSchema,
     readOnlySafe: true,
     annotations: {
-      title: 'Get Neon DB Schemas (T8 · 防表名字段幻觉)',
+      title: 'Get Neon DB Schemas',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
@@ -1587,7 +1587,7 @@ export const NEON_TOOLS = [
     <use_case>
       Use this tool as the FIRST STEP when the user asks "list my Neon projects" or wants to know which
       projects exist · status · region · branch / endpoint count · primary IDs. Returns one row per project
-      with derived fields ready for follow-up tool calls (T6 query_statement / T8 schemas / run_sql).
+      with derived fields ready for follow-up tool calls (get_neondb_query_statement / get_neondb_schemas / run_sql).
       Replaces 2-3 sequential Neon API calls (list_projects → list_branches → list_endpoints) with one
       parallelized call · saves agent context budget.
     </use_case>
@@ -1603,7 +1603,7 @@ export const NEON_TOOLS = [
     inputSchema: findNeondbInstancesInputSchema,
     readOnlySafe: true,
     annotations: {
-      title: 'Find Neon DB Instances (T1 · sales 剧本入口)',
+      title: 'Find Neon DB Instances',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
@@ -1616,7 +1616,7 @@ export const NEON_TOOLS = [
     name: 'get_neondb_policy' as const,
     scope: 'projects',
     category: 'optional',
-    description: `Get a project's autonomy policy advisory (L level + per-op-class verdict + overrides + hard-deny).
+    description: `Get a project's autonomy policy advisory (autonomy level + per-op-class verdict + overrides + hard-deny).
 
     <use_case>
       Use this FIRST (before write ops) to learn what the project's autonomy level allows — which op-classes
@@ -1631,7 +1631,7 @@ export const NEON_TOOLS = [
     inputSchema: getNeondbPolicyInputSchema,
     readOnlySafe: true,
     annotations: {
-      title: 'Get Neon DB Policy (feat-057 · agent 事前感知 L 边界)',
+      title: 'Get Neon DB Policy',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
@@ -1658,8 +1658,8 @@ export const NEON_TOOLS = [
       'application_name' source: PostgreSQL GUC set by client at connect time. NULL or empty are
       reported as 'unknown' (COALESCE in SQL).
       Day-one shape: 4 columns (application_name / connection_count / last_active_time / endpoint_id).
-      'endpoint_id' is reserved but ALWAYS empty in day-one · L2b USR ship 后 fills (forward-compat).
-      Default min_connections=1 skips idle 0-conn apps. Hard limit 50 rows (token budget per §5).
+      'endpoint_id' is reserved but ALWAYS empty in day-one · a later release fills it (forward-compat).
+      Default min_connections=1 skips idle 0-conn apps. Hard limit 50 rows (token budget).
       An EMPTY result is valid (not an error): either no application meets min_connections, OR the
       databaseName doesn't match a real database. If you expected results but got none, verify the
       databaseName (defaults to 'neondb') before concluding "no callers".
@@ -1667,7 +1667,7 @@ export const NEON_TOOLS = [
     inputSchema: getNeondbCallingServicesInputSchema,
     readOnlySafe: true,
     annotations: {
-      title: 'Get Neon DB Calling Services (T2 · 应用归因)',
+      title: 'Get Neon DB Calling Services',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
@@ -1690,7 +1690,7 @@ export const NEON_TOOLS = [
       Use this tool whenever you (the agent) are about to run a heavy DDL — ALTER TABLE that rewrites
       a column / CREATE INDEX (non-CONCURRENTLY) / DROP TABLE / VACUUM FULL / CLUSTER /
       ALTER TABLE ... VALIDATE CONSTRAINT — especially against a large table (> ~1M rows). The tool:
-      (1) classifies the DDL on the spot (no API call · reuses feat-028 op-class),
+      (1) classifies the DDL on the spot (no API call · reuses the destructive-op classifier),
       (2) if the classifier says "canary needed", creates a temporary Neon branch labelled
           purpose=canary + expiry_ts=now+7d, runs the DDL there with a 1800s timeout (configurable),
           and measures duration_ms / rows_affected / locks_acquired,
@@ -1707,7 +1707,7 @@ export const NEON_TOOLS = [
       branch size. SKIP-list (READ_ONLY / CREATE INDEX CONCURRENTLY / ALTER TABLE light · ADD COLUMN
       NULLable / RENAME / SET DEFAULT etc.) short-circuits without creating a branch. Pass
       force_canary=true to override the classifier (DBA paranoid mode). Parser-unidentified SQL
-      (OTHER bucket) fails CLOSED → canary still runs (feat-028 fail-closed pattern). Global hard
+      (OTHER bucket) fails CLOSED → canary still runs (fail-closed pattern). Global hard
       limit 3 concurrent canaries per server (Neon API rate-limit guardrail). On Neon API 5xx /
       429 / network → outcome=canary_failed kind=server_error|rate_limit|network · DO NOT proceed
       blindly · ask DBA. plan_markdown field is the human-readable artifact to drop into the DBA's
@@ -1716,7 +1716,7 @@ export const NEON_TOOLS = [
     inputSchema: branchCanaryDdlInputSchema,
     readOnlySafe: false,
     annotations: {
-      title: 'Branch Canary DDL (feat-042 · DDL 自动 canary 预演 + plan mode)',
+      title: 'Branch Canary DDL',
       readOnlyHint: false,
       destructiveHint: false,
       idempotentHint: false,
@@ -1734,8 +1734,8 @@ export const NEON_TOOLS = [
 
     <use_case>
       Pass endpoint_id + time_range and the tool: (1) fetches obfuscated log via LogFetchAdapter
-      seam (vendor-neutral · Datadog logs default), (2) re-obfuscates at the mcp boundary (feat-024
-      T11 · raw log never leaves the server), (3) runs the deterministic Drain3 algorithm
+      seam (vendor-neutral · Datadog logs default), (2) re-obfuscates at the mcp boundary (raw log
+      never leaves the server), (3) runs the deterministic Drain3 algorithm
       (fixed-depth prefix tree · sim_th=0.4) producing top_n templates + tail aggregate (long-tail
       with severity distribution preserved so anomalies never get dropped), (4) computes a
       cluster_requires_llm_enrichment hint from a token estimate (≤ 50K → true · the cluster set is
@@ -1748,14 +1748,14 @@ export const NEON_TOOLS = [
       layer (LLM cost + plan-mode approval live in the skill, not here). force_path controls the
       enrichment hint only: 'auto' (≤50K → true) / 'main' (force true · rejects input over 200K
       tokens) / 'backup' (force false · skill stays deterministic-only). trace_id filter requires
-      feat-036 v2 jsonlog · v1 阶段 returns feat_036_not_ready. Audit emits 'log_clustering_invoked'
+      v2 structured logs · on v1 it returns a not-ready status. Audit emits 'log_clustering_invoked'
       per call with path_used='deterministic' / cost_estimate_usd=0 / cache_hit / requires_llm_enrichment.
     </important_notes>`,
     inputSchema: clusterNeondbLogsInputSchema,
     // form-shift: mcp 不调 LLM · 0 cost · 但有外部 log backend fetch + 写 audit → readOnlySafe=false 保守.
     readOnlySafe: false,
     annotations: {
-      title: 'Cluster Neon Logs (feat-037 · L3 deterministic Drain3 pattern clustering · semantic by skill)',
+      title: 'Cluster Neon Logs (deterministic pattern clustering)',
       readOnlyHint: false,
       destructiveHint: false,
       idempotentHint: true,
@@ -1789,7 +1789,7 @@ export const NEON_TOOLS = [
 
     <important_notes>
       Risk level = HIGH (in-engine instrumentation perturbs the target session/instance). Plan mode
-      (feat-027 elicitation) MUST approve before attach · fail-closed deny when the pg_uprobe session
+      (human-in-the-loop approval) MUST approve before attach · fail-closed deny when the pg_uprobe session
       connection is unavailable. duration ≤ 300s · max_overhead_pct must be 1.0-5.0. There is NO
       whitelist requirement (agents who know the source pick any exported function = form-shift value);
       the only hard gate is a denylist FLOOR (re.fullmatch) — security-sensitive functions are always
@@ -1803,7 +1803,7 @@ export const NEON_TOOLS = [
     // pg_uprobe in-engine instrumentation · 直接影响 compute session · 写性质
     readOnlySafe: false,
     annotations: {
-      title: 'Attach Neon DB Dynamic Probe (feat-068 · pg_uprobe SQL-driven TIME/HIST/MEM)',
+      title: 'Attach Neon DB Dynamic Probe',
       readOnlyHint: false,
       // 副作用是观察 (timing/count) · 不改 schema/data · 但 in-engine 扰动 → destructiveHint=false 但 risk=high
       destructiveHint: false,
@@ -1823,22 +1823,22 @@ export const NEON_TOOLS = [
     <use_case>
       Use this tool when the agent has a SPECIFIC trace_id (from the user · from a log entry · from
       search_neondb_traces). Returns every span in the trace (proxy → compute → safekeeper → pageserver
-      for path β · root=app for path α) with USR + Neon Key attributes + tracestate marker. Best
+      for path β · root=app for path α) with user-session + Neon Key attributes + tracestate marker. Best
       paired with search_neondb_traces (latency P99 surfaces a candidate · this tool drills in).
     </use_case>
 
     <important_notes>
       Cross-tenant safety: projectId is the tenant boundary · spans tagged with another project_id are
-      dropped + cross_tenant_blocked audit (feat-066/#3 · feat-060 claim-binding 集成). trace_id MUST be
+      dropped + a cross_tenant_blocked audit event. trace_id MUST be
       32 lowercase hex chars (W3C trace-context · validated by zod refine).
       Datadog APM backend (POST /api/v2/spans/events/search · trace_id filter). NOTE the legacy
-      /api/v1/trace/{id} endpoint does NOT exist in the public API (详设 §11 风险表已澄清).
+      /api/v1/trace/{id} endpoint does NOT exist in the public API.
       Token economy: one Neon path-β trace is ~5–20 spans · within < 5K token / trace budget (OWASP LLM10).
     </important_notes>`,
     inputSchema: getNeondbTraceInputSchema,
     readOnlySafe: true,
     annotations: {
-      title: 'Get Neon DB Trace (feat-066 · path β 单 trace 全 span)',
+      title: 'Get Neon DB Trace',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,
@@ -1860,21 +1860,21 @@ export const NEON_TOOLS = [
     </use_case>
 
     <workflow_rule>
-      Cross-tenant safety (feat-066/#3 · feat-060 集成): projectId is the authoritative tenant boundary.
+      Cross-tenant safety: projectId is the authoritative tenant boundary.
       filter.project_id supplied by the agent is HARD-OVERRIDDEN to projectId — any mismatch emits a
       cross_tenant_blocked audit event before the backend call. The agent NEVER sees another project's traces.
     </workflow_rule>
 
     <important_notes>
       Limit hard cap 50 (TRACE_SEARCH_LIMIT_MAX · token economy · OWASP LLM10). Default 20.
-      Default time range = last 1h when omitted (keep token cost predictable · 详设 §5).
+      Default time range = last 1h when omitted (keep token cost predictable).
       Component enum maps to Datadog APM service-name namespace: \`service:neon-<component>\`.
       Datadog APM backend (POST /api/v2/spans/events/search · root-span DDL filter).
     </important_notes>`,
     inputSchema: searchNeondbTracesInputSchema,
     readOnlySafe: true,
     annotations: {
-      title: 'Search Neon DB Traces (feat-066 · 按 latency/component 切 trace summary 列表)',
+      title: 'Search Neon DB Traces',
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: true,

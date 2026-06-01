@@ -32,7 +32,7 @@ const outputFormatField = z
   .enum(['csv', 'json', 'tsv'])
   .optional()
   .describe(
-    "Output format for the response. Default 'csv' (~10× token reduction vs JSON · feat-006 token economy地基). 'json' opt-in for backwards-compat tooling.",
+    "Output format for the response. Default 'csv' (~10× token reduction vs JSON). 'json' opt-in for backwards-compat tooling.",
   );
 
 export const listProjectsInputSchema = z.object({
@@ -152,7 +152,7 @@ export const explainPlansInputSchema = z.object({
     .enum(['shallow', 'full'])
     .optional()
     .describe(
-      "Progressive disclosure depth (feat-019/#2 · reuses feat-007). 'shallow' (default · token economy) returns a parsed signals summary (seq_scan / missing_index_hint / expensive_node / total_cost) — avoids the agent hallucinating over a huge nested plan JSON. 'full' returns the raw EXPLAIN JSON.",
+      "Progressive disclosure depth. 'shallow' (default · token economy) returns a parsed signals summary (seq_scan / missing_index_hint / expensive_node / total_cost) — avoids the agent hallucinating over a huge nested plan JSON. 'full' returns the raw EXPLAIN JSON.",
     ),
 });
 export const describeTableSchemaInputSchema = z.object({
@@ -986,7 +986,7 @@ export const getNeondbQueryStatementInputSchema = z.object({
     .enum(['shallow', 'full'])
     .optional()
     .describe(
-      "Progressive disclosure depth (feat-003 #3). 'shallow' (default · token economy) returns SQL truncated to first 30 lines + a tail marker. 'full' returns the complete SQL text (any length · explicit opt-in).",
+      "Progressive disclosure depth. 'shallow' (default · token economy) returns SQL truncated to first 30 lines + a tail marker. 'full' returns the complete SQL text (any length · explicit opt-in).",
     ),
   format: outputFormatField,
 });
@@ -997,7 +997,7 @@ export const getNeondbSchemasInputSchema = z.object({
   filter: z
     .string()
     .describe(
-      'Exact table name to look up (e.g. "sales", "users"). Wildcard support coming in feat-004 #2. Required · prevents agent from hallucinating column names based on table name (e.g. agent guessing "email_address" when actual column is "email").',
+      'Exact table name to look up (e.g. "sales", "users"). Wildcard support coming in a later release. Required · prevents agent from hallucinating column names based on table name (e.g. agent guessing "email_address" when actual column is "email").',
     ),
   projectId: z
     .string()
@@ -1024,7 +1024,7 @@ export const getNeondbSchemasInputSchema = z.object({
     .enum(['shallow', 'full'])
     .optional()
     .describe(
-      "Progressive disclosure depth (feat-004 #4). 'shallow' (default · token economy) returns 5 fields (table/column/type/is_indexed/is_nullable). 'full' returns 9 fields adding default_value + index detail (index_name/type/partial-WHERE/INCLUDE columns).",
+      "Progressive disclosure depth. 'shallow' (default · token economy) returns 5 fields (table/column/type/is_indexed/is_nullable). 'full' returns 9 fields adding default_value + index detail (index_name/type/partial-WHERE/INCLUDE columns).",
     ),
   format: outputFormatField,
 });
@@ -1089,7 +1089,7 @@ export const getNeondbHealthSignalsInputSchema = z.object({
     .enum(['shallow', 'full'])
     .optional()
     .describe(
-      "Progressive disclosure depth (reuses feat-007). 'shallow' (default · token economy) returns anomalous + unavailable signals plus key summary signals. 'full' returns every signal.",
+      "Progressive disclosure depth. 'shallow' (default · token economy) returns anomalous + unavailable signals plus key summary signals. 'full' returns every signal.",
     ),
   format: outputFormatField,
 });
@@ -1136,12 +1136,14 @@ export const getNeondbQueryPerformanceInputSchema = z.object({
     .int()
     .positive()
     .optional()
-    .describe('Number of top queries to return. Default 20 · clamped to [1, 100].'),
+    .describe(
+      'Number of top queries to return. Default 20 · clamped to [1, 100].',
+    ),
   depth: z
     .enum(['shallow', 'full'])
     .optional()
     .describe(
-      "Progressive disclosure depth for the query text (reuses feat-007). 'shallow' (default · token economy) truncates SQL to first 30 lines + a tail marker. 'full' returns the complete normalized SQL.",
+      "Progressive disclosure depth for the query text. 'shallow' (default · token economy) truncates SQL to first 30 lines + a tail marker. 'full' returns the complete normalized SQL.",
     ),
   format: outputFormatField,
 });
@@ -1178,7 +1180,7 @@ export const findNeondbInstancesInputSchema = z.object({
     .positive()
     .optional()
     .describe(
-      'Max number of projects to return. Default 100 · hard ceiling 500 (token budget per detail design §5). Larger requests clamped silently.',
+      'Max number of projects to return. Default 100 · hard ceiling 500 (token budget). Larger requests clamped silently.',
     ),
   format: outputFormatField,
 });
@@ -1188,11 +1190,15 @@ export const findNeondbInstancesInputSchema = z.object({
 export const getNeondbQuerySamplesInputSchema = z.object({
   projectId: z
     .string()
-    .describe('The Neon project ID to search obfuscated query samples for (isolation boundary).'),
+    .describe(
+      'The Neon project ID to search obfuscated query samples for (isolation boundary).',
+    ),
   signature: z
     .string()
     .optional()
-    .describe('Restrict to a single query signature (investigate one query\'s samples over time).'),
+    .describe(
+      "Restrict to a single query signature (investigate one query's samples over time).",
+    ),
   time_range: z
     .union([
       z.enum(['last 1h', 'last 24h']),
@@ -1208,18 +1214,22 @@ export const getNeondbQuerySamplesInputSchema = z.object({
   duration_min_ms: z
     .number()
     .optional()
-    .describe('Only return samples whose execution duration is at least this many milliseconds.'),
+    .describe(
+      'Only return samples whose execution duration is at least this many milliseconds.',
+    ),
   limit: z
     .number()
     .int()
     .positive()
     .optional()
-    .describe('Max samples to return. Default 50 · hard cap 200. Sorted by captured_at DESC (newest first).'),
+    .describe(
+      'Max samples to return. Default 50 · hard cap 200. Sorted by captured_at DESC (newest first).',
+    ),
   depth: z
     .enum(['shallow', 'full'])
     .optional()
     .describe(
-      "Progressive disclosure (feat-007). 'shallow' (default) returns an obfuscated summary row per sample; 'full' returns the full (still-obfuscated) sample. ALL output is server-side obfuscated — never contains raw parameter values.",
+      "Progressive disclosure. 'shallow' (default) returns an obfuscated summary row per sample; 'full' returns the full (still-obfuscated) sample. ALL output is server-side obfuscated — never contains raw parameter values.",
     ),
   format: outputFormatField,
 });
@@ -1228,7 +1238,9 @@ export const getNeondbQuerySamplesInputSchema = z.object({
 export const searchPlansInputSchema = z.object({
   projectId: z
     .string()
-    .describe('The Neon project ID to search collected plans for (isolation boundary).'),
+    .describe(
+      'The Neon project ID to search collected plans for (isolation boundary).',
+    ),
   pattern: z
     .string()
     .optional()
@@ -1250,7 +1262,9 @@ export const searchPlansInputSchema = z.object({
   cost_min: z
     .number()
     .optional()
-    .describe('Only return plans whose root Total Cost is at least this value.'),
+    .describe(
+      'Only return plans whose root Total Cost is at least this value.',
+    ),
   has_seq_scan: z
     .boolean()
     .optional()
@@ -1258,18 +1272,22 @@ export const searchPlansInputSchema = z.object({
   signature_list: z
     .array(z.string())
     .optional()
-    .describe('Restrict to these query signatures (track a query\'s plan evolution over time).'),
+    .describe(
+      "Restrict to these query signatures (track a query's plan evolution over time).",
+    ),
   limit: z
     .number()
     .int()
     .positive()
     .optional()
-    .describe('Max plans to return. Default 50 · hard cap 200. Sorted by captured_at DESC (newest first).'),
+    .describe(
+      'Max plans to return. Default 50 · hard cap 200. Sorted by captured_at DESC (newest first).',
+    ),
   depth: z
     .enum(['shallow', 'full'])
     .optional()
     .describe(
-      "Progressive disclosure (feat-007). 'shallow' (default · token economy) returns a one-line plan_summary per hit; 'full' returns the full (summarized) plan_json for plan-evolution analysis.",
+      "Progressive disclosure. 'shallow' (default · token economy) returns a one-line plan_summary per hit; 'full' returns the full (summarized) plan_json for plan-evolution analysis.",
     ),
   format: outputFormatField,
 });
@@ -1335,14 +1353,12 @@ export const branchCanaryDdlInputSchema = z.object({
     .number()
     .optional()
     .describe(
-      '可选 · 表行数估算 (T1 describe_table_schema / pg_class.reltuples)。配合表 size 兜底判定 · 大表 ALTER TABLE light / CREATE INDEX CONCURRENTLY 也走 canary 测 lock_contention。',
+      '可选 · 表行数估算 (describe_table_schema / pg_class.reltuples)。配合表 size 兜底判定 · 大表 ALTER TABLE light / CREATE INDEX CONCURRENTLY 也走 canary 测 lock_contention。',
     ),
   force_canary: z
     .boolean()
     .optional()
-    .describe(
-      'DBA 谨慎模式 · 强制 canary · 跳过 risk-classifier 判定。',
-    ),
+    .describe('DBA 谨慎模式 · 强制 canary · 跳过 risk-classifier 判定。'),
   timeout_seconds: z
     .number()
     .optional()
@@ -1365,7 +1381,7 @@ export const clusterNeondbLogsInputSchema = z.object({
     .string()
     .min(1)
     .describe(
-      'Compute endpoint id (feat-060 claim binding · current_project_id 自动 filter).',
+      'Compute endpoint id (claim binding · current_project_id 自动 filter).',
     ),
   time_range: z
     .object({
@@ -1375,10 +1391,13 @@ export const clusterNeondbLogsInputSchema = z.object({
     .describe('Log fetch window · half-open [start, end).'),
   trace_id: z
     .string()
-    .regex(/^[0-9a-f]{32}$/i, 'trace_id must be 32 hex characters (W3C trace_id)')
+    .regex(
+      /^[0-9a-f]{32}$/i,
+      'trace_id must be 32 hex characters (W3C trace_id)',
+    )
     .optional()
     .describe(
-      'Optional W3C trace_id filter (32 hex). v1 阶段 (feat-036 v1 raw stderr 没字段) 返 feat_036_not_ready · 等 v2 jsonlog ship 后启用.',
+      'Optional W3C trace_id filter (32 hex). On v1 (raw stderr 无该字段) 返 feat_036_not_ready · 等 v2 jsonlog ship 后启用.',
     ),
   severity: z
     .array(z.enum(['FATAL', 'ERROR', 'WARN', 'INFO', 'DEBUG']))
@@ -1397,12 +1416,14 @@ export const clusterNeondbLogsInputSchema = z.object({
     .int()
     .positive()
     .optional()
-    .describe('Top N pattern · default 50 (matches drain3.top_n_patterns GUC).'),
+    .describe(
+      'Top N pattern · default 50 (matches drain3.top_n_patterns GUC).',
+    ),
   cache: z
     .boolean()
     .optional()
     .describe(
-      'Consult router cache · default true · ongoing trace 1h TTL · closed 24h (§3.5 · 跟 feat-066 一致).',
+      'Consult router cache · default true · ongoing trace 1h TTL · closed 24h (与 trace router 一致).',
     ),
   trace_state: z
     .enum(['ongoing', 'closed'])
@@ -1430,25 +1451,26 @@ export const getNeondbTraceInputSchema = z.object({
   projectId: z
     .string()
     .describe(
-      'Neon project ID · cross-tenant boundary (hard-overridden by grant.projectId via route.ts injectProjectId + feat-060 claim-binding before reaching this tool · feat-066/#3).',
+      'Neon project ID · cross-tenant boundary (hard-overridden by grant.projectId via route.ts injectProjectId + claim-binding before reaching this tool).',
     ),
   trace_id: z
     .string()
     .refine((s) => TRACE_ID_HEX_RE.test(s), {
-      message:
-        "trace_id must be 32 lowercase hex chars (W3C trace-context · feat-066 §3.2)",
+      message: 'trace_id must be 32 lowercase hex chars (W3C trace-context)',
     })
     .describe(
-      'W3C trace_id · 32 lowercase hex chars (feat-033 libpq traceparent / feat-065 proxy traceparent emit this).',
+      'W3C trace_id · 32 lowercase hex chars (emitted by the libpq / proxy traceparent instrumentation).',
     ),
   time_range: z
     .object({
-      start: z.string().describe('Window start · ISO8601 (e.g. "2026-05-28T11:00:00Z").'),
+      start: z
+        .string()
+        .describe('Window start · ISO8601 (e.g. "2026-05-28T11:00:00Z").'),
       end: z.string().describe('Window end · ISO8601.'),
     })
     .optional()
     .describe(
-      "Optional ISO8601 time window. Narrows the backend query (Datadog APM scans a smaller window · faster). Omit → defaults to last 1h.",
+      'Optional ISO8601 time window. Narrows the backend query (Datadog APM scans a smaller window · faster). Omit → defaults to last 1h.',
     ),
   format: outputFormatField,
 });
@@ -1459,7 +1481,7 @@ export const searchNeondbTracesInputSchema = z.object({
   projectId: z
     .string()
     .describe(
-      'Neon project ID · cross-tenant boundary. Hard-overrides any filter.project_id supplied by the agent (audit-emit \'cross_tenant_blocked\' fires on mismatch · feat-066/#3 · feat-060 集成).',
+      "Neon project ID · cross-tenant boundary. Hard-overrides any filter.project_id supplied by the agent (audit-emit 'cross_tenant_blocked' fires on mismatch).",
     ),
   filter: z
     .object({
@@ -1480,7 +1502,7 @@ export const searchNeondbTracesInputSchema = z.object({
         .string()
         .optional()
         .describe(
-          "Ignored at runtime — the handler hard-overwrites this to projectId (cross-tenant guard · feat-066/#3). Documented here so agents see the field exists; passing a different value emits a cross_tenant_blocked audit event.",
+          'Ignored at runtime — the handler hard-overwrites this to projectId (cross-tenant guard). Documented here so agents see the field exists; passing a different value emits a cross_tenant_blocked audit event.',
         ),
       endpoint_id: z
         .string()
@@ -1493,7 +1515,7 @@ export const searchNeondbTracesInputSchema = z.object({
         })
         .optional()
         .describe(
-          "Optional ISO8601 time window. Omit → defaults to last 1h (token economy · narrow scan).",
+          'Optional ISO8601 time window. Omit → defaults to last 1h (token economy · narrow scan).',
         ),
     })
     .optional()
@@ -1504,7 +1526,7 @@ export const searchNeondbTracesInputSchema = z.object({
     .positive()
     .optional()
     .describe(
-      'Max trace summaries to return. Default 20 · hard cap 50 (TRACE_SEARCH_LIMIT_MAX · token economy · OWASP LLM10 · 详设 §5). 超出 50 上限静默截断 (handler 层 Math.min) · 不报错 · 单源校验在 handler 避免与 zod .max 双重定义冲突 (R2 ⚠ 阻塞-4 修复).',
+      'Max trace summaries to return. Default 20 · hard cap 50 (TRACE_SEARCH_LIMIT_MAX · token economy · OWASP LLM10). 超出 50 上限静默截断 (handler 层 Math.min) · 不报错 · 单源校验在 handler 避免与 zod .max 双重定义冲突.',
     ),
   format: outputFormatField,
 });
