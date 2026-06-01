@@ -71,6 +71,7 @@ import {
   type AuthenticatedExtra,
   type StaticToolContext,
 } from '../../../mcp-src/server/register-neon-server';
+import { handleStatefulStreamableHttp } from '../../../mcp-src/server/streamable-http-transport';
 import { buildResourceMetadataUrlForResourceRequest } from '../../../lib/oauth/protected-resource-metadata';
 import {
   bindSession,
@@ -1236,7 +1237,10 @@ const authHandler = withMcpAuth(
       }
       return runSseAfterSessionBinding(req, identity);
     }
-    return createContextualMcpHandler(getStaticToolContext(req))(req);
+    // feat-072/#216 (ADR-0019): streamable HTTP 走裸 SDK **有状态** transport
+    // （取代 mcp-handler 无状态 createContextualMcpHandler）· 单端点承载 elicitation。
+    // SSE 路径仍走 createContextualMcpHandler(mcp-handler)，#218 退役。
+    return handleStatefulStreamableHttp(req, getStaticToolContext(req));
   },
   verifyToken,
   {
