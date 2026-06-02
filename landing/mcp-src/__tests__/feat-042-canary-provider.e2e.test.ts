@@ -46,15 +46,19 @@ async function waitGone(
 describe.skipIf(!REPO)(
   'feat-042 · NeonLocalBranchProvider e2e (真 neon_local · 无云)',
   () => {
-    const provider = new NeonLocalBranchProvider();
-    const resolver = createNeonLocalConnStringResolver();
+    // 注意: describe.skipIf 仍会在 collection 期执行 describe 体 · 故 provider 实例化必须放进
+    // it 体内 (否则缺 NEON_LOCAL_REPO_DIR 时 readConfig 抛 · 整个文件 collection 失败)。
     let leaked: string | undefined;
+    let provider: NeonLocalBranchProvider;
 
     afterAll(async () => {
-      if (leaked) await provider.deleteBranch('p', leaked).catch(() => {});
+      if (leaked && provider)
+        await provider.deleteBranch('p', leaked).catch(() => {});
     });
 
     it('建分支 → compute → 真 DDL → 列 → 删 · 全生命周期', async () => {
+      provider = new NeonLocalBranchProvider();
+      const resolver = createNeonLocalConnStringResolver();
       const expiry = Date.now() + 7 * 86_400_000;
 
       // 1. 建分支 (timeline branch off main · 真数据快照)
