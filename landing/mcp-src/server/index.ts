@@ -105,10 +105,11 @@ export const createMcpServer = async (context: ServerContext) => {
     }),
     trackServerInit,
     checkEnvelopeMatches: () => false,
-    elicit: async (message, requestedSchema, timeoutMs) => {
+    elicit: async (message, requestedSchema, timeoutMs, relatedRequestId) => {
       const res = await server.server.elicitInput(
         { message, requestedSchema } as never,
-        { timeout: timeoutMs },
+        // Bind to the originating request's stream (see streamable-http-transport.ts).
+        { timeout: timeoutMs, relatedRequestId },
       );
       return { action: res.action, content: res.content } as ElicitResultLike;
     },

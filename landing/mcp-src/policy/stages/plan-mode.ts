@@ -211,6 +211,12 @@ export type ElicitFn = (
   message: string,
   requestedSchema: Record<string, unknown>,
   timeoutMs: number,
+  // Originating tool-call request id. The streamable-HTTP transport passes this as
+  // elicitInput's `relatedRequestId` so the SDK routes elicitation/create onto THAT
+  // request's POST SSE stream instead of the standalone GET stream. Clients that
+  // don't consume the standalone GET stream (e.g. Claude Code over streamable HTTP)
+  // otherwise never receive the approval prompt → 60s timeout → fail-closed.
+  relatedRequestId?: string | number,
 ) => Promise<ElicitResultLike>;
 
 export type PlanApproval = {
@@ -322,6 +328,7 @@ export const PLAN_ELICIT_SCHEMA: Record<string, unknown> = {
 export async function resolvePlanApproval(
   elicit: ElicitFn | undefined,
   plan: PlanPayload,
+  relatedRequestId?: string | number,
 ): Promise<PlanApproval> {
   if (!elicit) {
     return {
@@ -335,6 +342,7 @@ export async function resolvePlanApproval(
       renderPlan(plan),
       PLAN_ELICIT_SCHEMA,
       PLAN_ELICIT_TIMEOUT_MS,
+      relatedRequestId,
     );
     if (result.action !== 'accept') {
       return {

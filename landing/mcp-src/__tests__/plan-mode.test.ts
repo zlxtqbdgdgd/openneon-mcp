@@ -198,6 +198,16 @@ describe('resolvePlanApproval (feat-027/#2 · orchestrator elicitation · fail-c
     expect(seenTimeout).toBe(PLAN_ELICIT_TIMEOUT_MS);
     expect((seenSchema.required as string[]) ?? []).toContain('approved');
   });
+
+  it('relatedRequestId 透传给 elicit (streamable-HTTP 把审批绑回发起的 POST 流)', async () => {
+    let seenRelated: unknown = 'UNSET';
+    const spy: ElicitFn = async (_m, _s, _t, relatedRequestId) => {
+      seenRelated = relatedRequestId;
+      return { action: 'accept', content: { approved: true } };
+    };
+    await resolvePlanApproval(spy, plan, 'req-abc-123');
+    expect(seenRelated).toBe('req-abc-123');
+  });
 });
 
 describe('renderPlan (feat-027/#2 · 人类可读 · 纯 server 事实)', () => {
