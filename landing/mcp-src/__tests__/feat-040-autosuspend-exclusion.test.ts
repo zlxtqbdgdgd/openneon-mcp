@@ -41,6 +41,7 @@ import {
   type AutosuspendEventsResult,
   createAutosuspendCache,
   getAutosuspendWindows,
+  readNeonControlPlaneConfig,
 } from '../server-enrich/metrics-history/autosuspend-events';
 
 function coverage(actual: number, expected: number): Coverage {
@@ -249,15 +250,25 @@ describe('AutosuspendEventFetchAdapter sub-interface (#152)', () => {
     expect(callCount).toBe(1);
   });
 
-  it('双模式: NEON_CONTROL_PLANE_MODE=cloud vs oss · 接口同 · base URL 不同 (本测仅 mock adapter · 真集成在 e2e)', () => {
-    // 占位 · adapter 内部 mode 在 datadog-adapter 同 pattern · 真切换在实例化时
-    // 这里只验 sub-interface 抽象稳定
-    const adapter: AutosuspendEventFetchAdapter = {
-      async getAutosuspendWindows() {
-        return { windows: [] };
-      },
-    };
-    expect(adapter).toBeTruthy();
+  it('ADR-0021: readNeonControlPlaneConfig 永不默认官方云 · 缺 NEON_API_BASE_URL → null (degrade)', () => {
+    const savedUrl = process.env.NEON_API_BASE_URL;
+    const savedToken = process.env.NEON_API_TOKEN;
+    delete process.env.NEON_API_BASE_URL;
+    process.env.NEON_API_TOKEN = 'tok';
+    try {
+      // 缺 base URL → null · 绝不 fallback 到 console.neon.tech (已删 cloud 默认)
+      expect(readNeonControlPlaneConfig()).toBeNull();
+      // 配了自托管 base → 用它 · 不含 neon.tech
+      process.env.NEON_API_BASE_URL = 'http://127.0.0.1:9898/api/v1';
+      const cfg = readNeonControlPlaneConfig();
+      expect(cfg?.baseUrl).toBe('http://127.0.0.1:9898/api/v1');
+      expect(JSON.stringify(cfg)).not.toContain('neon.tech');
+    } finally {
+      if (savedUrl !== undefined) process.env.NEON_API_BASE_URL = savedUrl;
+      else delete process.env.NEON_API_BASE_URL;
+      if (savedToken !== undefined) process.env.NEON_API_TOKEN = savedToken;
+      else delete process.env.NEON_API_TOKEN;
+    }
   });
 });
 

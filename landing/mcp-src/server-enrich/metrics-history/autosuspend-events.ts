@@ -7,7 +7,7 @@
  *
  * 责任 (#152 验收门):
  *   - sub-interface 定义 (跟 feat-066 TraceFetchAdapter 同 pattern · NOT 强加到 ObservabilityAdapter)
- *   - 双模式 NEON_CONTROL_PLANE_MODE = 'cloud' | 'oss' · 切 base URL (商用 api.neon.tech vs 开源 control_plane)
+ *   - 自托管开源 control_plane operations API (ADR-0021: 删 cloud 模式 · 永不连官方 api.neon.tech)
  *   - 独立凭证 NEON_API_TOKEN (不复用 Datadog · 走 Neon API token)
  *   - getAutosuspendWindows(endpoint_id, project_id, time_range) → AutosuspendWindow[]
  *   - ttl-cache · TTL 1h · key = autosuspend:{project_id}:{endpoint_id}:{since}_{until}
@@ -81,46 +81,30 @@ export type AutosuspendEventFetchAdapter = {
 };
 
 // =====================================================================================
-// Neon control plane API 双模式 · cloud (商用) / oss (开源 control_plane)
+// 自托管开源 control_plane operations API (ADR-0021: 删 cloud 模式 · 永不连官方 api.neon.tech)
 // =====================================================================================
 
-export type NeonControlPlaneMode = 'cloud' | 'oss';
-
 export type NeonControlPlaneConfig = {
-  /** 模式 · 'cloud' = api.neon.tech · 'oss' = 自部 control_plane */
-  mode: NeonControlPlaneMode;
-  /** API base URL (oss 必传 · cloud 用 api.neon.tech 默认) */
+  /** 自托管 control_plane operations API base URL (ADR-0021: 绝不指向官方 api.neon.tech) */
   baseUrl: string;
-  /** Neon API token · 走 Authorization: Bearer · 不复用 Datadog 凭证 (#152) */
+  /** control_plane API token · 走 Authorization: Bearer · 不复用 Datadog 凭证 (#152) */
   apiToken: string;
 };
 
 /**
- * Env vars:
- *   NEON_CONTROL_PLANE_MODE = 'cloud' | 'oss' · 默 'cloud'
- *   NEON_API_BASE_URL       = 自定义 base (oss 模式必填 · cloud 默 'https://console.neon.tech/api/v2')
- *   NEON_API_TOKEN          = Neon API token (per-project / Personal token)
+ * Env vars (ADR-0021: 永不连官方云 · 仅自托管开源 control_plane):
+ *   NEON_API_BASE_URL = 自托管 control_plane operations API base (必配 · 不配 → null · **绝不默认云**)
+ *   NEON_API_TOKEN    = control_plane API token
  *
- * 凭证 null 时 adapter 返 auth error · 不 throw · fail-closed (跟 datadog-adapter 同 pattern)。
+ * URL / 凭证缺 → 返 null → adapter 返 auth error → sample-filter no-op degrade (不阻塞 baseline ·
+ * 跟 L2a behavior 一致 · 跟 datadog-adapter fail-closed 同 pattern)。**已删 cloud 默认 base** —— 原
+ * 双模式 (NEON_CONTROL_PLANE_MODE=cloud|oss) 被 ADR-0021 收成单一自托管路径。
  */
 export function readNeonControlPlaneConfig(): NeonControlPlaneConfig | null {
-  const mode = (process.env.NEON_CONTROL_PLANE_MODE ?? 'cloud') as
-    | NeonControlPlaneMode
-    | string;
   const apiToken = process.env.NEON_API_TOKEN;
-  if (!apiToken) return null;
-  if (mode !== 'cloud' && mode !== 'oss') {
-    logger.warn(
-      `[autosuspend-events] NEON_CONTROL_PLANE_MODE=${mode} 非法 · fallback 'cloud'`,
-    );
-  }
-  const resolvedMode: NeonControlPlaneMode = mode === 'oss' ? 'oss' : 'cloud';
-  const defaultBase =
-    resolvedMode === 'cloud'
-      ? 'https://console.neon.tech/api/v2'
-      : 'http://localhost:7000/api/v1'; // oss control_plane 默
-  const baseUrl = process.env.NEON_API_BASE_URL || defaultBase;
-  return { mode: resolvedMode, baseUrl, apiToken };
+  const baseUrl = process.env.NEON_API_BASE_URL;
+  if (!apiToken || !baseUrl) return null;
+  return { baseUrl, apiToken };
 }
 
 type ConsoleOperationsResp = {
@@ -134,16 +118,13 @@ type ConsoleOperationsResp = {
 };
 
 /**
- * cloud 模式 Neon Console API · 拉 endpoint operations · action 'suspend_compute' 段开始 ·
- * 接下来 'start_compute' / 'apply_config' 段结束。
+ * 解析自托管 control_plane 的 operations 列表 · action 'suspend_compute' 段开始 · 接下来
+ * 'start_compute' / 'apply_config' 段结束。
  *
- * cloud API 文档: https://api-docs.neon.tech/reference/listprojectoperations
- * (NOTE · 真实 API 字段以 prod 为准 · 本 mapping 跟 console.neon.tech v2 一致)。
- *
- * oss 模式 control_plane 自部 schema 可能略不同 · 本函数按 cloud schema 解析 · oss 部署需保持
- * 字段名一致 (control_plane 已有 operations 概念) · 不一致时上游 adapter 二次 mapping。
+ * 字段 schema 沿用 Neon operations 概念 (control_plane 已有 operations) · 自托管部署需保持字段名
+ * 一致 · 不一致时上游 adapter 二次 mapping。**ADR-0021: 数据源是自托管 control_plane · 非官方云**。
  */
-function parseConsoleOperations(
+function parseControlPlaneOperations(
   body: ConsoleOperationsResp,
   endpoint_id: string,
   since: number,
@@ -231,7 +212,7 @@ export function createNeonControlPlaneAdapter(
           };
         }
         const body = (await resp.json()) as ConsoleOperationsResp;
-        const windows = parseConsoleOperations(
+        const windows = parseControlPlaneOperations(
           body,
           req.endpoint_id,
           req.since,
