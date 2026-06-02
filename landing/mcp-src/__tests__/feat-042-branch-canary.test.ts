@@ -22,9 +22,9 @@
  *   - cross-tenant 拒 (project_id 不一致) — 见 describe 'cross-tenant'
  *   - 全局 3 并发 limit · 第 4 个 canary_failed — 见 describe 'concurrency-limit'
  *   - Neon API down (5xx + retry) — 见 describe 'neon-5xx'
- *   - NEON_API_KEY 缺 → NeonApiError api_key_missing — 见 describe 'api-key-missing'
+ *   - NEON_LOCAL_REPO_DIR 缺 → BranchProviderError provider_unavailable — 见 describe 'provider-unavailable'
  *
- * 全部用 mock NeonApiClient + mock SqlRunner · 不打 Neon。
+ * 全部用 mock BranchProvider + mock SqlRunner · 不打任何后端 (ADR-0021: 自托管 neon_local · 无云)。
  */
 import {
   afterEach,
@@ -49,9 +49,11 @@ import {
   type CanaryRunnerOptions,
 } from '../server-enrich/canary/canary-runner';
 import {
-  NeonApiClient,
-  NeonApiError,
-} from '../server-enrich/canary/neon-api-client';
+  type BranchProvider,
+  BranchProviderError,
+  type NeonBranchListItem,
+} from '../server-enrich/canary/branch-provider';
+import { NeonLocalBranchProvider } from '../server-enrich/canary/neon-local-branch-provider';
 import { runCanaryCronOnce } from '../server-enrich/canary/canary-cron';
 import {
   handleBranchCanaryDdl,
@@ -74,50 +76,29 @@ beforeEach(() => {
   delete process.env.CANARY_TABLE_ROW_THRESHOLD;
   delete process.env.CANARY_AUTO_PURGE;
   delete process.env.CANARY_RETENTION_DAYS;
-  process.env.NEON_API_KEY = 'test-key';
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
-type FetchResp = {
-  ok: boolean;
-  status: number;
-  statusText: string;
-  json: () => Promise<unknown>;
-  text: () => Promise<string>;
-};
-type FetchLikeMock = (url: string, init: RequestInit) => Promise<FetchResp>;
-
-function jsonResp(
-  status: number,
-  body: unknown,
-): {
-  ok: boolean;
-  status: number;
-  statusText: string;
-  json: () => Promise<unknown>;
-  text: () => Promise<string>;
-} {
+/**
+ * mock BranchProvider (ADR-0021 后端无关 seam) · 默认成功建/连/列分支 · 失败 case 注入抛
+ * BranchProviderError。不打任何真实后端 (云已删 · 自托管 neon_local 走 e2e 不在单测)。
+ */
+function makeProvider(over: Partial<BranchProvider> = {}): BranchProvider {
   return {
-    ok: status >= 200 && status < 300,
-    status,
-    statusText: String(status),
-    json: async () => body,
-    text: async () => JSON.stringify(body),
+    createCanaryBranch:
+      over.createCanaryBranch ??
+      (async (_projectId, o) => ({
+        branch_id: 'br-test',
+        branch_name: o.name,
+        expiry_ts: o.expiryTsMs,
+        parent_id: 'main',
+      })),
+    deleteBranch: over.deleteBranch ?? (async () => {}),
+    listCanaryBranches: over.listCanaryBranches ?? (async () => []),
   };
-}
-
-function makeClient(overrideOpts: { fetcher?: FetchLikeMock } = {}): NeonApiClient {
-  const defaultFetcher: FetchLikeMock = async () =>
-    jsonResp(201, {
-      branch: { id: 'br-test', name: 'canary-test', parent_id: 'main' },
-    });
-  return new NeonApiClient({
-    apiKey: 'test-key',
-    fetcher: overrideOpts.fetcher ?? defaultFetcher,
-  });
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -188,7 +169,7 @@ describe('feat-042 §7 · 12 fixture case', () => {
 
   // ── 8 ──
   it('8. high_risk_review_duration · canary 跑了 + duration > 阈值', async () => {
-    const client = makeClient();
+    const client = makeProvider();
     let t = 0;
     const result = await runCanary(
       {
@@ -212,8 +193,10 @@ describe('feat-042 §7 · 12 fixture case', () => {
 
   // ── 9 ──
   it('9. canary_failed_neon_5xx · createBranch 返 503', async () => {
-    const client = makeClient({
-      fetcher: async () => jsonResp(503, { error: 'service unavailable' }),
+    const client = makeProvider({
+      createCanaryBranch: async () => {
+        throw new BranchProviderError('server_error', 'pageserver 503', 503);
+      },
     });
     const result = await runCanary(
       {
@@ -229,7 +212,7 @@ describe('feat-042 §7 · 12 fixture case', () => {
 
   // ── 10 ──
   it('10. timeout_ddl_超时 · DDL 阻塞 > timeout_seconds', async () => {
-    const client = makeClient();
+    const client = makeProvider();
     const result = await runCanary(
       {
         client,
@@ -275,37 +258,27 @@ describe('feat-042 · canary-cron · 7d retention 自动清理', () => {
     const expiredAt = now - 1; // 已过期 1ms
     const activeAt = now + 86_400_000; // 还有 1d
 
-    const cronFetcher: FetchLikeMock = async (url, init) => {
-      if (init.method === 'GET' && /\/branches$/.test(url)) {
-        return jsonResp(200, {
-          branches: [
-            {
-              id: 'br-expired',
-              name: 'canary-1',
-              annotations: { purpose: 'canary', expiry_ts: String(expiredAt) },
-            },
-            {
-              id: 'br-active',
-              name: 'canary-2',
-              annotations: { purpose: 'canary', expiry_ts: String(activeAt) },
-            },
-            {
-              id: 'br-non-canary',
-              name: 'feature-x',
-              annotations: { purpose: 'feature' },
-            },
-          ],
-        });
-      }
-      if (init.method === 'DELETE') {
-        deletedBranches.push(url);
-        return jsonResp(204, {});
-      }
-      return jsonResp(404, {});
-    };
-    const client = new NeonApiClient({
-      apiKey: 'test-key',
-      fetcher: cronFetcher,
+    const client = makeProvider({
+      listCanaryBranches: async (): Promise<NeonBranchListItem[]> => [
+        {
+          id: 'br-expired',
+          name: 'canary-1',
+          annotations: { purpose: 'canary', expiry_ts: String(expiredAt) },
+        },
+        {
+          id: 'br-active',
+          name: 'canary-2',
+          annotations: { purpose: 'canary', expiry_ts: String(activeAt) },
+        },
+        {
+          id: 'br-non-canary',
+          name: 'feature-x',
+          annotations: { purpose: 'feature' },
+        },
+      ],
+      deleteBranch: async (_projectId, id) => {
+        deletedBranches.push(id);
+      },
     });
 
     const purged = await runCanaryCronOnce({
@@ -321,7 +294,7 @@ describe('feat-042 · canary-cron · 7d retention 自动清理', () => {
 
   it('CANARY_AUTO_PURGE=false → 不删 · 返 0', async () => {
     process.env.CANARY_AUTO_PURGE = 'false';
-    const client = new NeonApiClient({ apiKey: 'test-key' });
+    const client = makeProvider();
     const purged = await runCanaryCronOnce({
       client,
       listProjectIds: async () => ['p1'],
@@ -336,7 +309,7 @@ describe('feat-042 · concurrency-limit · 全局 3 并发 hard limit', () => {
     _resetCanaryConcurrencyForTests();
     const releases: Array<() => void> = [];
     const blockers: Promise<CanaryRunResult>[] = [];
-    const client = makeClient();
+    const client = makeProvider();
     const baseOpts: CanaryRunnerOptions = {
       client,
       sqlRunner: () =>
@@ -372,8 +345,10 @@ describe('feat-042 · concurrency-limit · 全局 3 并发 hard limit', () => {
 
 describe('feat-042 · neon-5xx · API down', () => {
   it('createBranch 503 → outcome=canary_failed kind=server_error', async () => {
-    const client = makeClient({
-      fetcher: async () => jsonResp(503, {}),
+    const client = makeProvider({
+      createCanaryBranch: async () => {
+        throw new BranchProviderError('server_error', 'pageserver 503', 503);
+      },
     });
     const r = await runCanary(
       {
@@ -388,8 +363,10 @@ describe('feat-042 · neon-5xx · API down', () => {
   });
 
   it('createBranch 429 → outcome=canary_failed kind=rate_limit', async () => {
-    const client = makeClient({
-      fetcher: async () => jsonResp(429, { error: 'too many requests' }),
+    const client = makeProvider({
+      createCanaryBranch: async () => {
+        throw new BranchProviderError('rate_limit', 'pageserver 429', 429);
+      },
     });
     const r = await runCanary(
       {
@@ -404,14 +381,21 @@ describe('feat-042 · neon-5xx · API down', () => {
   });
 });
 
-describe('feat-042 · api-key-missing', () => {
-  it('NEON_API_KEY 缺 → NeonApiError api_key_missing', () => {
-    delete process.env.NEON_API_KEY;
-    expect(() => new NeonApiClient()).toThrowError(NeonApiError);
+describe('feat-042 · provider-unavailable (ADR-0021 fail-closed)', () => {
+  it('NEON_LOCAL_REPO_DIR 缺 → NeonLocalBranchProvider 抛 provider_unavailable', () => {
+    const saved = process.env.NEON_LOCAL_REPO_DIR;
+    delete process.env.NEON_LOCAL_REPO_DIR;
     try {
-      new NeonApiClient();
-    } catch (e) {
-      expect((e as NeonApiError).kind).toBe('api_key_missing');
+      expect(() => new NeonLocalBranchProvider()).toThrowError(
+        BranchProviderError,
+      );
+      try {
+        new NeonLocalBranchProvider();
+      } catch (e) {
+        expect((e as BranchProviderError).kind).toBe('provider_unavailable');
+      }
+    } finally {
+      if (saved !== undefined) process.env.NEON_LOCAL_REPO_DIR = saved;
     }
   });
 });
