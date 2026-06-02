@@ -1,7 +1,7 @@
 // feat-072/#1 (ADR-0019): 传输无关的 Neon MCP tool/prompt 注册模块。
 // 把原 app/api/[transport]/route.ts 的 createMcpHandler 回调里 tool/prompt 注册 +
-// classify→runPipeline→可注入审批→handler 的 pipeline 包裹抽出，让 HTTP / stdio /
-// 测试夹具复用同一条 pipeline 唯一收口。审批策略 (elicit) 经 deps 注入:
+// classify→runPipeline→可注入审批→handler 的 pipeline 包裹抽出，让 HTTP entrypoint
+// 与测试夹具复用同一条 pipeline 唯一收口。审批策略 (elicit) 经 deps 注入:
 //   - HTTP/SSE 正路注入真人 server.server.elicitInput
 //   - 测试/自动化注入 auto-approve (不绕 pipeline · 只换人工那一步)
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -50,7 +50,7 @@ import { getToolClaimBindings } from '../auth/tool-claim-bindings';
 import { assert } from '../../lib/assert';
 
 // Identity/auth shapes shared between the HTTP route (which derives them from
-// the OAuth bearer token) and any other transport entrypoint (stdio, tests).
+// the OAuth bearer token) and the test fixtures.
 export type AuthenticatedExtra = {
   authInfo?: AuthInfo & {
     extra?: {

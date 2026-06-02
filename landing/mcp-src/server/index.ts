@@ -81,8 +81,8 @@ export const createMcpServer = async (context: ServerContext) => {
   // feat-072/#217 (ADR-0019): register the full Neon tool surface through the
   // shared, transport-agnostic pipeline (classify -> runPipeline -> injected
   // approval -> handler) — the SAME chokepoint as the HTTP path, instead of the
-  // old pipeline-free inline registration. stdio injects the real client
-  // elicitInput; auth is the static local context (no per-request OAuth).
+  // old pipeline-free inline registration. Callers inject the client elicitInput
+  // (tests inject auto-approve); auth is the static local context (no per-request OAuth).
   const readOnly = context.readOnly ?? false;
 
   registerNeonServer(server, {
