@@ -36,7 +36,6 @@ export type {
   AutosuspendEventsResult,
   AutosuspendEventsSuccess,
   AutosuspendEventsError,
-  NeonControlPlaneMode,
   NeonControlPlaneConfig,
   GetAutosuspendWindowsDeps,
 } from './autosuspend-events';
