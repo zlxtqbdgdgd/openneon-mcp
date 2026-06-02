@@ -47,6 +47,8 @@ import {
 } from '../../../mcp-src/utils/grant-context';
 import {
   resolveKeyScope,
+  resolveKeyScopeFromConfig,
+  shouldResolveScopeFromConfig,
   KeyResolverError,
   keyLast4,
   type KeyScope,
@@ -283,7 +285,10 @@ const fetchAccountDetails = async (
 
     // feat-029/#2: cache miss 顺手解析 key scope · 同期写进 cache · 避免后续每请求重复打 Neon API。
     // resolveKeyScope 抛 KeyResolverError 在外层 catch 兜底成 null（fail-closed · withMcpAuth 401）。
-    const keyScope = await resolveKeyScope(neonClient, accessToken);
+    // ADR-0021 路线 R: 配 NEON_GRANT_PROJECT_IDS → 本地 config 解析 (永不连官方云)·否则走 legacy cloud。
+    const keyScope = shouldResolveScopeFromConfig()
+      ? resolveKeyScopeFromConfig(accessToken)
+      : await resolveKeyScope(neonClient, accessToken);
 
     const record: ApiKeyRecord = {
       apiKey: accessToken,
@@ -474,8 +479,10 @@ const verifyToken = async (
   let keyScope: KeyScope | undefined = apiKeyRecord.keyScope;
   if (!keyScope) {
     try {
-      const neonClient = createNeonClient(bearerToken);
-      keyScope = await resolveKeyScope(neonClient, bearerToken);
+      // ADR-0021 路线 R: 自托管走本地 config·否则 legacy cloud 内省 (默认行为不变)。
+      keyScope = shouldResolveScopeFromConfig()
+        ? resolveKeyScopeFromConfig(bearerToken)
+        : await resolveKeyScope(createNeonClient(bearerToken), bearerToken);
       logger.info('API key scope re-resolved for legacy cache record', {
         accountId: apiKeyRecord.account.id,
         keyType: keyScope.keyType,

@@ -17,6 +17,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   resolveKeyScope,
+  resolveKeyScopeFromConfig,
+  shouldResolveScopeFromConfig,
   KeyResolverError,
   keyLast4,
 } from '../auth/key-resolver';
@@ -471,5 +473,71 @@ describe('用例 5: key 缺失 (= bearerToken undefined → verifyToken 直接�
     }
     expect(caught).toBeInstanceOf(KeyResolverError);
     expect((caught as KeyResolverError).code).toBe('KEY_INVALID');
+  });
+});
+
+// =====================================================================================
+// ADR-0021 路线 R · 从本地 config 解析 KeyScope (自托管·零云·G1 floor 不变)
+// =====================================================================================
+
+describe('ADR-0021 路线 R · resolveKeyScopeFromConfig (自托管·永不连官方云)', () => {
+  const SAVED = process.env.NEON_GRANT_PROJECT_IDS;
+  afterEach(() => {
+    if (SAVED !== undefined) process.env.NEON_GRANT_PROJECT_IDS = SAVED;
+    else delete process.env.NEON_GRANT_PROJECT_IDS;
+  });
+
+  it('shouldResolveScopeFromConfig: 配 NEON_GRANT_PROJECT_IDS → true · 缺 → false (默认走 legacy cloud)', () => {
+    delete process.env.NEON_GRANT_PROJECT_IDS;
+    expect(shouldResolveScopeFromConfig()).toBe(false);
+    process.env.NEON_GRANT_PROJECT_IDS = 'proj-A';
+    expect(shouldResolveScopeFromConfig()).toBe(true);
+  });
+
+  it('单 project → project-scoped · 不调任何 cloud client (零网络)', () => {
+    process.env.NEON_GRANT_PROJECT_IDS = 'proj-A';
+    const scope = resolveKeyScopeFromConfig('neon_xxxx1234');
+    expect(scope.keyType).toBe('project-scoped');
+    expect(scope.projectIds).toEqual(['proj-A']);
+    expect(scope.last4).toBe('1234');
+    expect(scope.truncated).toBe(false);
+  });
+
+  it('多 project → personal', () => {
+    process.env.NEON_GRANT_PROJECT_IDS = 'proj-A, proj-B';
+    const scope = resolveKeyScopeFromConfig('neon_xxxxAAAA');
+    expect(scope.keyType).toBe('personal');
+    expect(scope.projectIds).toEqual(['proj-A', 'proj-B']);
+  });
+
+  it('空 / 全空白 NEON_GRANT_PROJECT_IDS → SCOPE_INDETERMINATE (fail-closed)', () => {
+    process.env.NEON_GRANT_PROJECT_IDS = '  ,  ';
+    expect(() => resolveKeyScopeFromConfig('k1234')).toThrow(KeyResolverError);
+    try {
+      resolveKeyScopeFromConfig('k1234');
+    } catch (e) {
+      expect((e as KeyResolverError).code).toBe('SCOPE_INDETERMINATE');
+    }
+  });
+
+  it('G1 floor 不变: config 来源 project-scoped → buildGrantFromScope 锁定 projectId', () => {
+    process.env.NEON_GRANT_PROJECT_IDS = 'proj-A';
+    const grant = buildGrantFromScope(resolveKeyScopeFromConfig('neon_xxxx1234'));
+    expect(grant.projectId).toBe('proj-A');
+    expect(grant.keyType).toBe('project-scoped');
+  });
+
+  it('G1 floor 不变: config 来源 personal + 默认 → reject (跟云来源行为一致)', () => {
+    process.env.NEON_GRANT_PROJECT_IDS = 'proj-A,proj-B';
+    const savedAllow = process.env.ALLOW_NON_PROJECT_KEY;
+    delete process.env.ALLOW_NON_PROJECT_KEY;
+    try {
+      const scope = resolveKeyScopeFromConfig('neon_xxxxAAAA');
+      expect(() => buildGrantFromScope(scope)).toThrow(KeyNotAcceptedError);
+    } finally {
+      if (savedAllow !== undefined)
+        process.env.ALLOW_NON_PROJECT_KEY = savedAllow;
+      else delete process.env.ALLOW_NON_PROJECT_KEY;
+    }
   });
 });

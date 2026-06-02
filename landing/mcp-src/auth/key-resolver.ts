@@ -148,6 +148,62 @@ export async function resolveKeyScope(
   return scope;
 }
 
+// =====================================================================================
+// ADR-0021 路线 R · 自托管 · 从本地 config 解析 KeyScope (永不连官方云)
+// =====================================================================================
+
+/**
+ * 是否走本地 config 解析 KeyScope (而非 cloud key 内省)。
+ *
+ * [ADR-0021](https://github.com/zlxtqbdgdgd/openneon-design/blob/main/docs/adr/0021-branch-lifecycle-self-hosted-control-plane-never-official-cloud.md)
+ * 永不连官方云 → 自托管部署配 `NEON_GRANT_PROJECT_IDS` 即用本地 config Grant 源 · 未配则退回
+ * cloud `resolveKeyScope` (legacy · 待 ADR-0021 待解 §6 自建 CP 凭证模型落地后收成单一自托管路径)。
+ * **默认行为不变** —— 不配 `NEON_GRANT_PROJECT_IDS` 的现有部署仍走原 cloud 路径。
+ */
+export function shouldResolveScopeFromConfig(): boolean {
+  return Boolean(process.env.NEON_GRANT_PROJECT_IDS);
+}
+
+/**
+ * 从本地 config 解析 KeyScope (ADR-0021 路线 R · 自托管 · 不调任何 cloud API · 零网络)。
+ *
+ *   NEON_GRANT_PROJECT_IDS = 逗号分隔 project id (该自托管部署服务的 project)。
+ *     - 1 个 → 'project-scoped' (G1 floor 把 blast radius 锁到那 1 个)
+ *     - 多个 → 'personal' (多 project · 需配套 ALLOW_NON_PROJECT_KEY)
+ *
+ * G1 跨 project hard-deny floor (grant-builder.decideKeyAcceptance) 逻辑**一行不动** —— 它只消费
+ * KeyScope · 不在乎 scope 是云内省来的还是 config 来的。这正是 ADR-0021 路线 R 的核心: 换来源不动 floor。
+ *
+ * @param apiKey 原 key 字符串 (只用于 last4 · 不落 log · 不发任何网络)
+ * @throws {KeyResolverError} NEON_GRANT_PROJECT_IDS 空 → SCOPE_INDETERMINATE (fail-closed)
+ */
+export function resolveKeyScopeFromConfig(apiKey: string): KeyScope {
+  const last4 = keyLast4(apiKey);
+  const projectIds = (process.env.NEON_GRANT_PROJECT_IDS ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (projectIds.length === 0) {
+    throw new KeyResolverError(
+      'SCOPE_INDETERMINATE',
+      `NEON_GRANT_PROJECT_IDS empty · 自托管 KeyScope 无法解析 (last4=${last4})`,
+    );
+  }
+  const keyType: KeyType =
+    projectIds.length === 1 ? 'project-scoped' : 'personal';
+  logger.info(
+    'key-resolver · scope resolved from config (ADR-0021 路线 R · 自托管)',
+    { keyType, projectCount: projectIds.length, last4 },
+  );
+  return {
+    keyType,
+    projectIds,
+    last4,
+    resolvedAt: Date.now(),
+    truncated: false,
+  };
+}
+
 function toResolverError(
   error: unknown,
   endpoint: string,

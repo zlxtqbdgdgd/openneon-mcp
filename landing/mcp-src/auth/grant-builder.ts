@@ -113,9 +113,9 @@ export function decideKeyAcceptance(
   return {
     kind: 'reject',
     reason:
-      `${scope.keyType} Key rejected · mcp Server requires Project-scoped Key by default. ` +
-      'Options: (a) Create a Project-scoped Key at ' +
-      'https://console.neon.tech/<project>/settings/api-keys · ' +
+      `${scope.keyType} Key rejected · mcp Server requires Project-scoped credential by default. ` +
+      'Options: (a) scope the credential to a single project ' +
+      '(self-hosted: set NEON_GRANT_PROJECT_IDS to one project · ADR-0021) · ' +
       '(b) opt-in via ALLOW_NON_PROJECT_KEY=true (warns about cross-project blast radius)',
   };
 }
