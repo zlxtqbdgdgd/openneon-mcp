@@ -21,7 +21,7 @@
  *     同源
  */
 
-import type { NeonApiClient, NeonBranchListItem } from './neon-api-client';
+import type { BranchProvider, NeonBranchListItem } from './branch-provider';
 import { emitAuditEvent } from '../../observability/audit-emit';
 
 // ──────────────────────────────────────────────────────────────
@@ -63,7 +63,7 @@ export type CanaryCronHandle = {
 };
 
 export type CanaryCronOptions = {
-  client: NeonApiClient;
+  client: BranchProvider;
   /** project_id list 提供器 · 注入避免 cron 直接耦合 control-plane */
   listProjectIds: () => Promise<string[]>;
   intervalMs?: number;

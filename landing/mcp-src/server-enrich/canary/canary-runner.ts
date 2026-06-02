@@ -4,7 +4,7 @@
  * 设计依据: [feat-042 详设 §3.2 + §3.4](https://github.com/zlxtqbdgdgd/openneon-design/blob/main/features/feat-042-L3-mcp-server-branch-canary-ddl.html)
  *
  * 职责 (issue #160 验收门):
- *   - 调 NeonApiClient.createCanaryBranch → 取 branch endpoint
+ *   - 调 BranchProvider.createCanaryBranch → 取 branch endpoint (默认 NeonLocalBranchProvider · ADR-0021)
  *   - 在 canary endpoint 执行 DDL (通过注入式 SqlRunner) + timeout 监控
  *   - 测量: duration_ms / locks_acquired / rows_affected / schema_diff
  *   - 4 outcome 分类: low_risk_proceed / high_risk_review / canary_failed / timeout
@@ -25,10 +25,11 @@
  */
 
 import {
-  NeonApiClient,
-  NeonApiError,
+  type BranchProvider,
+  BranchProviderError,
   type CanaryBranchMetadata,
-} from './neon-api-client';
+} from './branch-provider';
+import { NeonLocalBranchProvider } from './neon-local-branch-provider';
 
 // ──────────────────────────────────────────────────────────────
 // 公开类型
@@ -72,14 +73,19 @@ export type CanarySqlRunner = (
   rowCount: number;
 }>;
 
-/** 注入式: 把 canary branch_id 拼成 connection string · 不绑死给定 DB driver。 */
+/**
+ * 注入式: 在 canary 分支上备好可连的 connection string · 不绑死给定 DB driver。
+ * 自托管实现 (neon-local-branch-provider) 会在此 create+start 一个 compute endpoint ·
+ * 故需 branchName (neon_local endpoint create --branch-name)。
+ */
 export type ConnStringResolver = (
   projectId: string,
   branchId: string,
+  branchName: string,
 ) => Promise<string>;
 
 export type CanaryRunnerOptions = {
-  client?: NeonApiClient;
+  client?: BranchProvider;
   sqlRunner: CanarySqlRunner;
   connStringResolver: ConnStringResolver;
   /** DDL 执行超时秒 · 默认 1800 (30 min) · issue 160 验收门 */
@@ -138,7 +144,7 @@ export type RunCanaryInput = {
  * 全流程:
  *   1. 检查全局并发 · inFlight >= 3 → 返 canary_failed (kind=rate_limit_concurrency)
  *   2. inFlight++
- *   3. 调 NeonApiClient.createCanaryBranch (expiry_ts = now + retentionDays)
+ *   3. 调 BranchProvider.createCanaryBranch (expiry_ts = now + retentionDays)
  *   4. 拿 conn string
  *   5. 在 timeoutSeconds 内跑 sqlRunner.execute(branch_conn, sql)
  *      - reject → outcome=canary_failed
@@ -164,7 +170,7 @@ export async function runCanary(
     };
   }
 
-  const client = opts.client ?? new NeonApiClient();
+  const client = opts.client ?? new NeonLocalBranchProvider();
   const timeoutSec = opts.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS;
   const retentionDays = opts.retentionDays ?? 7;
   const now = opts.now ?? Date.now;
@@ -188,7 +194,7 @@ export async function runCanary(
         expiryTsMs,
       });
     } catch (err) {
-      const e = err as NeonApiError;
+      const e = err as BranchProviderError;
       return {
         outcome: 'canary_failed',
         error: {
@@ -201,7 +207,11 @@ export async function runCanary(
     // 2. conn string · 失败 → canary_failed (best-effort 删 branch)
     let connStr: string;
     try {
-      connStr = await opts.connStringResolver(input.projectId, branch.branch_id);
+      connStr = await opts.connStringResolver(
+        input.projectId,
+        branch.branch_id,
+        branch.branch_name,
+      );
     } catch (err) {
       await client.deleteBranch(input.projectId, branch.branch_id).catch(() => {});
       return {

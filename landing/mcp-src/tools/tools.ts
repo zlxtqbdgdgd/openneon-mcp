@@ -70,6 +70,8 @@ import { handleGetNeondbRcaEvidence } from './handlers/get-neondb-rca-evidence';
 // feat-042/#3 branch_canary_ddl · DDL 自动 canary 预演 (handler 在 handlers/branch-canary-ddl.ts).
 // (此 import 曾在 cascade merge 中被误删 → tools.ts branch_canary_ddl case 引不到 handler · 阻断 build)
 import { handleBranchCanaryDdl } from './handlers/branch-canary-ddl';
+// feat-042 · ADR-0021: canary 分支建/连/删走自托管 neon_local (永不连官方 api.neon.tech)。
+import { createNeonLocalConnStringResolver } from '../server-enrich/canary/neon-local-branch-provider';
 // feat-037 cluster_neondb_logs · L3 log pattern 聚类 hybrid path (LLM 主 + Drain3 备).
 // 详设: https://github.com/zlxtqbdgdgd/openneon-design/issues/51 + openneon-mcp#154/#155/#157/#158/#156.
 import { handleClusterNeondbLogs } from './handlers/cluster-neondb-logs';
@@ -2238,15 +2240,9 @@ You MUST follow these steps:
               await client.release();
             }
           },
-          // connStringResolver: branch_id → uri · 走 control-plane Neon API
-          connStringResolver: async (projectId, branchId) => {
-            const cs = await handleGetConnectionString(
-              { projectId, branchId, databaseName: undefined },
-              neonClient,
-              extra,
-            );
-            return cs.uri;
-          },
+          // connStringResolver: 自托管 · 在 canary 分支上 create+start compute endpoint → connstr。
+          // ADR-0021: 永不连官方云 · client 默认 NeonLocalBranchProvider (canary-runner 内) · 同机 neon_local。
+          connStringResolver: createNeonLocalConnStringResolver(),
         },
       },
     );
