@@ -12,7 +12,6 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "mcp:stdio": "tsx mcp-src/server/stdio.ts",
     "lint": "eslint . && pnpm run lint:copy",
     "lint:copy": "node scripts/check-user-facing-copy.mjs",
     "lint:fix": "eslint --fix . && prettier -w .",
