@@ -131,12 +131,39 @@ describe('resolvePlanApproval (feat-027/#2 · orchestrator elicitation · fail-c
     async () =>
       result;
 
-  it('accept + approved=true → approved (放行)', async () => {
+  it('accept + approved=true + 理由 + 确认短语(受影响对象) → approved (放行)', async () => {
     const r = await resolvePlanApproval(
-      elicitReturning({ action: 'accept', content: { approved: true } }),
+      elicitReturning({
+        action: 'accept',
+        content: { approved: true, reason: 'tenant 过滤建索引', confirm: 'sales' },
+      }),
       plan,
     );
     expect(r.approved).toBe(true);
+    expect(r.failClosed).toBe(false);
+  });
+
+  it('accept + approved=true 但缺必填理由 → 否决 (非 failClosed)', async () => {
+    const r = await resolvePlanApproval(
+      elicitReturning({
+        action: 'accept',
+        content: { approved: true, confirm: 'sales' },
+      }),
+      plan,
+    );
+    expect(r.approved).toBe(false);
+    expect(r.failClosed).toBe(false);
+  });
+
+  it('accept + approved=true 但确认短语不符受影响对象 → 否决 (防 rubber-stamp)', async () => {
+    const r = await resolvePlanApproval(
+      elicitReturning({
+        action: 'accept',
+        content: { approved: true, reason: 'x', confirm: 'wrong_object' },
+      }),
+      plan,
+    );
+    expect(r.approved).toBe(false);
     expect(r.failClosed).toBe(false);
   });
 
