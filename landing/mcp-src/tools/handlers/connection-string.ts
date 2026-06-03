@@ -4,6 +4,18 @@ import { startSpan } from '@sentry/node';
 import { getDefaultDatabase } from '../utils';
 import { getDefaultBranch, getOnlyProject } from './utils';
 import { InvalidArgumentError } from '../../server/errors';
+import { getLocalBranchConnString } from './local-branch';
+
+/** 把 connstr 的 database 换成目标库（neon_local endpoint connstr 默认 /postgres，但分支同样有 main 的 neondb）。 */
+function withDatabase(uri: string, db: string): string {
+  try {
+    const u = new URL(uri);
+    u.pathname = `/${db}`;
+    return u.toString();
+  } catch {
+    return uri;
+  }
+}
 
 export async function handleGetConnectionString(
   {
@@ -39,8 +51,17 @@ export async function handleGetConnectionString(
       // deployments (the /api/local-call OAuth-free endpoint is also gated on the same var).
       const localUrl = process.env.NEON_LOCAL_URL;
       if (localUrl) {
+        // 默认返回 main 的 NEON_LOCAL_URL；但若 branchId 是本进程建的 neon_local 临时分支
+        // (query-tuning / migration · 见 local-branch.ts)，改返回**分支自己**的 endpoint connstr
+        // (换成目标 db)，让 explain / run_sql / 候选 CREATE INDEX 落到分支而非 main (ADR-0021)。
+        const branchConnStr = branchId
+          ? getLocalBranchConnString(branchId)
+          : undefined;
+        const uri = branchConnStr
+          ? withDatabase(branchConnStr, databaseName ?? 'neondb')
+          : localUrl;
         return {
-          uri: localUrl,
+          uri,
           projectId: projectId ?? 'local-neon',
           branchId: branchId ?? 'local',
           databaseName: databaseName ?? 'neondb',

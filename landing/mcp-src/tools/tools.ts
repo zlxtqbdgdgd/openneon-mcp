@@ -37,6 +37,11 @@ import { handleListOrganizations } from './handlers/list-orgs';
 import { handleListProjects } from './handlers/list-projects';
 import { handleDescribeProject } from './handlers/decribe-project';
 import { handleGetConnectionString } from './handlers/connection-string';
+import {
+  isSelfHosted,
+  createLocalTempBranch,
+  deleteLocalTempBranch,
+} from './handlers/local-branch';
 import { handleDescribeBranch } from './handlers/describe-branch';
 // feat-003/004 day-one ship · narrative #3 主卖点 防 LLM 自负幻觉一对组合
 import { handleGetQueryStatement } from './handlers/query-statement';
@@ -324,6 +329,21 @@ async function handleCreateBranch(
   },
   neonClient: Api<unknown>,
 ) {
+  // ADR-0021: 自托管走 neon_local 临时分支 seam（永不连云 createProjectBranch）→
+  // query-tuning / database-migration / create_branch 统一受益。
+  if (isSelfHosted()) {
+    const branch = await createLocalTempBranch(projectId, branchName);
+    return {
+      branch,
+      endpoints: [],
+      roles: [],
+      databases: [],
+      operations: [],
+      connection_uris: [],
+    } as unknown as Awaited<
+      ReturnType<typeof neonClient.createProjectBranch>
+    >['data'];
+  }
   const response = await neonClient.createProjectBranch(projectId, {
     branch: {
       name: branchName,
@@ -354,6 +374,13 @@ async function handleDeleteBranch(
   },
   neonClient: Api<unknown>,
 ) {
+  // ADR-0021: 自托管临时分支走 neon_local 拆除（永不连云 deleteProjectBranch）。
+  if (isSelfHosted()) {
+    await deleteLocalTempBranch(projectId, branchId);
+    return { branch: { id: branchId } } as unknown as Awaited<
+      ReturnType<typeof neonClient.deleteProjectBranch>
+    >['data'];
+  }
   const response = await neonClient.deleteProjectBranch(projectId, branchId);
   return response.data;
 }
