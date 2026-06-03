@@ -126,10 +126,15 @@ function buildSessionServer(staticToolContext: StaticToolContext): McpServer {
     trackServerInit,
     // No SSE envelope cross-binding on the streamable path → never short-circuit.
     checkEnvelopeMatches: () => false,
-    elicit: async (message, requestedSchema, timeoutMs) => {
+    elicit: async (message, requestedSchema, timeoutMs, relatedRequestId) => {
       const res = await server.server.elicitInput(
         { message, requestedSchema } as never,
-        { timeout: timeoutMs },
+        // relatedRequestId binds elicitation/create to the originating tool-call's
+        // POST SSE stream (the stream the calling client is already reading for the
+        // tool result). Without it the SDK send() falls back to the standalone GET
+        // stream (_GET_stream), which streamable-HTTP clients like Claude Code don't
+        // consume during a tool call → no approval prompt → 60s timeout → fail-closed.
+        { timeout: timeoutMs, relatedRequestId },
       );
       return {
         action: res.action,

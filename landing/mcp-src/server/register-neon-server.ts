@@ -66,6 +66,10 @@ export type AuthenticatedExtra = {
   };
   signal?: AbortSignal;
   sessionId?: string;
+  // SDK RequestHandlerExtra.requestId (JSON-RPC id of the current tool call).
+  // Threaded into plan-mode elicitation so the approval prompt rides this
+  // request's POST SSE stream on the streamable-HTTP transport.
+  requestId?: string | number;
 };
 
 export type StaticToolContext = {
@@ -83,6 +87,9 @@ export type ElicitFn = (
   message: string,
   requestedSchema: Record<string, unknown>,
   timeoutMs: number,
+  // Originating tool-call request id → routed by the streamable-HTTP transport as
+  // elicitInput's relatedRequestId so the approval rides that request's POST stream.
+  relatedRequestId?: string | number,
 ) => Promise<ElicitResultLike>;
 
 // Resolved per-call auth context (return shape of the route's getAuthContext).
@@ -386,6 +393,7 @@ export function registerNeonServer(
                 const approval = await resolvePlanApproval(
                   elicit,
                   verdict.plan,
+                  typedExtra.requestId,
                 );
                 if (!approval.approved) {
                   logger.warn('plan mode deny (feat-027):', {
