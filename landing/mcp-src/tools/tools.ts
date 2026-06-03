@@ -720,7 +720,10 @@ async function handleQueryTuning(
           databaseName: branchParams.databaseName,
           projectId: branchParams.projectId,
           branchId: tempBranch.id,
-          analyze: true,
+          // ADR-0022: 基线只取计划形态(诊断信号 · seq scan/sort 等)，不 ANALYZE 执行。
+          // 冷临时分支上 ANALYZE 慢查询(尤其大结果集)叠加分支冷启动会撞 RPC 超时(实测)。
+          // actual 时延在「加索引后的 after」EXPLAIN ANALYZE 取(那时走索引很快)。
+          analyze: false,
         },
       },
       neonClient,

@@ -33,6 +33,7 @@ import {
 } from './jwt-verify-errors';
 import { getProjectAuthServices } from '../policy/loader';
 import { emitAuditEvent } from '../observability/audit-emit';
+import { isLocalDevAuthEnabled } from '../server/local-dev-auth';
 
 /**
  * tool param schema 里的 \`fromClaim\` 声明 (per 详设 §4.2)。
@@ -212,6 +213,15 @@ export async function bindClaims(ctx: {
   projectId: string | undefined;
   principal: string;
 }): Promise<ClaimBindingResult> {
+  // ADR-0022 桶①: 自托管 dev-bypass（NEON_LOCAL_URL set · local-dev-auth.ts 已旁路 OAuth · 无真 JWT）
+  // 下 claim-binding 无 claim 可绑、只会 deny_missing(PROJECT_HAS_NO_AUTH_SERVICE)，把 run_sql（唯一
+  // fromClaim 工具）读写全堵死（含临时分支写 → 挡死 autopilot 在隔离分支上验证修复）。单租户自托管无
+  // 跨租户风险 → 与 OAuth 旁路同一把 NEON_LOCAL_URL gate 整体旁路。hard-deny + plan-mode 仍由 feat-056
+  // pipeline 在 toolHandler 之前把关（auth 与 enforcement 正交），安全不降。production 绝不 set 该 env。
+  if (isLocalDevAuthEnabled()) {
+    return { outcome: 'pass', boundArgs: ctx.args };
+  }
+
   const fromClaims = collectFromClaims(ctx.toolSchema);
 
   // 1. 该 tool 没声明 fromClaim → 完全旁路 · 不走本 middleware · 兼容 feat-029-only 部署

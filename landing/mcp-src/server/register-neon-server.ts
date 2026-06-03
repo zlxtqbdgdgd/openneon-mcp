@@ -290,6 +290,8 @@ export function registerNeonServer(
                 timeoutOverrides: resolved.timeout_overrides,
                 // feat-027/#2: 原始 SQL → planModeStage 组 plan payload
                 sql: sqlForClassify,
+                // ADR-0022 桶①: 目标 branchId → planModeStage 判定自托管抛弃型临时分支 (sandbox 免审批)
+                branchId: typeof a.branchId === 'string' ? a.branchId : undefined,
               } as const;
               const verdict = runPipeline({ ...pipelineCtx });
               if (verdict.action === 'deny') {
