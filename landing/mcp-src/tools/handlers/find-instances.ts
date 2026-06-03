@@ -32,6 +32,12 @@ import type { Api } from '@neondatabase/api-client';
 import { startSpan } from '@sentry/node';
 import { handleListProjects } from './list-projects';
 import type { ToolHandlerExtraParams } from '../types';
+import {
+  isSelfHosted,
+  LOCAL_PROJECT_ID,
+  LOCAL_REGION,
+  LOCAL_MAIN_BRANCH,
+} from './local-meta';
 
 /**
  * Project status values exposed to agents (per detail design §4 Output schema).
@@ -249,6 +255,22 @@ export async function handleFindNeondbInstances(
       name: 'find_neondb_instances',
     },
     async () => {
+      // ADR-0021 桶②: 自托管单租户固定返回 local-dev（永不连云 listProjects/Endpoints）。
+      if (isSelfHosted()) {
+        const local: FindInstancesResult = {
+          project_id: LOCAL_PROJECT_ID,
+          name: LOCAL_PROJECT_ID,
+          region: LOCAL_REGION,
+          status: 'running',
+          branch_count: 1,
+          active_endpoint_count: 1,
+          last_active_time: null,
+          primary_branch_id: LOCAL_MAIN_BRANCH,
+          primary_endpoint_id: LOCAL_MAIN_BRANCH,
+        };
+        return [local];
+      }
+
       // Cache lookup · only when we have a stable account identity (no account → no cache ·
       // safety: never serve cross-tenant data from an unscoped key).
       const accountId = extra.account?.id;
