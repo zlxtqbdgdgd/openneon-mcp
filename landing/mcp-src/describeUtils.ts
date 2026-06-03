@@ -3,7 +3,7 @@
  * Original source: https://github.com/neondatabase/psql-describe
  */
 
-import { neon } from '@neondatabase/serverless';
+import { createSqlClient } from './tools/handlers/sql-driver';
 
 type TableDescription = {
   columns: ColumnDescription[];
@@ -86,15 +86,22 @@ export async function describeTable(
   connectionString: string,
   tableName: string,
 ): Promise<TableDescription> {
-  const sql = neon(connectionString);
-
-  // Execute all queries in parallel
-  const [columns, indexes, constraints, sizes] = await Promise.all([
-    sql.query(DESCRIBE_TABLE_STATEMENTS[0], [tableName]),
-    sql.query(DESCRIBE_TABLE_STATEMENTS[1], [tableName]),
-    sql.query(DESCRIBE_TABLE_STATEMENTS[2], [tableName]),
-    sql.query(DESCRIBE_TABLE_STATEMENTS[3], [tableName]),
-  ]);
+  // 走 sql-driver 路由（自托管 127.0.0.1 → pg TCP · Neon Cloud → HTTP）。
+  // 直接 neon(uri) 对自托管 connstr 会错构成 https://api.0.0.1/sql 而崩（ADR-0021 桶①）。
+  const sql = await createSqlClient(connectionString);
+  let results: Array<Record<string, any>>[];
+  try {
+    // pg TCP path serialises · HTTP path concurrent · 结果一致
+    results = (await Promise.all([
+      sql.query(DESCRIBE_TABLE_STATEMENTS[0], [tableName]),
+      sql.query(DESCRIBE_TABLE_STATEMENTS[1], [tableName]),
+      sql.query(DESCRIBE_TABLE_STATEMENTS[2], [tableName]),
+      sql.query(DESCRIBE_TABLE_STATEMENTS[3], [tableName]),
+    ])) as Array<Record<string, any>>[];
+  } finally {
+    await sql.release();
+  }
+  const [columns, indexes, constraints, sizes] = results;
 
   return {
     columns: columns.map((col) => ({

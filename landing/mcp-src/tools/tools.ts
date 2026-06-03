@@ -37,6 +37,12 @@ import { handleListOrganizations } from './handlers/list-orgs';
 import { handleListProjects } from './handlers/list-projects';
 import { handleDescribeProject } from './handlers/decribe-project';
 import { handleGetConnectionString } from './handlers/connection-string';
+import {
+  isSelfHosted,
+  createLocalTempBranch,
+  deleteLocalTempBranch,
+} from './handlers/local-branch';
+import { selfHostedUnsupported } from './handlers/local-meta';
 import { handleDescribeBranch } from './handlers/describe-branch';
 // feat-003/004 day-one ship · narrative #3 主卖点 防 LLM 自负幻觉一对组合
 import { handleGetQueryStatement } from './handlers/query-statement';
@@ -324,6 +330,21 @@ async function handleCreateBranch(
   },
   neonClient: Api<unknown>,
 ) {
+  // ADR-0021: 自托管走 neon_local 临时分支 seam（永不连云 createProjectBranch）→
+  // query-tuning / database-migration / create_branch 统一受益。
+  if (isSelfHosted()) {
+    const branch = await createLocalTempBranch(projectId, branchName);
+    return {
+      branch,
+      endpoints: [],
+      roles: [],
+      databases: [],
+      operations: [],
+      connection_uris: [],
+    } as unknown as Awaited<
+      ReturnType<typeof neonClient.createProjectBranch>
+    >['data'];
+  }
   const response = await neonClient.createProjectBranch(projectId, {
     branch: {
       name: branchName,
@@ -354,6 +375,13 @@ async function handleDeleteBranch(
   },
   neonClient: Api<unknown>,
 ) {
+  // ADR-0021: 自托管临时分支走 neon_local 拆除（永不连云 deleteProjectBranch）。
+  if (isSelfHosted()) {
+    await deleteLocalTempBranch(projectId, branchId);
+    return { branch: { id: branchId } } as unknown as Awaited<
+      ReturnType<typeof neonClient.deleteProjectBranch>
+    >['data'];
+  }
   const response = await neonClient.deleteProjectBranch(projectId, branchId);
   return response.data;
 }
@@ -1203,6 +1231,8 @@ export const NEON_HANDLERS = {
   },
 
   create_project: async ({ params }, neonClient, extra) => {
+    if (isSelfHosted())
+      selfHostedUnsupported('create_project（自托管单租户只有 local-dev · 无项目生命周期）');
     try {
       const organization = await getOrgByOrgIdOrDefault(
         params,
@@ -1272,6 +1302,8 @@ export const NEON_HANDLERS = {
   },
 
   delete_project: async ({ params }, neonClient) => {
+    if (isSelfHosted())
+      selfHostedUnsupported('delete_project（自托管单租户只有 local-dev · 无项目生命周期）');
     await handleDeleteProject(params.projectId, neonClient);
     return {
       content: [
@@ -1517,6 +1549,10 @@ You MUST follow these steps:
   },
 
   reset_from_parent: async ({ params }, neonClient) => {
+    if (isSelfHosted())
+      selfHostedUnsupported(
+        'reset_from_parent（neon_local 无 reset 原语 · 自托管临时分支请直接新建一条替代）',
+      );
     const result = await handleResetFromParent(
       {
         projectId: params.projectId,
@@ -1593,6 +1629,7 @@ You MUST follow these steps:
   },
 
   provision_neon_auth: async ({ params }, neonClient, extra) => {
+    if (isSelfHosted()) selfHostedUnsupported('Neon Auth (provision_neon_auth)');
     const result = await handleProvisionNeonAuth(
       {
         projectId: params.projectId,
@@ -1606,14 +1643,18 @@ You MUST follow these steps:
   },
 
   configure_neon_auth: async ({ params }, neonClient, extra) => {
+    if (isSelfHosted()) selfHostedUnsupported('Neon Auth (configure_neon_auth)');
     return handleConfigureNeonAuth(params, neonClient, extra);
   },
 
   get_neon_auth_config: async ({ params }, neonClient, extra) => {
+    if (isSelfHosted()) selfHostedUnsupported('Neon Auth (get_neon_auth_config)');
     return handleGetNeonAuthConfig(params, neonClient, extra);
   },
 
   provision_neon_data_api: async ({ params }, neonClient, extra) => {
+    if (isSelfHosted())
+      selfHostedUnsupported('Neon Data API (provision_neon_data_api)');
     const result = await handleProvisionNeonDataApi(
       {
         projectId: params.projectId,
@@ -1796,6 +1837,17 @@ You MUST follow these steps:
   },
 
   list_shared_projects: async ({ params }, neonClient) => {
+    // ADR-0021 桶②: 自托管单租户无"共享项目"→ 返回空列表（永不连云 listSharedProjects）。
+    if (isSelfHosted()) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({ projects: [] }, null, 2),
+          },
+        ],
+      };
+    }
     const sharedProjects = await handleListSharedProjects(params, neonClient);
     return {
       content: [
@@ -1815,6 +1867,10 @@ You MUST follow these steps:
   },
 
   compare_database_schema: async ({ params }, neonClient) => {
+    if (isSelfHosted())
+      selfHostedUnsupported(
+        'compare_database_schema（云端 schema diff 服务 · 自托管暂无 · 可用 run_sql 查 information_schema 自行对比）',
+      );
     const result = await handleCompareDatabaseSchema(
       {
         projectId: params.projectId,

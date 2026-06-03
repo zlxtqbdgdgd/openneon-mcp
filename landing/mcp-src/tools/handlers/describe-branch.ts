@@ -5,6 +5,7 @@ import { createSqlClient } from './sql-driver';
 import { DESCRIBE_DATABASE_STATEMENTS } from '../utils';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { CONSOLE_URLS, generateConsoleUrl } from './urls';
+import { isSelfHosted } from './local-branch';
 
 const branchInfo = (branch: Branch) => {
   return `Branch Details: 
@@ -42,12 +43,29 @@ export async function handleDescribeBranch(
   neonClient: Api<unknown>,
   extra: ToolHandlerExtraParams,
 ): Promise<CallToolResult> {
-  const { data: branchData } = await neonClient.getProjectBranch(
-    projectId,
-    branchId,
-  );
-
-  const branch = branchData.branch;
+  // ADR-0021 桶②: 自托管合成分支元信息（永不连云 getProjectBranch）；下面的 DB 结构查询
+  // 走 connection-string chokepoint（已自托管）。
+  let branch: Branch;
+  if (isSelfHosted()) {
+    branch = {
+      id: branchId,
+      project_id: projectId,
+      name: branchId === 'main' ? 'main' : branchId,
+      default: branchId === 'main',
+      protected: false,
+      created_at: '1970-01-01T00:00:00Z',
+      updated_at: '1970-01-01T00:00:00Z',
+      compute_time_seconds: 0,
+      written_data_bytes: 0,
+      data_transfer_bytes: 0,
+    } as unknown as Branch;
+  } else {
+    const { data: branchData } = await neonClient.getProjectBranch(
+      projectId,
+      branchId,
+    );
+    branch = branchData.branch;
+  }
 
   let response: Record<string, any>[][];
   try {

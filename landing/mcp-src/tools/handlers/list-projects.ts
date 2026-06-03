@@ -2,12 +2,20 @@ import { Api, ListProjectsParams } from '@neondatabase/api-client';
 import { ToolHandlerExtraParams } from '../types';
 import { getOrgByOrgIdOrDefault } from '../utils';
 import { handleListOrganizations } from './list-orgs';
+import { isSelfHosted, localProject } from './local-meta';
 
 export async function handleListProjects(
   params: ListProjectsParams,
   neonClient: Api<unknown>,
   extra: ToolHandlerExtraParams,
 ) {
+  // ADR-0021 桶②: 自托管返回 local-dev 单租户视图（永不连云 listProjects）。
+  if (isSelfHosted()) {
+    return [localProject()] as unknown as Awaited<
+      ReturnType<typeof neonClient.listProjects>
+    >['data']['projects'];
+  }
+
   const organization = await getOrgByOrgIdOrDefault(params, neonClient, extra);
 
   const response = await neonClient.listProjects({
