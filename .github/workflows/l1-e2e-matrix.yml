@@ -18,12 +18,12 @@
 name: L1 e2e (real Neon · self-hosted)
 
 on:
+  # MANUAL-ONLY (workflow_dispatch). Auto-triggers (push:[main] + pull_request) removed 2026-06-02:
+  # the self-hosted runner (openneon-dev) is STOPPED (#81), so every auto-run sits `queued` with no
+  # runner forever → makes every PR's merge state `UNSTABLE` (noise · never green). Per the project
+  # verification policy, CI is NOT the e2e gate — verification = dev-server direct e2e
+  # (docs/agents/test-infra.md). Re-add `push:`/`pull_request:` here when the runner is back online.
   workflow_dispatch: {}
-  # Auto-trigger enabled 2026-05-22 after self-hosted runner registered + verified green
-  # (run 26280281756). Every main push + PR runs the real-Neon L1 ship gate.
-  push:
-    branches: [main]
-  pull_request: {}
 
 # CI server port · isolated from the persistent dev-server MCP server on 3344.
 # NOTE: NEON_LOCAL_URL is intentionally NOT global · it short-circuits connection-string.ts
