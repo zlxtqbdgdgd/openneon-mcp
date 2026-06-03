@@ -270,7 +270,16 @@ export function registerNeonServer(
                   ? a.sql
                   : Array.isArray(a.sqlStatements)
                     ? (a.sqlStatements as string[]).join('; ')
-                    : undefined;
+                    : // ADR-0022 补遗: complete_query_tuning 把 apply-to-main 的 DDL 放在
+                      // suggestedSqlStatements 里(内部直调 handleRunSqlTransaction · 绕过本 dispatch
+                      // 的 plan-mode)。仅 applyChanges 时把它纳入分类 → 写 main 落到 plan-mode(用户授权
+                      // UI);applyChanges=false(纯清理临时分支)不分类 → benign。
+                      // 注:plan-mode decline → 整个 complete 被 deny → 临时分支这次不清理(canary-cron
+                      // 据 expiry 兜底回收;用户也可再调 complete applyChanges=false 清理)。
+                      a.applyChanges === true &&
+                        Array.isArray(a.suggestedSqlStatements)
+                      ? (a.suggestedSqlStatements as string[]).join('; ')
+                      : undefined;
               const opClass = classifyOp(tool.name, sqlForClassify);
               const effectiveProjectId =
                 grant.projectId ?? (a.projectId as string | undefined);
