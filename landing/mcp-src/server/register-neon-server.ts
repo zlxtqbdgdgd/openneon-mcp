@@ -14,7 +14,7 @@ import { waitUntil } from '@vercel/functions';
 
 import { getAvailablePrompts, getPromptTemplate } from '../prompts';
 import { NEON_HANDLERS } from '../tools/index';
-import { classifyOp } from '../protection/destructive-detector';
+import { classifyOp, classifySql } from '../protection/destructive-detector';
 import { runPipeline } from '../policy/pipeline';
 import {
   resolvePlanApproval,
@@ -280,7 +280,21 @@ export function registerNeonServer(
                         Array.isArray(a.suggestedSqlStatements)
                       ? (a.suggestedSqlStatements as string[]).join('; ')
                       : undefined;
-              const opClass = classifyOp(tool.name, sqlForClassify);
+              let opClass = classifyOp(tool.name, sqlForClassify);
+              // ADR-0022 补遗: complete_query_tuning 的 apply-to-main DDL 在 suggestedSqlStatements 里，
+              // 内部直调 handleRunSqlTransaction 绕过本 dispatch · 且 complete 不在 SQL_TOOLS → classifyOp
+              // 返 READ_ONLY(无 plan-mode)。这里直接按 SQL 内容分类(不经 SQL_TOOLS 闸)覆盖 → 写 main 落到
+              // plan-mode(用户授权 UI)。仅 applyChanges 时;applyChanges=false(纯清理)保持 READ_ONLY。
+              if (
+                tool.name === 'complete_query_tuning' &&
+                a.applyChanges === true &&
+                Array.isArray(a.suggestedSqlStatements) &&
+                a.suggestedSqlStatements.length > 0
+              ) {
+                opClass = classifySql(
+                  (a.suggestedSqlStatements as string[]).join('; '),
+                );
+              }
               const effectiveProjectId =
                 grant.projectId ?? (a.projectId as string | undefined);
               const resolved = resolvePolicy(effectiveProjectId);
