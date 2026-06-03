@@ -220,7 +220,15 @@ export type PlanApproval = {
   failClosed: boolean;
 };
 
-/** 渲染 plan 给人看 (human-readable · 纯 server 事实)。 */
+/**
+ * 授权确认短语 = 主受影响对象名（逐字输入以确认「在动哪个对象」· 防 rubber-stamp）。
+ * 无解析出对象时退回 op-class 标记（仍要求逐字确认）。
+ */
+export function expectedConfirmToken(plan: PlanPayload): string {
+  return plan.affected_objects[0]?.name ?? `OP-${plan.op_class}`;
+}
+
+/** 渲染 plan 给人看 (human-readable · 纯 server 事实 · 正式授权框)。 */
 export function renderPlan(plan: PlanPayload): string {
   const objs =
     plan.affected_objects.length > 0
@@ -228,22 +236,31 @@ export function renderPlan(plan: PlanPayload): string {
       : '(未解析出具体对象)';
   const props =
     plan.statement_properties.length > 0
-      ? plan.statement_properties.map((p) => `\n  - ${p}`).join('')
+      ? plan.statement_properties.map((p) => `\n    - ${p}`).join('')
       : ' 无';
+  const token = expectedConfirmToken(plan);
   return [
-    `高危操作需审批 (op-class: ${plan.op_class} · 风险: ${plan.risk_level})`,
-    ``,
-    `SQL:\n${plan.sql}`,
-    ``,
-    `受影响对象: ${objs}`,
-    `可逆性: ${plan.reversibility}`,
+    `⚠️ 高危数据库写操作 · 需人工授权（plan-mode · LLM 不可越过 · 本请求由 server 直推）`,
+    `────────────────────────────────────────────`,
+    `  操作类型 (op-class): ${plan.op_class}`,
+    `  风险等级:           ${plan.risk_level}`,
+    `  受影响对象:         ${objs}`,
+    `  可逆性:             ${plan.reversibility}`,
     plan.estimated_rows !== undefined
-      ? `EXPLAIN 估算影响行数: ${plan.estimated_rows}`
+      ? `  EXPLAIN 估算影响行数: ${plan.estimated_rows}`
       : ``,
-    `语句属性:${props}`,
+    `  语句属性:${props}`,
+    `  SQL:`,
+    plan.sql
+      .split('\n')
+      .map((l) => `    ${l}`)
+      .join('\n'),
     plan.canary_evidence ? renderCanaryEvidence(plan.canary_evidence) : ``,
-    ``,
-    `批准执行?`,
+    `────────────────────────────────────────────`,
+    `授权要求（三项缺一不可，否则视为未批准）:`,
+    `  • approved = true`,
+    `  • reason   = 授权理由（必填 · 进 audit 可追责）`,
+    `  • confirm  = 逐字输入受影响对象名以确认知悉影响范围 → ${token}`,
   ]
     .filter((line) => line !== ``)
     .join('\n');
@@ -275,10 +292,23 @@ function renderCanaryEvidence(c: CanaryEvidence): string {
 export const PLAN_ELICIT_SCHEMA: Record<string, unknown> = {
   type: 'object',
   properties: {
-    approved: { type: 'boolean', description: '批准执行该高危操作?' },
-    reason: { type: 'string', description: '审批 / 拒绝理由 (可选 · 进 audit)' },
+    approved: {
+      type: 'boolean',
+      description: '批准执行该高危写操作? (true=授权 · false=否决)',
+    },
+    reason: {
+      type: 'string',
+      description: '授权 / 否决理由 (必填 · 进 audit 可追责)',
+      minLength: 1,
+    },
+    confirm: {
+      type: 'string',
+      description:
+        '逐字输入受影响对象名以确认知悉影响范围 (见 plan 末尾 confirm 行)',
+      minLength: 1,
+    },
   },
-  required: ['approved'],
+  required: ['approved', 'reason', 'confirm'],
 };
 
 /**
@@ -316,13 +346,36 @@ export async function resolvePlanApproval(
     const approved = result.content?.approved === true;
     const reason =
       typeof result.content?.reason === 'string'
-        ? result.content.reason
-        : undefined;
-    return {
-      approved,
-      reason: reason ?? (approved ? 'DBA 批准' : 'DBA 表单未批准'),
-      failClosed: false,
-    };
+        ? result.content.reason.trim()
+        : '';
+    const confirm =
+      typeof result.content?.confirm === 'string'
+        ? result.content.confirm.trim()
+        : '';
+    const expected = expectedConfirmToken(plan);
+    // 三项缺一不可: approved + 必填理由 + 确认短语逐字匹配受影响对象 (防 rubber-stamp · 「打个字就过」)
+    if (!approved) {
+      return {
+        approved: false,
+        reason: reason || 'DBA 表单未批准 (approved≠true)',
+        failClosed: false,
+      };
+    }
+    if (reason === '') {
+      return {
+        approved: false,
+        reason: '授权否决: 缺必填授权理由',
+        failClosed: false,
+      };
+    }
+    if (confirm !== expected) {
+      return {
+        approved: false,
+        reason: `授权否决: 确认短语不符 (需逐字输入受影响对象 "${expected}")`,
+        failClosed: false,
+      };
+    }
+    return { approved: true, reason, failClosed: false };
   } catch (err) {
     return {
       approved: false,
