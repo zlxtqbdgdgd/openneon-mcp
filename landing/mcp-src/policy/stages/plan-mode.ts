@@ -18,6 +18,10 @@
 import type { OpClass } from '../../protection/destructive-detector';
 import type { Stage, EnforcementCtx } from '../pipeline';
 import { matrixRequiresPlan } from '../matrix';
+import {
+  isSelfHosted,
+  getLocalBranchConnString,
+} from '../../tools/handlers/local-branch';
 
 export type PlanRisk = 'low' | 'medium' | 'high';
 
@@ -174,6 +178,11 @@ export function buildPlanPayload(ctx: EnforcementCtx): PlanPayload {
  */
 export const planModeStage: Stage = (ctx) => {
   if (!matrixRequiresPlan(ctx.opClass, ctx.autonomyLevel)) return null;
+  // ADR-0022 桶①: 自托管下写「注册的一次性临时分支」= 抛弃型沙盒（autopilot 在分支上验证修复）→
+  // skip plan-mode（人工审批留给写 main · complete_query_tuning）。写 main / 未注册分支照常 require_plan。
+  if (isSelfHosted() && ctx.branchId && getLocalBranchConnString(ctx.branchId)) {
+    return null;
+  }
   // feat-026/#1: 已有 token → skip elicitation (L4 odd-pre-approved 或 L1-L3 plan-mode-approval
   // 重跑路径) · 放行到 step 7 (confirmTokenStage) verify。
   if (ctx.confirmToken) return null;

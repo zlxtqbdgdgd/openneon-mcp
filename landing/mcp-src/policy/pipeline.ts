@@ -60,6 +60,8 @@ export type EnforcementCtx = {
   timeoutOverrides?: Partial<Record<OpClass, TimeoutSpec>>;
   // feat-027/#2: 原始 SQL (run_sql 写路径 · plan-mode stage 组 plan payload 用 · 只读 op 可空)
   sql?: string;
+  // ADR-0022 桶①: 目标 branchId · 自托管下 planModeStage 判定是否抛弃型临时分支 (→ skip plan-mode · sandbox 免审批)
+  branchId?: string;
   // feat-026/#1: confirm token snapshot (orchestrator 在 plan-mode approve 后注入 ·
   // step 7 confirm-token stage 消费 · 详 confirm-token-store.ts + ADR-0008)
   confirmToken?: ConfirmTokenSnapshot;
