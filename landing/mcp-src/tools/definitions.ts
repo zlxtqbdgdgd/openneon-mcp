@@ -994,11 +994,11 @@ export const NEON_TOOLS = [
             * Add index for frequently filtered columns
             * Optimize join conditions
 
-          To apply these changes, I will use the \`complete_query_tuning\` tool after your approval and pass the \`tuning_id\`, NOT the temporary branch ID to it.
+          To apply these changes I will present the before/after, then call the \`complete_query_tuning\` tool with applyChanges=true — the server's formal plan-mode authorization will prompt you to approve (I won't pre-ask in prose). I pass the \`tuning_id\`, NOT the temporary branch ID.
         </example>
       </response_instructions>
 
-    3. If approved, use ONLY the \`complete_query_tuning\` tool with the \`tuning_id\`
+    3. To apply, call ONLY the \`complete_query_tuning\` tool with the \`tuning_id\` (its formal plan-mode gate obtains the user's authorization — don't pre-ask in prose)
   </next_steps>
 
   <error_handling>
@@ -1050,12 +1050,19 @@ export const NEON_TOOLS = [
     2. Handles cleanup of temporary branch
     3. Must be called even when changes are rejected to ensure proper cleanup
 
+    AUTHORIZATION (applyChanges=true): applying to the main branch is a high-risk write and triggers a
+    MANDATORY server-side plan-mode authorization — the server pushes a FORMAL approval form to the user
+    (op-class · risk · affected objects · reversibility · SQL) that requires explicit approval + a reason +
+    typing the affected object name. THAT form is the real, tamper-proof authorization. Do NOT ask the user
+    for approval in your own prose (no casual "apply this? yes/no") — your question is NOT the authorization
+    and must not substitute for the gate. Just present the before/after result, then call this tool with
+    applyChanges=true; the formal gate prompts the user. Even if the user already said "apply", still just
+    call the tool — the gate handles the formal sign-off.
+
     Workflow:
     1. After \`prepare_query_tuning\` suggests changes
-    2. User reviews and approves/rejects changes
-    3. This tool is called to either:
-      - Apply approved changes to main branch and cleanup
-      - OR just cleanup if changes are rejected
+    2. Call this tool with applyChanges=true → the server's plan-mode gate asks the user to formally authorize (do not pre-ask in prose)
+    3. Approved → apply to main + cleanup · Rejected/cancelled → main untouched (call again with applyChanges=false to clean up the temp branch)
     `,
     inputSchema: completeQueryTuningInputSchema,
     annotations: {
