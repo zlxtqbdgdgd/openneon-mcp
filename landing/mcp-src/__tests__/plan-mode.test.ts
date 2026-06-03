@@ -167,17 +167,17 @@ describe('resolvePlanApproval (feat-027/#2 · orchestrator elicitation · fail-c
     expect(r.failClosed).toBe(false);
   });
 
-  it('accept + approved=false → deny (DBA 表单未批 · 非 failClosed)', async () => {
+  it('approved 字段已废弃 → 表态看 Accept/Decline 动作 (content.approved 被忽略 · #5)', async () => {
     const r = await resolvePlanApproval(
       elicitReturning({
         action: 'accept',
-        content: { approved: false, reason: '风险太高' },
+        content: { approved: false, reason: 'x', confirm: 'sales' },
       }),
       plan,
     );
-    expect(r.approved).toBe(false);
+    // Accept + 必填理由 + 确认短语逐字匹配 → 放行,即便 content.approved=false (该冗余字段已去)
+    expect(r.approved).toBe(true);
     expect(r.failClosed).toBe(false);
-    expect(r.reason).toBe('风险太高');
   });
 
   it('decline → deny (DBA 拒 · 非 failClosed)', async () => {
@@ -223,7 +223,9 @@ describe('resolvePlanApproval (feat-027/#2 · orchestrator elicitation · fail-c
     };
     await resolvePlanApproval(spy, plan);
     expect(seenTimeout).toBe(PLAN_ELICIT_TIMEOUT_MS);
-    expect((seenSchema.required as string[]) ?? []).toContain('approved');
+    // #5: 无冗余 approved 字段;必填 reason + confirm
+    expect((seenSchema.required as string[]) ?? []).toContain('confirm');
+    expect((seenSchema.required as string[]) ?? []).toContain('reason');
   });
 
   it('relatedRequestId 透传给 elicit (streamable-HTTP 把审批绑回发起的 POST 流)', async () => {
@@ -238,7 +240,7 @@ describe('resolvePlanApproval (feat-027/#2 · orchestrator elicitation · fail-c
 });
 
 describe('renderPlan (feat-027/#2 · 人类可读 · 纯 server 事实)', () => {
-  it('含 op-class / SQL / 受影响对象 / 可逆性 · 不含投机预测', () => {
+  it('含人话操作 / SQL / 受影响对象 / 可逆性 · 不露 op-class 码 · 不含投机预测', () => {
     const text = renderPlan({
       sql: 'CREATE INDEX CONCURRENTLY i ON sales(d)',
       op_class: 'CREATE_INDEX_CONCURRENTLY',
@@ -247,10 +249,11 @@ describe('renderPlan (feat-027/#2 · 人类可读 · 纯 server 事实)', () => 
       reversibility: '可 DROP INDEX 回滚',
       statement_properties: ['CONCURRENTLY：不阻塞读写'],
     });
-    expect(text).toContain('CREATE_INDEX_CONCURRENTLY');
+    expect(text).toContain('创建索引'); // 人话操作 · 非 op-class 枚举码
+    expect(text).not.toContain('CREATE_INDEX_CONCURRENTLY'); // 军规: 不露内部码
     expect(text).toContain('CREATE INDEX CONCURRENTLY i ON sales(d)');
     expect(text).toContain('table sales');
-    expect(text).toContain('可 DROP INDEX 回滚');
+    expect(text).toContain('DROP INDEX'); // SQL 派生的可逆性
     expect(text).not.toMatch(/p95|提升 \d/);
   });
 });

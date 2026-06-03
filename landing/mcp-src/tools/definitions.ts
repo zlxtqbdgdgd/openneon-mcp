@@ -1058,6 +1058,12 @@ export const NEON_TOOLS = [
     and must not substitute for the gate. Just present the before/after result, then call this tool with
     applyChanges=true; the formal gate prompts the user. Even if the user already said "apply", still just
     call the tool — the gate handles the formal sign-off.
+    If the user DECLINES the authorization, that decision is FINAL: do NOT offer or attempt any workaround
+    (e.g. running the DDL via run_sql directly, or asking the user to switch to a write-allowed mode). A
+    direct run_sql against main hits the SAME plan-mode gate — it is not a bypass. On decline, the change is
+    simply not applied; only offer to clean up the temporary branch (call this tool with applyChanges=false)
+    or to hand the validated DDL to the user. The gate timing out is a transport issue to report, not a
+    reason to route around authorization.
 
     Workflow:
     1. After \`prepare_query_tuning\` suggests changes

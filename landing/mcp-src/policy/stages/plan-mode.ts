@@ -234,6 +234,55 @@ export function expectedConfirmToken(plan: PlanPayload): string {
   return plan.affected_objects[0]?.name ?? `OP-${plan.op_class}`;
 }
 
+// 风险等级 → 语义色 emoji（≤3 色：红/黄/绿）。
+const RISK_EMOJI: Record<PlanRisk, string> = {
+  high: '🔴',
+  medium: '🟡',
+  low: '🟢',
+};
+
+/**
+ * 人话操作摘要（从 SQL 派生 · 不露 op-class 内部码 · 团队军规「不给用户看 op-class 枚举」）。
+ * op-class 是内部桶（如非并发 CREATE INDEX 归 DDL_ADD_COLUMN），直接展示会误导。
+ */
+function humanOperation(plan: PlanPayload): string {
+  const s = plan.sql.trim().toUpperCase();
+  const verb = /^CREATE\s+INDEX/.test(s)
+    ? '创建索引'
+    : /^DROP\s+INDEX/.test(s)
+      ? '删除索引'
+      : /^CREATE\s+TABLE/.test(s)
+        ? '创建表'
+        : /^DROP\s+TABLE/.test(s)
+          ? '删除表'
+          : /^ALTER\s+TABLE/.test(s)
+            ? '修改表结构'
+            : /^TRUNCATE/.test(s)
+              ? '清空表'
+              : /^(DELETE|UPDATE)\b/.test(s)
+                ? '批量改数据'
+                : /^VACUUM\s+FULL/.test(s)
+                  ? 'VACUUM FULL 重写表'
+                  : /^CLUSTER/.test(s)
+                    ? 'CLUSTER 重写表'
+                    : '数据库写操作';
+  const o = plan.affected_objects[0];
+  return o ? `${verb} ${o.name}` : verb;
+}
+
+/** 可逆性（从 SQL 派生 · 修 op-class 桶化导致的误导，如 CREATE INDEX 显示 ADD COLUMN 回滚）。 */
+function humanReversibility(plan: PlanPayload): string {
+  const s = plan.sql.trim().toUpperCase();
+  if (/^CREATE\s+INDEX/.test(s)) return '可回滚 · DROP INDEX 即撤销，不改表数据';
+  if (/^CREATE\s+TABLE/.test(s)) return '可回滚 · DROP TABLE 即撤销';
+  if (/^DROP\b/.test(s) || /^TRUNCATE/.test(s))
+    return '不可逆 · 需备份 / 从分支恢复';
+  if (/^ALTER\s+TABLE/.test(s))
+    return '取决于具体变更 · 改类型 / 删列不可逆';
+  if (/^(DELETE|UPDATE)\b/.test(s)) return '数据变更 · 事务回滚 / 从分支恢复';
+  return plan.reversibility; // 其余退回 op-class 既有文案
+}
+
 /** 渲染 plan 给人看 (human-readable · 纯 server 事实 · 正式授权框)。 */
 export function renderPlan(plan: PlanPayload): string {
   const objs =
@@ -243,30 +292,24 @@ export function renderPlan(plan: PlanPayload): string {
   const props =
     plan.statement_properties.length > 0
       ? plan.statement_properties.map((p) => `\n    - ${p}`).join('')
-      : ' 无';
-  const token = expectedConfirmToken(plan);
+      : '';
   return [
-    `⚠️ 高危数据库写操作 · 需人工授权（plan-mode · LLM 不可越过 · 本请求由 server 直推）`,
+    `⚠️ 高危数据库写操作 · 需人工授权（plan-mode · LLM 不可越过 · server 直推）`,
     `────────────────────────────────────────────`,
-    `  操作类型 (op-class): ${plan.op_class}`,
-    `  风险等级:           ${plan.risk_level}`,
-    `  受影响对象:         ${objs}`,
-    `  可逆性:             ${plan.reversibility}`,
+    `  操作:     ${humanOperation(plan)}`,
+    `  ${RISK_EMOJI[plan.risk_level]} 风险:   ${plan.risk_level}`,
+    `  受影响:   ${objs}`,
+    `  可逆性:   ${humanReversibility(plan)}`,
     plan.estimated_rows !== undefined
-      ? `  EXPLAIN 估算影响行数: ${plan.estimated_rows}`
+      ? `  预估影响行数: ${plan.estimated_rows}`
       : ``,
-    `  语句属性:${props}`,
+    props ? `  注意:${props}` : ``,
     `  SQL:`,
     plan.sql
       .split('\n')
       .map((l) => `    ${l}`)
       .join('\n'),
     plan.canary_evidence ? renderCanaryEvidence(plan.canary_evidence) : ``,
-    `────────────────────────────────────────────`,
-    `授权要求（三项缺一不可，否则视为未批准）:`,
-    `  • approved = true`,
-    `  • reason   = 授权理由（必填 · 进 audit 可追责）`,
-    `  • confirm  = 逐字输入受影响对象名以确认知悉影响范围 → ${token}`,
   ]
     .filter((line) => line !== ``)
     .join('\n');
@@ -294,28 +337,30 @@ function renderCanaryEvidence(c: CanaryEvidence): string {
   return lines.join('\n');
 }
 
-/** elicitation 请求 schema (只 approve/reject · 不让 DBA 改写 SQL · §4.2)。 */
-export const PLAN_ELICIT_SCHEMA: Record<string, unknown> = {
-  type: 'object',
-  properties: {
-    approved: {
-      type: 'boolean',
-      description: '批准执行该高危写操作? (true=授权 · false=否决)',
+/**
+ * elicitation 请求 schema（per-call · 不让 DBA 改写 SQL · §4.2）。
+ * 表态用 elicitation 的 Accept/Decline 动作（无冗余 `approved` 字段 · #5）；
+ * `confirm` 描述内联确切受影响对象名，自解释要打什么（#2）。
+ */
+export function buildElicitSchema(plan: PlanPayload): Record<string, unknown> {
+  const token = expectedConfirmToken(plan);
+  return {
+    type: 'object',
+    properties: {
+      reason: {
+        type: 'string',
+        minLength: 1,
+        description: '授权理由（必填 · 进 audit 可追责）',
+      },
+      confirm: {
+        type: 'string',
+        minLength: 1,
+        description: `逐字输入以确认知悉影响范围：${token}`,
+      },
     },
-    reason: {
-      type: 'string',
-      description: '授权 / 否决理由 (必填 · 进 audit 可追责)',
-      minLength: 1,
-    },
-    confirm: {
-      type: 'string',
-      description:
-        '逐字输入受影响对象名以确认知悉影响范围 (见 plan 末尾 confirm 行)',
-      minLength: 1,
-    },
-  },
-  required: ['approved', 'reason', 'confirm'],
-};
+    required: ['reason', 'confirm'],
+  };
+}
 
 /**
  * orchestrator 处理 require_plan: 弹 elicitation → 映射审批 (详设 §3.2)。**fail-closed**:
@@ -340,10 +385,12 @@ export async function resolvePlanApproval(
   try {
     const result = await elicit(
       renderPlan(plan),
-      PLAN_ELICIT_SCHEMA,
+      buildElicitSchema(plan),
       PLAN_ELICIT_TIMEOUT_MS,
       relatedRequestId,
     );
+    // 表态 = elicitation 的 Accept/Decline 动作（#5: 无冗余 approved 字段）。
+    // Decline / Cancel → 否决；Accept → 再验「必填理由 + 确认短语逐字匹配受影响对象」(防 rubber-stamp)。
     if (result.action !== 'accept') {
       return {
         approved: false,
@@ -351,7 +398,6 @@ export async function resolvePlanApproval(
         failClosed: false,
       };
     }
-    const approved = result.content?.approved === true;
     const reason =
       typeof result.content?.reason === 'string'
         ? result.content.reason.trim()
@@ -361,14 +407,6 @@ export async function resolvePlanApproval(
         ? result.content.confirm.trim()
         : '';
     const expected = expectedConfirmToken(plan);
-    // 三项缺一不可: approved + 必填理由 + 确认短语逐字匹配受影响对象 (防 rubber-stamp · 「打个字就过」)
-    if (!approved) {
-      return {
-        approved: false,
-        reason: reason || 'DBA 表单未批准 (approved≠true)',
-        failClosed: false,
-      };
-    }
     if (reason === '') {
       return {
         approved: false,
